@@ -879,6 +879,78 @@ describe('ImapService', () => {
 
       expect(client.append).not.toHaveBeenCalled();
     });
+
+    /** The raw RFC 822 message handed to APPEND. */
+    async function savedMessage(options: Parameters<ImapService['saveDraft']>[1]): Promise<string> {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+      await service.saveDraft('test', options);
+      const [, raw] = client.append.mock.calls[0]!;
+      return (raw as Buffer).toString('utf-8');
+    }
+
+    // A header may only carry 7-bit ASCII; a subject with umlauts has to go
+    // out as an RFC 2047 encoded word or the message is malformed.
+    it('encodes a non-ASCII subject as an RFC 2047 word', async () => {
+      const message = await savedMessage({
+        to: ['a@b.c'],
+        subject: 'Bestätigung für Ihre Anfrage',
+        body: 'body',
+      });
+
+      expect(message).toContain('=?UTF-8?Q?');
+      expect(message).not.toContain('Subject: Bestätigung');
+    });
+
+    it('leaves a plain ASCII subject unencoded', async () => {
+      const message = await savedMessage({ to: ['a@b.c'], subject: 'Re: hi', body: 'body' });
+      expect(message).toContain('Subject: Re: hi');
+    });
+
+    // Absent Content-Transfer-Encoding means 7bit per RFC 2045, so appending
+    // raw UTF-8 declares one thing and ships another.
+    it('declares a transfer encoding and round-trips an 8-bit body', async () => {
+      const body = 'Grüße aus Zürich — 10 €';
+      const message = await savedMessage({ to: ['a@b.c'], subject: 'Hi', body });
+
+      expect(message).toContain('Content-Transfer-Encoding: base64');
+      const payload = message.split('\r\n\r\n').slice(1).join('\r\n\r\n');
+      expect(Buffer.from(payload, 'base64').toString('utf-8')).toBe(body);
+    });
+
+    // send_email emits multipart/alternative for HTML; a stored draft that is
+    // HTML-only renders as markup in any other client that opens it.
+    it('stores an HTML draft as multipart/alternative with a text fallback', async () => {
+      const message = await savedMessage({
+        to: ['a@b.c'],
+        subject: 'Hi',
+        body: '<p>Hello <b>there</b></p>',
+        html: true,
+      });
+
+      expect(message).toContain('Content-Type: multipart/alternative; boundary=');
+      expect(message).toContain('Content-Type: text/plain; charset=utf-8');
+      expect(message).toContain('Content-Type: text/html; charset=utf-8');
+
+      const boundary = /boundary="([^"]+)"/.exec(message)?.[1];
+      expect(boundary).toBeDefined();
+      const parts = message.split(`--${boundary}`);
+      // Preamble, the two alternatives, and the closing delimiter.
+      expect(parts).toHaveLength(4);
+      expect(parts[3]).toContain('--');
+
+      const decodePart = (part: string): string =>
+        Buffer.from(part.split('\r\n\r\n').slice(1).join('\r\n\r\n').trim(), 'base64').toString(
+          'utf-8',
+        );
+      expect(decodePart(parts[1]!)).toBe('Hello there');
+      expect(decodePart(parts[2]!)).toBe('<p>Hello <b>there</b></p>');
+    });
+
+    it('keeps a plain-text draft single-part', async () => {
+      const message = await savedMessage({ to: ['a@b.c'], subject: 'Hi', body: 'just text' });
+      expect(message).toContain('Content-Type: text/plain; charset=utf-8');
+      expect(message).not.toContain('multipart/alternative');
+    });
   });
 
   // -----------------------------------------------------------------------
