@@ -16,6 +16,7 @@ import type { AccountConfig, EmailMeta, WatcherConfig } from '../types/index.js'
 import { createImapClient } from '../utils/imap-client.js';
 import eventBus from './event-bus.js';
 import { messageToEmailMeta } from './imap.service.js';
+import type OAuthService from './oauth.service.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,9 +54,41 @@ export default class WatcherService {
 
   private accounts: AccountConfig[];
 
-  constructor(config: WatcherConfig, accounts: AccountConfig[]) {
+  private oauthService?: OAuthService;
+
+  constructor(config: WatcherConfig, accounts: AccountConfig[], oauthService?: OAuthService) {
     this.config = config;
     this.accounts = accounts;
+    this.oauthService = oauthService;
+  }
+
+  /**
+   * IMAP credentials for an account, exchanging the refresh token for an
+   * access token when the account uses OAuth2.
+   *
+   * The watcher builds its own connections rather than borrowing the pooled
+   * ones, because IDLE holds the mailbox lock — so it also has to do its own
+   * auth. It previously passed `account.password` as the access token, which
+   * is undefined for an OAuth account, so IDLE could never authenticate and
+   * the verification catcher and hooks were silently dead for exactly the
+   * users Google and Microsoft are moving onto OAuth.
+   */
+  private static async buildAuth(
+    account: AccountConfig,
+    oauthService?: OAuthService,
+  ): Promise<{ user: string; pass?: string; accessToken?: string }> {
+    if (!account.oauth2) {
+      return { user: account.username, pass: account.password };
+    }
+    if (!oauthService) {
+      throw new Error(
+        `Account "${account.name}" uses OAuth2 but the watcher was built without an OAuth service`,
+      );
+    }
+    return {
+      user: account.username,
+      accessToken: await oauthService.getAccessToken(account.oauth2),
+    };
   }
 
   async start(): Promise<void> {
@@ -132,9 +165,12 @@ export default class WatcherService {
     if (!state || state.stopped) return;
 
     try {
-      const auth = state.account.oauth2
-        ? { user: state.account.username, accessToken: state.account.password }
-        : { user: state.account.username, pass: state.account.password };
+      // Resolved per connect, not once at startup: OAuth access tokens are
+      // short-lived relative to an IDLE hold (up to 29 minutes), so a
+      // reconnect after expiry needs a fresh one. OAuthService refreshes
+      // behind a 5-minute buffer and caches on the shared account config, so
+      // this costs nothing while the token is still good.
+      const auth = await WatcherService.buildAuth(state.account, this.oauthService);
 
       const client = createImapClient({
         host: state.account.imap.host,
