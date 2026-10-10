@@ -119,3 +119,34 @@ export function buildSecondTestAccount(): AccountConfig {
 }
 
 export { TEST_ACCOUNT_NAME, TEST_EMAIL, TEST_USER };
+
+/**
+ * Accounts for the attachment tool-layer tests. The MCP send/reply/forward
+ * tools apply zod `.email()` to recipients, which rejects `@localhost`, so
+ * these use a real TLD (and matching GreenMail users from globalSetup).
+ */
+export function buildAttachmentSender(): AccountConfig {
+  const { host, smtpPort, imapPort } = getGreenMailPorts();
+  return {
+    name: 'att-sender',
+    email: 'attsender@example.test',
+    fullName: 'Attachment Sender',
+    username: 'attsender',
+    password: 'attpw',
+    imap: { host, port: imapPort, tls: false, starttls: false, verifySsl: false },
+    smtp: { host, port: smtpPort, tls: false, starttls: false, verifySsl: false },
+  };
+}
+
+export function buildAttachmentRecipient(): AccountConfig {
+  const { host, smtpPort, imapPort } = getGreenMailPorts();
+  return {
+    name: 'att-recipient',
+    email: 'attrecipient@example.test',
+    fullName: 'Attachment Recipient',
+    username: 'attrecipient',
+    password: 'attpw',
+    imap: { host, port: imapPort, tls: false, starttls: false, verifySsl: false },
+    smtp: { host, port: smtpPort, tls: false, starttls: false, verifySsl: false },
+  };
+}

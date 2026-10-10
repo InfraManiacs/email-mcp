@@ -19,7 +19,7 @@ export async function setup({ provide }: GlobalSetupContext) {
       GREENMAIL_OPTS: [
         '-Dgreenmail.setup.test.all',
         '-Dgreenmail.hostname=0.0.0.0',
-        '-Dgreenmail.users=test:test@localhost,bob:bob@localhost,alice:alice@localhost,sender:sender@localhost',
+        '-Dgreenmail.users=test:test@localhost,bob:bob@localhost,alice:alice@localhost,sender:sender@localhost,attsender:attpw@example.test,attrecipient:attpw@example.test',
       ].join(' '),
     })
     .withWaitStrategy(Wait.forListeningPorts())

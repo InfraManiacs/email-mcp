@@ -1071,6 +1071,14 @@ pnpm test:integration  # against a throwaway GreenMail server (Docker required)
 pnpm smoke             # every MCP tool against a real configured account
 ```
 
+The integration suite runs each tool against a throwaway GreenMail server
+(spun up via Testcontainers). Attachment coverage
+(`email-attachments.integration.test.ts`) drives the real MCP tool layer and
+locks in the size-awareness contract: every send reports each file's size and
+the raw≈base64 total, the cap is enforced on the **encoded** total (what the
+wire carries), an over-cap send fails closed (nothing is delivered), and
+forwards carry the original attachments unless `includeAttachments: false`.
+
 `pnpm smoke` drives all tools over stdio the way a client does, which reaches
 what GreenMail cannot: provider quirks, real-world MIME, and the macOS
 Calendar bridges. It needs a working account, so it is not part of CI. Writes
