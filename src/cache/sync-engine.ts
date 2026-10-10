@@ -193,6 +193,18 @@ function toCachedMessage(
   };
 }
 
+/**
+ * Key an (account, mailbox) pair for the in-memory maps.
+ *
+ * NUL-separated, because mailbox paths routinely contain spaces ("Deleted
+ * Items"): a space-joined key makes ("a", "b c") and ("a b", "c") the same
+ * entry, silently sharing dirty state and in-flight syncs between two
+ * different mailboxes.
+ */
+function mailboxKey(account: string, mailbox: string): string {
+  return `${account}\u0000${mailbox}`;
+}
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
@@ -280,13 +292,13 @@ export default class SyncEngine {
 
   /** Record that a mailbox changed and the mirror may be behind. */
   markDirty(account: string, mailbox: string): void {
-    const key = `${account} ${mailbox}`;
+    const key = mailboxKey(account, mailbox);
     this.dirtyEpochs.set(key, (this.dirtyEpochs.get(key) ?? 0) + 1);
   }
 
   /** True while a change event has not yet been absorbed by a successful sync. */
   isDirty(account: string, mailbox: string): boolean {
-    return (this.dirtyEpochs.get(`${account} ${mailbox}`) ?? 0) > 0;
+    return (this.dirtyEpochs.get(mailboxKey(account, mailbox)) ?? 0) > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -341,7 +353,7 @@ export default class SyncEngine {
    * so a transient network error must not escalate into data loss.
    */
   async syncMailbox(account: string, mailbox: string): Promise<SyncResult> {
-    const key = `${account} ${mailbox}`;
+    const key = mailboxKey(account, mailbox);
     const running = this.inFlight.get(key);
     if (running) return running;
 
@@ -364,7 +376,7 @@ export default class SyncEngine {
 
     // Snapshot the dirty epoch: events arriving while this run is in flight
     // were not necessarily observed by it and must keep the mailbox dirty.
-    const dirtyKey = `${account} ${mailbox}`;
+    const dirtyKey = mailboxKey(account, mailbox);
     const dirtyAtStart = this.dirtyEpochs.get(dirtyKey);
 
     try {

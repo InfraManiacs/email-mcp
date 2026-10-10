@@ -183,7 +183,9 @@ export default class MailReadService {
    * that serializes commands anyway.
    */
   private async revalidate(account: string, mailbox: string): Promise<Revalidation> {
-    const key = `${account} ${mailbox}`;
+    // NUL-separated for the same reason as the sync engine's keys: a mailbox
+    // path may contain spaces, so a space separator can collide.
+    const key = `${account}\u0000${mailbox}`;
     const pending = this.inFlightRevalidations.get(key);
     if (pending) return pending;
 
@@ -437,7 +439,9 @@ export default class MailReadService {
       return this.imapService.getEmail(account, emailId, mailbox);
     }
 
-    const key = `${account} ${mailbox} ${uid}`;
+    // NUL-separated: a mailbox path may contain spaces, so a space separator
+    // could collide across different (mailbox, uid) pairs.
+    const key = `${account}\u0000${mailbox}\u0000${uid}`;
     const pending = this.inFlightEmails.get(key);
     if (pending) return pending;
 

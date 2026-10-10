@@ -760,3 +760,29 @@ describe('review fixes: sync engine', () => {
     expect(result.error).toBeUndefined();
   }, 60_000);
 });
+
+describe('composite keys cannot collide', () => {
+  let store: CacheStore;
+  let engine: SyncEngine;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    engine?.stop();
+    store.close();
+    eventBus.removeAllListeners();
+  });
+
+  it('keeps dirty state separate for names that differ only in where a space falls', () => {
+    engine = new SyncEngine(createConnections(createMockClient()), store);
+
+    // Mailbox paths routinely contain spaces ("Deleted Items"), so a
+    // space-joined key makes ("a", "b c") and ("a b", "c") the same entry.
+    engine.markDirty('a', 'b c');
+
+    expect(engine.isDirty('a', 'b c')).toBe(true);
+    expect(engine.isDirty('a b', 'c')).toBe(false);
+  });
+});
