@@ -197,6 +197,39 @@ describe('outbound attachments', () => {
     );
   });
 
+  it('sendEmail turns a cid attachment into an inline related part', async () => {
+    const svc = service();
+    await svc.sendEmail('test', {
+      to: ['a@b.c'],
+      subject: 's',
+      body: '<p>Logo: <img src="cid:logo@x"></p>',
+      html: true,
+      attachments: [
+        {
+          filename: 'logo.png',
+          path: '/tmp/logo.png',
+          size: 10,
+          cid: 'logo@x',
+          contentType: 'image/png',
+        },
+      ],
+    });
+
+    expect(transport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          {
+            filename: 'logo.png',
+            path: '/tmp/logo.png',
+            cid: 'logo@x',
+            contentDisposition: 'inline',
+            contentType: 'image/png',
+          },
+        ],
+      }),
+    );
+  });
+
   it('sendEmail omits the attachments key entirely when none are given', async () => {
     const svc = service();
     await svc.sendEmail('test', { to: ['a@b.c'], subject: 's', body: 'b' });

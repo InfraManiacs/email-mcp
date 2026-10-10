@@ -10,6 +10,32 @@ import { validateInputLength } from '../safety/validation.js';
 import { formatSize, prepareAttachments } from '../services/attachments.js';
 import type SmtpService from '../services/smtp.service.js';
 
+/**
+ * A bare path, or a path with inline/cid metadata. The object form exists for
+ * HTML mail embedding images: give the file a cid and reference it in the
+ * body as <img src="cid:...">.
+ */
+const attachmentInputSchema = z.union([
+  z.string(),
+  z.object({
+    path: z.string().describe('Local file path'),
+    filename: z
+      .string()
+      .optional()
+      .describe('Filename shown to the recipient (default: the file basename)'),
+    cid: z
+      .string()
+      .optional()
+      .describe(
+        'Content-ID for inline embedding — reference as <img src="cid:...."> in an HTML body',
+      ),
+    contentType: z
+      .string()
+      .optional()
+      .describe('Explicit MIME type when the file extension would misdetect'),
+  }),
+]);
+
 /** One result line per attachment, so the caller sees exactly what went out. */
 function attachmentReport(prepared: Awaited<ReturnType<typeof prepareAttachments>> | null): string {
   if (!prepared || prepared.attachments.length === 0) return '';
@@ -47,10 +73,10 @@ export default function registerSendTools(
         bcc: z.array(z.string().email()).optional().describe('BCC recipients'),
         html: z.boolean().default(false).describe('Send as HTML (default: plain text)'),
         attachments: z
-          .array(z.string())
+          .array(attachmentInputSchema)
           .optional()
           .describe(
-            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
+            `Files to attach: plain paths, or {path, cid, contentType, filename} objects for inline images. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
           ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -119,10 +145,10 @@ export default function registerSendTools(
         replyAll: z.boolean().default(false).describe('Reply to all recipients'),
         html: z.boolean().default(false).describe('Send as HTML'),
         attachments: z
-          .array(z.string())
+          .array(attachmentInputSchema)
           .optional()
           .describe(
-            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
+            `Files to attach: plain paths, or {path, cid, contentType, filename} objects for inline images. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
           ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },

@@ -335,6 +335,8 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   variables: string[];
+  /** When true, the body is HTML and variables are HTML-escaped on apply. */
+  html?: boolean;
 }
 
 // ---------------------------------------------------------------------------
