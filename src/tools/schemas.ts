@@ -30,6 +30,16 @@ export const emailMetaSchema = z.object({
   preview: z.string().optional(),
 });
 
+/**
+ * Where a read was answered from. Present only when the local mirror served
+ * it; `stale` marks a bounded-wait timeout, `offline` an unreachable server.
+ */
+export const cacheMarkerSchema = z.object({
+  source: z.literal('cache'),
+  stale: z.literal(true).optional(),
+  offline: z.literal(true).optional(),
+});
+
 /** Structured result for `list_emails` / `search_emails`. */
 export const emailListOutputSchema = z.object({
   account: z.string(),
@@ -40,6 +50,7 @@ export const emailListOutputSchema = z.object({
   hasMore: z.boolean(),
   count: z.number().int(),
   emails: z.array(emailMetaSchema),
+  cache: cacheMarkerSchema.optional(),
 });
 
 /** Mirrors `Mailbox`. */

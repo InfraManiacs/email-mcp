@@ -88,6 +88,43 @@ describe('Config Loader', () => {
       await expect(loadConfig(badPath)).rejects.toThrow('No configuration found');
     });
 
+    it('reports a TOML syntax error instead of claiming no config exists', async () => {
+      const configPath = path.join(tmpDir, 'broken.toml');
+      // Unclosed string — a realistic one-character slip.
+      await fs.writeFile(configPath, '[[accounts]]\nname = "test\n', 'utf-8');
+
+      const attempt = loadConfig(configPath);
+      await expect(attempt).rejects.toThrow('TOML syntax error');
+      await expect(attempt).rejects.toThrow(configPath);
+      await expect(attempt).rejects.not.toThrow('No configuration found');
+    });
+
+    it('names the offending field when the schema rejects the config', async () => {
+      const configPath = path.join(tmpDir, 'invalid.toml');
+      // Valid TOML, but port must be a number and name is missing.
+      await fs.writeFile(
+        configPath,
+        `[[accounts]]
+email = "test@example.com"
+password = "secret"
+
+[accounts.imap]
+host = "imap.example.com"
+port = "not-a-number"
+
+[accounts.smtp]
+host = "smtp.example.com"
+port = 587
+`,
+        'utf-8',
+      );
+
+      const attempt = loadConfig(configPath);
+      await expect(attempt).rejects.toThrow('Invalid configuration');
+      await expect(attempt).rejects.toThrow('accounts.0.imap.port');
+      await expect(attempt).rejects.toThrow('config validate');
+    });
+
     it('normalizes snake_case to camelCase', async () => {
       const toml = `
 [[accounts]]

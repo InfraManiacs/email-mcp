@@ -879,6 +879,78 @@ describe('ImapService', () => {
 
       expect(client.append).not.toHaveBeenCalled();
     });
+
+    /** The raw RFC 822 message handed to APPEND. */
+    async function savedMessage(options: Parameters<ImapService['saveDraft']>[1]): Promise<string> {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+      await service.saveDraft('test', options);
+      const [, raw] = client.append.mock.calls[0]!;
+      return (raw as Buffer).toString('utf-8');
+    }
+
+    // A header may only carry 7-bit ASCII; a subject with umlauts has to go
+    // out as an RFC 2047 encoded word or the message is malformed.
+    it('encodes a non-ASCII subject as an RFC 2047 word', async () => {
+      const message = await savedMessage({
+        to: ['a@b.c'],
+        subject: 'Bestätigung für Ihre Anfrage',
+        body: 'body',
+      });
+
+      expect(message).toContain('=?UTF-8?Q?');
+      expect(message).not.toContain('Subject: Bestätigung');
+    });
+
+    it('leaves a plain ASCII subject unencoded', async () => {
+      const message = await savedMessage({ to: ['a@b.c'], subject: 'Re: hi', body: 'body' });
+      expect(message).toContain('Subject: Re: hi');
+    });
+
+    // Absent Content-Transfer-Encoding means 7bit per RFC 2045, so appending
+    // raw UTF-8 declares one thing and ships another.
+    it('declares a transfer encoding and round-trips an 8-bit body', async () => {
+      const body = 'Grüße aus Zürich — 10 €';
+      const message = await savedMessage({ to: ['a@b.c'], subject: 'Hi', body });
+
+      expect(message).toContain('Content-Transfer-Encoding: base64');
+      const payload = message.split('\r\n\r\n').slice(1).join('\r\n\r\n');
+      expect(Buffer.from(payload, 'base64').toString('utf-8')).toBe(body);
+    });
+
+    // send_email emits multipart/alternative for HTML; a stored draft that is
+    // HTML-only renders as markup in any other client that opens it.
+    it('stores an HTML draft as multipart/alternative with a text fallback', async () => {
+      const message = await savedMessage({
+        to: ['a@b.c'],
+        subject: 'Hi',
+        body: '<p>Hello <b>there</b></p>',
+        html: true,
+      });
+
+      expect(message).toContain('Content-Type: multipart/alternative; boundary=');
+      expect(message).toContain('Content-Type: text/plain; charset=utf-8');
+      expect(message).toContain('Content-Type: text/html; charset=utf-8');
+
+      const boundary = /boundary="([^"]+)"/.exec(message)?.[1];
+      expect(boundary).toBeDefined();
+      const parts = message.split(`--${boundary}`);
+      // Preamble, the two alternatives, and the closing delimiter.
+      expect(parts).toHaveLength(4);
+      expect(parts[3]).toContain('--');
+
+      const decodePart = (part: string): string =>
+        Buffer.from(part.split('\r\n\r\n').slice(1).join('\r\n\r\n').trim(), 'base64').toString(
+          'utf-8',
+        );
+      expect(decodePart(parts[1]!)).toBe('Hello there');
+      expect(decodePart(parts[2]!)).toBe('<p>Hello <b>there</b></p>');
+    });
+
+    it('keeps a plain-text draft single-part', async () => {
+      const message = await savedMessage({ to: ['a@b.c'], subject: 'Hi', body: 'just text' });
+      expect(message).toContain('Content-Type: text/plain; charset=utf-8');
+      expect(message).not.toContain('multipart/alternative');
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -1355,5 +1427,165 @@ describe('ImapService', () => {
 
       expect(client.messageFlagsAdd).toHaveBeenCalledWith('10', ['\\Flagged'], { uid: true });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Write-through change events + STATUS probe (cached read path support)
+// ---------------------------------------------------------------------------
+
+describe('write-through change events', () => {
+  let client: ReturnType<typeof createMockImapClient>;
+  let connections: ReturnType<typeof createMockConnectionManager>;
+  let service: ImapService;
+  let changed: { account: string; mailbox: string }[];
+
+  beforeEach(() => {
+    client = createMockImapClient();
+    connections = createMockConnectionManager(client);
+    service = new ImapService(connections);
+    changed = [];
+    eventBus.on('email:changed', (e) => changed.push(e));
+  });
+
+  afterEach(() => {
+    service.dispose();
+    eventBus.removeAllListeners('email:changed');
+  });
+
+  it('emits email:changed after a successful flag write', async () => {
+    await service.setFlags('test', '10', 'INBOX', 'read');
+
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+
+  it('does not emit when the server rejects the flag write', async () => {
+    client.messageFlagsAdd.mockResolvedValue(false);
+
+    await expect(service.setFlags('test', '10', 'INBOX', 'read')).rejects.toThrow();
+
+    expect(changed).toEqual([]);
+  });
+
+  it('emits for both source and destination on a move', async () => {
+    await service.moveEmail('test', '10', 'INBOX', 'Archive');
+
+    expect(changed).toEqual([
+      { account: 'test', mailbox: 'INBOX' },
+      { account: 'test', mailbox: 'Archive' },
+    ]);
+  });
+
+  it('emits for the source and trash on a soft delete', async () => {
+    client.list.mockResolvedValue([{ path: 'Trash', specialUse: '\\Trash' }]);
+
+    await service.deleteEmail('test', '10', 'INBOX');
+
+    expect(changed).toEqual([
+      { account: 'test', mailbox: 'INBOX' },
+      { account: 'test', mailbox: 'Trash' },
+    ]);
+  });
+
+  it('emits once per mailbox for a bulk flag write', async () => {
+    await service.bulkSetFlags('test', [1, 2, 3], 'INBOX', 'mark_read');
+
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+
+  it('does not emit when the bulk write fails', async () => {
+    client.messageFlagsAdd.mockResolvedValue(false);
+
+    await service.bulkSetFlags('test', [1, 2], 'INBOX', 'mark_read');
+
+    expect(changed).toEqual([]);
+  });
+
+  it('emits for source and destination on a bulk move', async () => {
+    await service.bulkMove('test', [1, 2], 'INBOX', 'Archive');
+
+    expect(changed).toEqual([
+      { account: 'test', mailbox: 'INBOX' },
+      { account: 'test', mailbox: 'Archive' },
+    ]);
+  });
+
+  it('emits on a permanent bulk delete', async () => {
+    await service.bulkDelete('test', [1, 2], 'INBOX', true);
+
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+});
+
+describe('getMailboxStatus', () => {
+  it('maps STATUS fields, stringifying the 64-bit counters', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({
+      uidValidity: 100n,
+      uidNext: 5,
+      highestModseq: 9007199254740999n,
+      messages: 3,
+    });
+    const service = new ImapService(createMockConnectionManager(client));
+
+    const status = await service.getMailboxStatus('test', 'INBOX');
+
+    expect(status).toEqual({
+      uidValidity: '100',
+      uidNext: 5,
+      highestModseq: '9007199254740999',
+      messages: 3,
+    });
+    service.dispose();
+  });
+
+  it('leaves absent fields undefined', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({ messages: 3 });
+    const service = new ImapService(createMockConnectionManager(client));
+
+    const status = await service.getMailboxStatus('test', 'INBOX');
+
+    expect(status).toEqual({
+      uidValidity: undefined,
+      uidNext: undefined,
+      highestModseq: undefined,
+      messages: 3,
+    });
+    service.dispose();
+  });
+});
+
+describe('label writes invalidate the mirror', () => {
+  let client: ReturnType<typeof createMockImapClient>;
+  let service: ImapService;
+  let changed: { account: string; mailbox: string }[];
+
+  beforeEach(() => {
+    client = createMockImapClient();
+    client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox', flags: new Set() }]);
+    service = new ImapService(createMockConnectionManager(client));
+    changed = [];
+    eventBus.on('email:changed', (e) => changed.push(e));
+  });
+
+  afterEach(() => {
+    service.dispose();
+    eventBus.removeAllListeners('email:changed');
+  });
+
+  it('emits email:changed after adding a label', async () => {
+    await service.addLabel('test', '10', 'INBOX', 'Work');
+
+    // On a keyword-strategy server a label is a flag write: it moves neither
+    // UIDNEXT nor MESSAGES, so STATUS cannot reveal it and only this event
+    // keeps the next read correct.
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+
+  it('emits email:changed after removing a label', async () => {
+    await service.removeLabel('test', '10', 'INBOX', 'Work');
+
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
   });
 });

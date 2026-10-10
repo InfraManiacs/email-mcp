@@ -15,6 +15,7 @@ import { mcpLog } from '../logging.js';
 import eventBus from '../services/event-bus.js';
 import type OAuthService from '../services/oauth.service.js';
 import type { AccountConfig } from '../types/index.js';
+import { authFailureHint, withAuthGuidance } from '../utils/auth-error.js';
 import { createImapClient } from '../utils/imap-client.js';
 import type { IConnectionManager } from './types.js';
 
@@ -125,7 +126,7 @@ export default class ConnectionManager implements IConnectionManager {
       logger: false,
     });
 
-    await client.connect();
+    await withAuthGuidance(account, 'IMAP', () => client.connect());
     await assertImapUpgraded(client, account);
     await mcpLog(
       'info',
@@ -208,7 +209,7 @@ export default class ConnectionManager implements IConnectionManager {
       ConnectionManager.buildSmtpTransportOptions(account, auth),
     );
 
-    await transport.verify();
+    await withAuthGuidance(account, 'SMTP', () => transport.verify());
     await mcpLog(
       'info',
       'smtp',
@@ -232,6 +233,8 @@ export default class ConnectionManager implements IConnectionManager {
   ): Promise<{
     success: boolean;
     error?: string;
+    /** What to do about a rejected credential, for the caller to render. */
+    hint?: string;
     details?: { messages: number; folders: number };
   }> {
     let client: ImapFlow | undefined;
@@ -291,6 +294,7 @@ export default class ConnectionManager implements IConnectionManager {
       return {
         success: false,
         error: err instanceof Error ? err.message : String(err),
+        hint: authFailureHint(err, account),
       };
     } finally {
       if (client) {
@@ -306,7 +310,7 @@ export default class ConnectionManager implements IConnectionManager {
   static async testSmtp(
     account: AccountConfig,
     oauthService?: OAuthService,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; hint?: string }> {
     let transport: Transporter | undefined;
     try {
       let auth: SmtpAuth;
@@ -326,6 +330,7 @@ export default class ConnectionManager implements IConnectionManager {
       return {
         success: false,
         error: err instanceof Error ? err.message : String(err),
+        hint: authFailureHint(err, account),
       };
     } finally {
       transport?.close();

@@ -66,10 +66,7 @@ export const DAEMON_LOG_FILE = path.join(xdg.state, 'server.log');
 export const CACHE_DB = path.join(xdg.cache, 'cache.db');
 
 /**
- * Queued local writes awaiting replay against the server.
- *
- * Lives under the *state* directory, not the cache: it holds user intent that
- * exists nowhere else until it has been flushed. Deleting it loses data, so
- * `cache clear` must never touch it.
+ * Content-addressed attachment bytes, indexed by the `attachment` table in
+ * {@link CACHE_DB}. Regenerable for the same reason the mirror is.
  */
-export const OUTBOX_DB = path.join(xdg.state, 'outbox.db');
+export const CACHE_BLOBS_DIR = path.join(xdg.cache, 'blobs');

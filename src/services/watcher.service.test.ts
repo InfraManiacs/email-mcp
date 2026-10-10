@@ -7,6 +7,8 @@ const { instances } = vi.hoisted(() => ({
   instances: [] as {
     handlers: Record<string, (data: unknown) => void>;
     fetch: ReturnType<typeof vi.fn>;
+    /** Constructor options, so tests can assert the credentials used. */
+    options: { auth?: { user?: string; pass?: string; accessToken?: string } };
   }[],
 }));
 
@@ -24,7 +26,10 @@ vi.mock('imapflow', () => {
       this.handlers[event] = cb;
     });
 
-    constructor() {
+    options: { auth?: { user?: string; pass?: string; accessToken?: string } };
+
+    constructor(options: { auth?: { user?: string; pass?: string; accessToken?: string } }) {
+      this.options = options;
       instances.push(this);
     }
   }
@@ -49,6 +54,93 @@ const testAccount: AccountConfig = {
   imap: { host: 'imap.example.com', port: 993, tls: true, starttls: false, verifySsl: true },
   smtp: { host: 'smtp.example.com', port: 465, tls: true, starttls: false, verifySsl: true },
 };
+
+describe('WatcherService authentication', () => {
+  const config: WatcherConfig = { enabled: true, folders: ['INBOX'], idleTimeout: 1740 };
+
+  beforeEach(() => {
+    instances.length = 0;
+  });
+
+  it('authenticates a password account with its password', async () => {
+    const watcher = new WatcherService(config, [testAccount]);
+    await watcher.start();
+
+    expect(instances.at(-1)?.options.auth).toEqual({
+      user: 'test@example.com',
+      pass: 'password',
+    });
+
+    await watcher.stop();
+  });
+
+  it('exchanges the refresh token for an access token on an OAuth2 account', async () => {
+    // The watcher builds its own connections because IDLE holds the mailbox
+    // lock, and it used to pass account.password as the access token — which
+    // is undefined for an OAuth account, so IDLE could never authenticate and
+    // the verification catcher and hooks were silently dead.
+    const oauthAccount: AccountConfig = {
+      ...testAccount,
+      password: undefined,
+      oauth2: {
+        provider: 'google',
+        clientId: 'id',
+        clientSecret: 'secret',
+        refreshToken: 'refresh',
+      },
+    } as AccountConfig;
+    const oauthService = {
+      getAccessToken: vi.fn().mockResolvedValue('access-token-123'),
+    };
+
+    const watcher = new WatcherService(config, [oauthAccount], oauthService as never);
+    await watcher.start();
+
+    expect(oauthService.getAccessToken).toHaveBeenCalledWith(oauthAccount.oauth2);
+    expect(instances.at(-1)?.options.auth).toEqual({
+      user: 'test@example.com',
+      accessToken: 'access-token-123',
+    });
+
+    await watcher.stop();
+  });
+
+  it('re-resolves the token on reconnect rather than reusing the first one', async () => {
+    // An access token is short-lived next to a 29-minute IDLE hold, so the
+    // token that opened the connection may be expired by the time it drops.
+    const oauthAccount: AccountConfig = {
+      ...testAccount,
+      password: undefined,
+      oauth2: {
+        provider: 'google',
+        clientId: 'id',
+        clientSecret: 'secret',
+        refreshToken: 'refresh',
+      },
+    } as AccountConfig;
+    const oauthService = {
+      getAccessToken: vi
+        .fn()
+        .mockResolvedValueOnce('first-token')
+        .mockResolvedValueOnce('second-token'),
+    };
+
+    const watcher = new WatcherService(config, [oauthAccount], oauthService as never);
+    await watcher.start();
+    expect(instances.at(-1)?.options.auth?.accessToken).toBe('first-token');
+
+    // Drop the connection the way the server would; the watcher reconnects.
+    vi.useFakeTimers();
+    instances.at(-1)?.handlers.close?.(undefined);
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.useRealTimers();
+
+    await vi.waitFor(() => expect(oauthService.getAccessToken).toHaveBeenCalledTimes(2));
+    expect(instances.at(-1)?.options.auth?.accessToken).toBe('second-token');
+
+    await watcher.stop();
+  });
+});
 
 describe('WatcherService', () => {
   beforeEach(() => {

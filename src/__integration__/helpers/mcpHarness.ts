@@ -13,6 +13,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import createServer from '../../server.js';
 import type ImapService from '../../services/imap.service.js';
+import MailReadService from '../../services/mail-read.service.js';
 import type SmtpService from '../../services/smtp.service.js';
 import registerAttachmentTools from '../../tools/attachments.tool.js';
 import registerEmailsTools from '../../tools/emails.tool.js';
@@ -40,8 +41,12 @@ export async function createMcpHarness(
   maxAttachmentMb: number,
 ): Promise<McpHarness> {
   const server = createServer();
-  registerEmailsTools(server, imapService);
-  registerAttachmentTools(server, imapService);
+  // Mirrors registerAllTools: read tools take the MailReadService facade, and
+  // it is constructed without a cache store so these tests exercise the live
+  // IMAP path rather than a mirror.
+  const mailReadService = new MailReadService(imapService);
+  registerEmailsTools(server, mailReadService, imapService);
+  registerAttachmentTools(server, mailReadService);
   registerSendTools(server, smtpService, {
     globalMb: maxAttachmentMb,
     forAccount: () => maxAttachmentMb,

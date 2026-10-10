@@ -1,3 +1,4 @@
+import type { AppServices } from '../app.js';
 import type { AppConfig } from '../types/index.js';
 import registerAllTools from './register.js';
 
@@ -62,7 +63,7 @@ function createConfig(readOnly: boolean): AppConfig {
       cache: {
         enabled: true,
         mailboxes: ['INBOX'],
-        windowDays: 90,
+        windowDays: 0,
         bodyMessages: 500,
         maxSizeMb: 500,
         syncInterval: 300,
@@ -88,28 +89,33 @@ function createConfig(readOnly: boolean): AppConfig {
   };
 }
 
+function createServices(readOnly: boolean): AppServices {
+  return {
+    config: createConfig(readOnly),
+    connections: {} as never,
+    imapService: {} as never,
+    mailReadService: {} as never,
+    smtpService: {} as never,
+    templateService: {} as never,
+    calendarService: {} as never,
+    localCalendarService: {} as never,
+    remindersService: {} as never,
+    schedulerService: {} as never,
+    watcherService: {} as never,
+    hooksService: {} as never,
+    clipboardService: {} as never,
+    dialogService: {} as never,
+    verificationCatcher: {} as never,
+  };
+}
+
 describe('registerAllTools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('registers all tools when readOnly is false', () => {
-    registerAllTools(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      createConfig(false),
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    registerAllTools({} as never, createServices(false));
     // Read tools should always be registered
     expect(registerAccountsTools).toHaveBeenCalled();
     expect(registerEmailsTools).toHaveBeenCalled();
@@ -126,22 +132,7 @@ describe('registerAllTools', () => {
   });
 
   it('skips write tools when readOnly is true', () => {
-    registerAllTools(
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      createConfig(true),
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    registerAllTools({} as never, createServices(true));
     // Read tools should still be registered
     expect(registerAccountsTools).toHaveBeenCalled();
     expect(registerEmailsTools).toHaveBeenCalled();

@@ -10,15 +10,23 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { SCHEDULED_DIR, SCHEDULED_SENT_DIR } from '../config/xdg.js';
+import { mcpLog } from '../logging.js';
 import type { ScheduledEmail } from '../types/index.js';
 import type ImapService from './imap.service.js';
 import type SmtpService from './smtp.service.js';
 
-/** Max age (ms) for "sending" status before resetting to "pending" */
+/** Max age (ms) a claim may be held before a later runner reclaims it */
 const STALE_LOCK_MS = 5 * 60 * 1000;
 
 /** Max retry attempts before marking as "failed" */
 const MAX_ATTEMPTS = 3;
+
+/**
+ * Suffix marking a queue entry as claimed. The claim is the rename itself —
+ * only one caller can move a given path — so it doubles as the mutual
+ * exclusion between the in-process interval and the OS scheduler daemon.
+ */
+const CLAIM_SUFFIX = '.claim';
 
 export default class SchedulerService {
   constructor(
@@ -99,16 +107,19 @@ export default class SchedulerService {
     const status = options.status ?? 'pending';
     const emails: ScheduledEmail[] = [];
 
-    // Read pending/sending/failed from main dir
-    if (status !== 'sent') {
-      const pending = await SchedulerService.readDir(SCHEDULED_DIR);
-      emails.push(...pending);
-    }
+    // The status field decides what an entry is; the directory is only where
+    // it currently lives. Those can disagree for an instant — a delivered
+    // entry records its outcome before being moved — and skipping this
+    // directory for a 'sent' query used to hide exactly that entry from both
+    // the 'sent' and 'pending' listings, at the moment a user is most likely
+    // to ask whether their mail went out.
+    emails.push(...(await SchedulerService.readDir(SCHEDULED_DIR)));
 
-    // Read sent from sent/ subdir
+    // The sent directory only ever receives entries already marked sent, so
+    // it cannot satisfy a pending/failed query — and it is never pruned, so
+    // reading it for those would mean walking the whole send history.
     if (status === 'sent' || status === 'all') {
-      const sent = await SchedulerService.readDir(SCHEDULED_SENT_DIR);
-      emails.push(...sent);
+      emails.push(...(await SchedulerService.readDir(SCHEDULED_SENT_DIR)));
     }
 
     // Filter by account if specified
@@ -160,6 +171,17 @@ export default class SchedulerService {
         'code' in err &&
         (err as NodeJS.ErrnoException).code === 'ENOENT'
       ) {
+        // A claimed entry has been renamed out from under us, so say it is
+        // going out rather than reporting it missing.
+        const claimed = await fs
+          .access(`${filePath}${CLAIM_SUFFIX}`)
+          .then(() => true)
+          .catch(() => false);
+        if (claimed) {
+          throw new Error(
+            `Scheduled email "${scheduleId}" is already being sent and can no longer be cancelled`,
+          );
+        }
         throw new Error(`Scheduled email "${scheduleId}" not found`);
       }
       throw err;
@@ -186,30 +208,29 @@ export default class SchedulerService {
       return result;
     }
 
-    const jsonFiles = files.filter((f) => f.endsWith('.json'));
     const now = Date.now();
+
+    // Recover claims abandoned by a crashed runner before looking for work.
+    // Requeueing renames files, so re-read the directory to pick up anything
+    // recovered in this same pass rather than leaving it until the next one.
+    if (await this.recoverStaleClaims(files, now, result)) {
+      files = await fs.readdir(SCHEDULED_DIR).catch(() => files);
+    }
+
+    const jsonFiles = files.filter((f) => f.endsWith('.json'));
 
     // Process files sequentially — must not double-send
     // eslint-disable-next-line no-restricted-syntax
     for (const file of jsonFiles) {
       const filePath = path.join(SCHEDULED_DIR, file);
+      let claimPath: string | undefined;
 
       try {
         const content = await fs.readFile(filePath, 'utf-8');
         const scheduled = JSON.parse(content) as ScheduledEmail;
 
-        // Reset stale locks
-        if (scheduled.status === 'sending' && scheduled.lastError !== undefined) {
-          const lockAge = now - new Date(scheduled.createdAt).getTime();
-          if (lockAge > STALE_LOCK_MS) {
-            scheduled.status = 'pending';
-          }
-        } else if (scheduled.status === 'sending') {
-          // Check if it's been sending too long (use sendAt as reference)
-          continue;
-        }
-
-        // Skip non-pending
+        // Skip anything not waiting to go out. A 'sending' entry is either
+        // held by a live runner or was just recovered above.
         if (scheduled.status !== 'pending') continue;
 
         // Skip if not yet due
@@ -224,10 +245,30 @@ export default class SchedulerService {
           continue;
         }
 
-        // Acquire lock
+        // Claim it. rename() is atomic and fails for everyone but the first
+        // caller, which is what keeps the in-process interval and the
+        // launchd/cron daemon from both sending the same message — the
+        // previous read-then-write lock let both observe 'pending' first.
+        claimPath = `${filePath}${CLAIM_SUFFIX}`;
+        try {
+          await fs.rename(filePath, claimPath);
+        } catch {
+          // Another runner got there first, or it was cancelled meanwhile.
+          claimPath = undefined;
+          continue;
+        }
+
+        // The claim is ours exclusively, so these writes need no further guard.
         scheduled.status = 'sending';
         scheduled.attempts += 1;
-        await SchedulerService.writeScheduledFile(scheduled);
+        scheduled.claimedAt = new Date().toISOString();
+        delete scheduled.lastError;
+        await SchedulerService.writeFileAt(claimPath, scheduled);
+
+        // Record the handover to SMTP. After a crash this is the only
+        // evidence that the message may already be on its way.
+        scheduled.sendStartedAt = new Date().toISOString();
+        await SchedulerService.writeFileAt(claimPath, scheduled);
 
         // Send
         const sendResult = await this.smtpService.sendEmail(scheduled.account, {
@@ -243,14 +284,19 @@ export default class SchedulerService {
           references: scheduled.references,
         });
 
-        // Mark as sent and move to sent dir
+        // Record delivery on the claim itself, then move it. Writing the
+        // outcome before the move means a crash in between leaves a claim
+        // that proves the message went out, which recovery can resolve;
+        // renaming rather than write-then-unlink means there is never an
+        // instant where the entry exists in both directories at once.
         scheduled.status = 'sent';
         scheduled.sentAt = new Date().toISOString();
         scheduled.sentMessageId = sendResult.messageId;
+        await SchedulerService.writeFileAt(claimPath, scheduled);
 
         const sentPath = path.join(SCHEDULED_SENT_DIR, file);
-        await fs.writeFile(sentPath, JSON.stringify(scheduled, null, 2));
-        await fs.unlink(filePath);
+        await fs.rename(claimPath, sentPath);
+        claimPath = undefined;
 
         // Delete draft (best-effort)
         if (scheduled.draftMessageId && scheduled.draftMailbox) {
@@ -270,15 +316,20 @@ export default class SchedulerService {
         const errorMsg = err instanceof Error ? err.message : String(err);
         result.errors.push(`${file}: ${errorMsg}`);
 
-        // Mark as failed in the file
+        // Record the failure and release the claim so a later pass can retry.
         try {
-          const content = await fs.readFile(filePath, 'utf-8');
+          const readFrom = claimPath ?? filePath;
+          const content = await fs.readFile(readFrom, 'utf-8');
           const scheduled = JSON.parse(content) as ScheduledEmail;
           scheduled.status = scheduled.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending';
           scheduled.lastError = errorMsg;
-          await fs.writeFile(filePath, JSON.stringify(scheduled, null, 2));
+          delete scheduled.claimedAt;
+          delete scheduled.sendStartedAt;
+          await fs.writeFile(readFrom, JSON.stringify(scheduled, null, 2));
+          if (claimPath) await fs.rename(claimPath, filePath);
         } catch {
-          // If we can't even update the file, skip
+          // If we can't even update the file, leave the claim for stale
+          // recovery rather than risking a second send now.
         }
 
         result.failed += 1;
@@ -293,6 +344,100 @@ export default class SchedulerService {
   // Private helpers
   // -------------------------------------------------------------------------
 
+  /**
+   * Return abandoned claims to the queue.
+   *
+   * A claim file outliving its runner means the process died mid-send, and how
+   * far it got decides what is safe:
+   *
+   * - `sentMessageId` present — delivery was recorded before the move, so the
+   *   message definitively went out and the interrupted move is finished.
+   * - `sendStartedAt` only — the server was handed the message and its fate is
+   *   unknown. Silently resending is how a user mails a client twice, so this
+   *   fails with an explicit reason: recoverable by hand, never duplicated.
+   * - neither — it never reached SMTP, so requeue it.
+   *
+   * @returns whether any claim was released, so the caller can re-read the dir
+   */
+  private async recoverStaleClaims(
+    files: string[],
+    now: number,
+    result: { failed: number; errors: string[] },
+  ): Promise<boolean> {
+    const claims = files.filter((f) => f.endsWith(CLAIM_SUFFIX));
+    let released = false;
+
+    // eslint-disable-next-line no-restricted-syntax
+    for (const claim of claims) {
+      const claimPath = path.join(SCHEDULED_DIR, claim);
+      const queuePath = claimPath.slice(0, -CLAIM_SUFFIX.length);
+
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const content = await fs.readFile(claimPath, 'utf-8');
+        const scheduled = JSON.parse(content) as ScheduledEmail;
+
+        // Measure from the claim, not from createdAt: an email scheduled last
+        // week is not a stale lock, and one claimed a second ago is not either.
+        const heldSince = scheduled.claimedAt ?? scheduled.sendStartedAt;
+        const age = heldSince ? now - new Date(heldSince).getTime() : Number.POSITIVE_INFINITY;
+        if (age <= STALE_LOCK_MS) continue; // eslint-disable-line no-continue
+
+        // Delivery was recorded before the move, so this one definitively
+        // went out — finish the interrupted move instead of reporting a
+        // delivered message as failed.
+        if (scheduled.sentMessageId !== undefined || scheduled.status === 'sent') {
+          // Normalize before the move so the sent directory keeps its
+          // invariant of holding only sent entries — list() relies on it to
+          // skip this directory for pending and failed queries.
+          scheduled.status = 'sent';
+          scheduled.sentAt ??= heldSince ?? new Date().toISOString();
+          delete scheduled.claimedAt;
+          const sentPath = path.join(SCHEDULED_SENT_DIR, path.basename(queuePath));
+          // eslint-disable-next-line no-await-in-loop
+          await fs.writeFile(claimPath, JSON.stringify(scheduled, null, 2));
+          // eslint-disable-next-line no-await-in-loop
+          await fs.rename(claimPath, sentPath);
+          released = true;
+          continue; // eslint-disable-line no-continue
+        }
+
+        if (scheduled.sendStartedAt) {
+          scheduled.status = 'failed';
+          scheduled.lastError =
+            'Delivery status unknown — the runner stopped after handing the message to the ' +
+            'server, so it may have been delivered. It was not resent automatically: check ' +
+            'your Sent folder, or with the recipient, before rescheduling it.';
+        } else {
+          scheduled.status = 'pending';
+        }
+        delete scheduled.claimedAt;
+        delete scheduled.sendStartedAt;
+
+        // eslint-disable-next-line no-await-in-loop
+        await fs.writeFile(claimPath, JSON.stringify(scheduled, null, 2));
+        // eslint-disable-next-line no-await-in-loop
+        await fs.rename(claimPath, queuePath);
+        released = true;
+
+        if (scheduled.status === 'failed') {
+          result.failed += 1;
+          result.errors.push(`${claim}: ${scheduled.lastError}`);
+          // eslint-disable-next-line no-await-in-loop
+          await mcpLog(
+            'warning',
+            'scheduler',
+            `Scheduled email ${scheduled.id} was claimed and handed to SMTP but never completed — marked failed, not resent`,
+          );
+        }
+      } catch {
+        // Unreadable or already taken by another runner — leave it be.
+      }
+    }
+
+    return released;
+  }
+
   private static async ensureDirs(): Promise<void> {
     await fs.mkdir(SCHEDULED_DIR, { recursive: true });
     await fs.mkdir(SCHEDULED_SENT_DIR, { recursive: true });
@@ -304,13 +449,20 @@ export default class SchedulerService {
     await fs.writeFile(filePath, JSON.stringify(scheduled, null, 2));
   }
 
+  /** Write to an exact path — used for a claim file we already own. */
+  private static async writeFileAt(filePath: string, scheduled: ScheduledEmail): Promise<void> {
+    await fs.writeFile(filePath, JSON.stringify(scheduled, null, 2));
+  }
+
   private static async readDir(dirPath: string): Promise<ScheduledEmail[]> {
     const emails: ScheduledEmail[] = [];
     try {
       const files = await fs.readdir(dirPath);
       // eslint-disable-next-line no-restricted-syntax
       for (const file of files) {
-        if (!file.endsWith('.json')) continue; // eslint-disable-line no-continue
+        // Claimed entries are mid-send, not gone — list_scheduled must still
+        // show them or an email in flight looks like it vanished.
+        if (!file.endsWith('.json') && !file.endsWith(CLAIM_SUFFIX)) continue; // eslint-disable-line no-continue
         try {
           const content = await fs.readFile(path.join(dirPath, file), 'utf-8'); // eslint-disable-line no-await-in-loop
           emails.push(JSON.parse(content) as ScheduledEmail);

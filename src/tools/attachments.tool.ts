@@ -5,9 +5,12 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-import type ImapService from '../services/imap.service.js';
+import type MailReadService from '../services/mail-read.service.js';
 
-export default function registerAttachmentTools(server: McpServer, imapService: ImapService): void {
+export default function registerAttachmentTools(
+  server: McpServer,
+  mailReadService: MailReadService,
+): void {
   server.registerTool(
     'download_attachment',
     {
@@ -36,7 +39,7 @@ export default function registerAttachmentTools(server: McpServer, imapService: 
         if (filename === undefined && partId === undefined) {
           throw new Error('Provide filename or partId (see get_email attachment metadata)');
         }
-        const result = await imapService.downloadAttachment(account, id, mailbox, {
+        const result = await mailReadService.downloadAttachment(account, id, mailbox, {
           ...(filename !== undefined ? { filename } : {}),
           ...(partId !== undefined ? { partId } : {}),
         });

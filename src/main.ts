@@ -9,6 +9,7 @@
  *   test      Test IMAP/SMTP connections
  *   config    Config management (show, path, init)
  *   scheduler Email scheduling management
+ *   cache     Local mail cache: status, clear, verify
  */
 
 // Everything heavy is imported lazily inside each command arm: loading the
@@ -35,6 +36,7 @@ Commands:
   install     Register/unregister with MCP clients (Claude, Cursor, …)
   config      Config management (show, edit, path, init)
   scheduler   Email scheduling management (check, list, install, uninstall, status)
+  cache       Inspect, verify and clear the local mail cache (status, clear, verify)
   notify      Test and diagnose desktop notifications
   logs        View the server log (tail, follow, filter by level)
   update      Self-update the binary to the latest GitHub release
@@ -76,6 +78,8 @@ Examples:
   email-mcp scheduler install        # Install OS periodic check
   email-mcp open 234                 # Open email 234 (INBOX) in Mail.app
   email-mcp open 234 --print         # Print the message: URL instead of opening it
+  email-mcp cache status             # How much disk the cache uses, and how fresh it is
+  email-mcp cache clear              # Free that disk space (mail is re-fetched on demand)
   email-mcp notify test              # Send a test notification
   email-mcp notify status            # Check notification platform support
   email-mcp list --unread            # Unread mail in INBOX
@@ -222,6 +226,12 @@ async function main(): Promise<void> {
     case 'scheduler': {
       const { default: runSchedulerCommand } = await import('./cli/scheduler.js');
       await runSchedulerCommand(process.argv[3]);
+      break;
+    }
+
+    case 'cache': {
+      const { default: runCacheCommand } = await import('./cli/cache-commands.js');
+      await runCacheCommand(process.argv.slice(3));
       break;
     }
 
