@@ -88,6 +88,16 @@ export const COMMANDS: CommandSpec[] = [
       { name: 'add', description: 'Add an account interactively' },
       { name: 'edit', description: 'Edit an account', arg: 'accounts' },
       { name: 'delete', description: 'Remove an account', arg: 'accounts' },
+      {
+        name: 'set-secret',
+        description: 'Store a new account secret in the OS keychain',
+        arg: 'accounts',
+      },
+      {
+        name: 'migrate-secret',
+        description: 'Move a plaintext password into the OS keychain',
+        arg: 'accounts',
+      },
     ],
   },
   { name: 'setup', description: "Alias for 'account add'" },
