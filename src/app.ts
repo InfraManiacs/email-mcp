@@ -24,6 +24,7 @@ import DialogService from './services/dialog.service.js';
 import HooksService from './services/hooks.service.js';
 import ImapService from './services/imap.service.js';
 import LocalCalendarService from './services/local-calendar.service.js';
+import MailReadService from './services/mail-read.service.js';
 import OAuthService from './services/oauth.service.js';
 import RemindersService from './services/reminders.service.js';
 import SchedulerService from './services/scheduler.service.js';
@@ -39,6 +40,8 @@ export interface AppServices {
   config: AppConfig;
   connections: ConnectionManager;
   imapService: ImapService;
+  /** Read-model facade — every read tool goes through this, never ImapService. */
+  mailReadService: MailReadService;
   smtpService: SmtpService;
   templateService: TemplateService;
   calendarService: CalendarService;
@@ -63,6 +66,7 @@ export async function buildServices(): Promise<AppServices> {
   const connections = new ConnectionManager(config.accounts, oauthService);
   const rateLimiter = new RateLimiter(config.settings.rateLimit);
   const imapService = new ImapService(connections);
+  const mailReadService = new MailReadService(imapService);
   const smtpService = new SmtpService(connections, rateLimiter, imapService);
   const templateService = new TemplateService();
   const calendarService = new CalendarService();
@@ -112,6 +116,7 @@ export async function buildServices(): Promise<AppServices> {
     config,
     connections,
     imapService,
+    mailReadService,
     smtpService,
     templateService,
     calendarService,
@@ -137,29 +142,8 @@ export async function buildServices(): Promise<AppServices> {
 export function buildServer(services: AppServices): McpServer {
   const server = createServer();
 
-  registerAllTools(
-    server,
-    services.connections,
-    services.imapService,
-    services.smtpService,
-    services.config,
-    services.templateService,
-    services.calendarService,
-    services.localCalendarService,
-    services.remindersService,
-    services.schedulerService,
-    services.watcherService,
-    services.hooksService,
-    services.clipboardService,
-    services.verificationCatcher,
-  );
-  registerAllResources(
-    server,
-    services.connections,
-    services.imapService,
-    services.templateService,
-    services.schedulerService,
-  );
+  registerAllTools(server, services);
+  registerAllResources(server, services);
   registerAllPrompts(server);
 
   return server;

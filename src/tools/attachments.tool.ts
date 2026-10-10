@@ -5,9 +5,12 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-import type ImapService from '../services/imap.service.js';
+import type MailReadService from '../services/mail-read.service.js';
 
-export default function registerAttachmentTools(server: McpServer, imapService: ImapService): void {
+export default function registerAttachmentTools(
+  server: McpServer,
+  mailReadService: MailReadService,
+): void {
   server.registerTool(
     'download_attachment',
     {
@@ -24,7 +27,7 @@ export default function registerAttachmentTools(server: McpServer, imapService: 
     },
     async ({ account, id, mailbox, filename }) => {
       try {
-        const result = await imapService.downloadAttachment(account, id, mailbox, filename);
+        const result = await mailReadService.downloadAttachment(account, id, mailbox, filename);
 
         return {
           content: [

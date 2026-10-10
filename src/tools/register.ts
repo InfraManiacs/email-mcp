@@ -3,23 +3,15 @@
  *
  * Registers all MCP tools with the server instance.
  * In read-only mode, write tools are not registered at all.
+ *
+ * Read tools that fetch mail content take the MailReadService facade; write
+ * tools (and reads that are deliberately live, like health checks) take
+ * ImapService directly.
  */
 
 import type { McpServer } from '@modelcontextprotocol/server';
+import type { AppServices } from '../app.js';
 import { resolveSendLimitMb } from '../config/send-limit.js';
-import type ConnectionManager from '../connections/manager.js';
-import type CalendarService from '../services/calendar.service.js';
-import type ClipboardService from '../services/clipboard.service.js';
-import type HooksService from '../services/hooks.service.js';
-import type ImapService from '../services/imap.service.js';
-import type LocalCalendarService from '../services/local-calendar.service.js';
-import type RemindersService from '../services/reminders.service.js';
-import type SchedulerService from '../services/scheduler.service.js';
-import type SmtpService from '../services/smtp.service.js';
-import type TemplateService from '../services/template.service.js';
-import type VerificationCatcherService from '../services/verification-catcher.service.js';
-import type WatcherService from '../services/watcher.service.js';
-import type { AppConfig } from '../types/index.js';
 import registerAccountsTools from './accounts.tool.js';
 import registerAnalyticsTools from './analytics.tool.js';
 import registerAttachmentTools from './attachments.tool.js';
@@ -41,31 +33,32 @@ import registerThreadTools from './thread.tool.js';
 import registerVerificationTools from './verification.tool.js';
 import registerWatcherTools from './watcher.tool.js';
 
-export default function registerAllTools(
-  server: McpServer,
-  connections: ConnectionManager,
-  imapService: ImapService,
-  smtpService: SmtpService,
-  config: AppConfig,
-  templateService: TemplateService,
-  calendarService: CalendarService,
-  localCalendarService: LocalCalendarService,
-  remindersService: RemindersService,
-  schedulerService: SchedulerService,
-  watcherService: WatcherService,
-  hooksService: HooksService,
-  clipboardService: ClipboardService,
-  verificationCatcher: VerificationCatcherService,
-): void {
+export default function registerAllTools(server: McpServer, services: AppServices): void {
+  const {
+    config,
+    connections,
+    imapService,
+    mailReadService,
+    smtpService,
+    templateService,
+    calendarService,
+    localCalendarService,
+    remindersService,
+    schedulerService,
+    watcherService,
+    hooksService,
+    clipboardService,
+    verificationCatcher,
+  } = services;
   const { readOnly } = config.settings;
 
   // Read tools — always registered
   registerAccountsTools(server, connections);
   registerMailboxesTools(server, imapService);
-  registerEmailsTools(server, imapService);
-  registerAttachmentTools(server, imapService);
+  registerEmailsTools(server, mailReadService, imapService);
+  registerAttachmentTools(server, mailReadService);
   registerContactsTools(server, imapService);
-  registerThreadTools(server, imapService);
+  registerThreadTools(server, mailReadService);
   registerTemplateReadTools(server, templateService);
   registerCalendarTools(
     server,
@@ -77,7 +70,7 @@ export default function registerAllTools(
   );
   registerAnalyticsTools(server, imapService);
   registerHealthTools(server, connections, imapService);
-  registerLocateTools(server, imapService);
+  registerLocateTools(server, mailReadService);
   registerWatcherTools(server, watcherService, hooksService);
   // Clipboard copy is a local convenience, not a mailbox write — registered
   // in read-only mode too (same reasoning as test_notification).

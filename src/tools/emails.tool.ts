@@ -6,6 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
 import type ImapService from '../services/imap.service.js';
+import type MailReadService from '../services/mail-read.service.js';
 import type { Email, EmailMeta } from '../types/index.js';
 import { stripHtml } from '../utils/html.js';
 import { stripReplyChain } from '../utils/reply-chain.js';
@@ -80,7 +81,11 @@ function formatEmailStatus(email: Pick<Email, 'seen' | 'flagged' | 'answered' | 
 
 // ---------------------------------------------------------------------------
 
-export default function registerEmailsTools(server: McpServer, imapService: ImapService): void {
+export default function registerEmailsTools(
+  server: McpServer,
+  mailReadService: MailReadService,
+  imapService: ImapService,
+): void {
   // ---------------------------------------------------------------------------
   // list_emails
   // ---------------------------------------------------------------------------
@@ -116,7 +121,7 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
     },
     async (params) => {
       try {
-        const result = await imapService.listEmails(params.account, {
+        const result = await mailReadService.listEmails(params.account, {
           mailbox: params.mailbox,
           page: params.page,
           pageSize: params.pageSize,
@@ -221,7 +226,7 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
     },
     async ({ account, emailId, mailbox, format, maxLength, markRead }) => {
       try {
-        const email = await imapService.getEmail(account, emailId, mailbox);
+        const email = await mailReadService.getEmail(account, emailId, mailbox);
 
         const parts: string[] = [
           `📧 ${email.subject}`,
@@ -316,7 +321,7 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
       const errors: string[] = [];
 
       const settled = await Promise.allSettled(
-        ids.map(async (emailId) => imapService.getEmail(account, emailId, mailbox)),
+        ids.map(async (emailId) => mailReadService.getEmail(account, emailId, mailbox)),
       );
 
       settled.forEach((outcome, i) => {
@@ -393,7 +398,7 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
     },
     async ({ account, emailId, mailbox }) => {
       try {
-        const flags = await imapService.getEmailFlags(account, emailId, mailbox);
+        const flags = await mailReadService.getEmailFlags(account, emailId, mailbox);
 
         const statusParts: string[] = [flags.seen ? '✓ Read' : '🔵 Unread'];
         if (flags.flagged) statusParts.push('⭐ Flagged');
@@ -475,7 +480,7 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
     },
     async (params) => {
       try {
-        const result = await imapService.searchEmails(params.account, params.query ?? '', {
+        const result = await mailReadService.searchEmails(params.account, params.query ?? '', {
           mailbox: params.mailbox,
           page: params.page,
           pageSize: params.pageSize,

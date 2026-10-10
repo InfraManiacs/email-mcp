@@ -8,7 +8,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-import type ImapService from '../services/imap.service.js';
+import type MailReadService from '../services/mail-read.service.js';
 import { stripHtml } from '../utils/html.js';
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,10 @@ function applyBodyFormat(
 
 // ---------------------------------------------------------------------------
 
-export default function registerThreadTools(server: McpServer, imapService: ImapService): void {
+export default function registerThreadTools(
+  server: McpServer,
+  mailReadService: MailReadService,
+): void {
   server.registerTool(
     'get_thread',
     {
@@ -89,7 +92,7 @@ export default function registerThreadTools(server: McpServer, imapService: Imap
     },
     async ({ account, message_id: messageId, mailbox, format, maxLength, newestFirst }) => {
       try {
-        const thread = await imapService.getThread(account, messageId, mailbox);
+        const thread = await mailReadService.getThread(account, messageId, mailbox);
 
         if (thread.messageCount === 0) {
           return {
