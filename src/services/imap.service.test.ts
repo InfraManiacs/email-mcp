@@ -82,6 +82,30 @@ describe('ImapService', () => {
   // listMailboxes
   // -----------------------------------------------------------------------
 
+  describe('label strategy detection', () => {
+    it('retries after a failed detection instead of caching the rejection', async () => {
+      // Detection is deduplicated via a pending-promise map. If the entry is
+      // only cleared on success, the rejected promise is handed to every later
+      // caller, so one transient IMAP hiccup breaks every label operation for
+      // that account until the process restarts.
+      client.list.mockRejectedValueOnce(new Error('connection reset'));
+
+      await expect(service.listLabels('test')).rejects.toThrow('connection reset');
+
+      client.list.mockResolvedValue([{ name: 'INBOX', path: 'INBOX', flags: new Set() }]);
+      await expect(service.listLabels('test')).resolves.toBeInstanceOf(Array);
+    });
+
+    it('still deduplicates concurrent detection for the same account', async () => {
+      client.list.mockResolvedValue([{ name: 'INBOX', path: 'INBOX', flags: new Set() }]);
+
+      await Promise.all([service.listLabels('test'), service.listLabels('test')]);
+
+      // One detection pass, not one per caller.
+      expect(client.list).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('listMailboxes', () => {
     it('returns mailbox list with message counts', async () => {
       client.list.mockResolvedValue([
