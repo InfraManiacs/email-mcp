@@ -21,9 +21,14 @@ import type CalendarService from '../services/calendar.service.js';
 import type ImapService from '../services/imap.service.js';
 import type LocalCalendarService from '../services/local-calendar.service.js';
 import type RemindersService from '../services/reminders.service.js';
-import { buildCalendarNotes } from '../utils/calendar-notes.js';
+import {
+  appendEmailLink,
+  buildCalendarNotes,
+  buildReminderNotes,
+} from '../utils/calendar-notes.js';
 import { extractConferenceDetails } from '../utils/conference-details.js';
 import { extractMeetingUrl } from '../utils/meeting-url.js';
+import { buildMessageUrl } from '../utils/message-url.js';
 
 // Keywords that suggest an action item / reminder rather than a calendar event
 const REMINDER_KEYWORDS =
@@ -212,6 +217,7 @@ export default function registerCalendarTools(
           ? `${email.from.name} <${email.from.address}>`
           : email.from.address,
         emailSubject: email.subject,
+        emailUrl: buildMessageUrl(email.messageId),
         emailDate: new Date(email.date).toLocaleString('en', {
           weekday: 'short',
           day: 'numeric',
@@ -527,6 +533,7 @@ export default function registerCalendarTools(
       description: [
         'Create a reminder in macOS Reminders.app from an email.',
         'Shows a native confirmation dialog before adding.',
+        'The reminder notes include a message: deep link that reopens the source email in Mail.app.',
         'Use for action items, deadlines, and follow-up tasks extracted from emails.',
         'Use analyze_email_for_scheduling first to let the AI decide if a reminder is appropriate.',
       ].join(' '),
@@ -538,7 +545,9 @@ export default function registerCalendarTools(
         notes: z
           .string()
           .optional()
-          .describe('Reminder body/notes (defaults to auto-built from email)'),
+          .describe(
+            'Reminder body/notes (defaults to auto-built from email; an open-email deep link is appended either way)',
+          ),
         due_date: z
           .string()
           .optional()
@@ -575,11 +584,15 @@ export default function registerCalendarTools(
         ? `${email.from.name} <${email.from.address}>`
         : email.from.address;
       const snippet = (bodyText !== '' ? bodyText : bodyHtml).substring(0, 400).trim();
-      const reminderNotes =
-        notes ??
-        [`\uD83D\uDCE7 From: ${from}`, `\uD83D\uDCCC Subject: ${email.subject}`, '', snippet]
-          .filter(Boolean)
-          .join('\n');
+      const emailUrl = buildMessageUrl(email.messageId);
+      const reminderNotes = notes
+        ? appendEmailLink(notes, emailUrl)
+        : buildReminderNotes({
+            emailFrom: from,
+            emailSubject: email.subject,
+            bodyExcerpt: snippet,
+            emailUrl,
+          });
 
       const result = await remindersService.addReminder(
         {
