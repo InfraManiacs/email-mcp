@@ -5,6 +5,7 @@
  * `color: process.stdout.isTTY && !process.env.NO_COLOR`.
  */
 
+import { describeAttachments } from '../services/attachments.js';
 import type { Email, EmailMeta, Mailbox, PaginatedResult } from '../types/index.js';
 import { stripHtml } from '../utils/html.js';
 
@@ -81,7 +82,9 @@ export function formatEmailFull(email: Email, opts: Opts): string {
   h.push(`${C.bold('Date:   ', opts)}${shortDate(email.date)}`);
   if (email.attachments.length) {
     h.push(
-      `${C.bold('Attach: ', opts)}${email.attachments.map((a) => `${a.filename} (${formatSize(a.size)})`).join(', ')}`,
+      // Same describer the tools use, so `attach <id> <name>` and the partId
+      // fallback are both discoverable from `read`.
+      `${C.bold('Attach: ', opts)}${describeAttachments(email.attachments)}`,
     );
   }
   if (email.deliveryStatus) {

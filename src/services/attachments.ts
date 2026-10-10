@@ -12,6 +12,8 @@
 import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 
+import type { AttachmentMeta } from '../types/index.js';
+
 /** An attachment request: a bare path, or a path with inline/cid metadata. */
 export interface AttachmentInput {
   path: string;
@@ -41,6 +43,29 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Render an email's attachment list for a tool response.
+ *
+ * The part id is the point. `download_attachment` accepts a filename or a
+ * partId and tells the caller to read partIds from `get_email`, but nothing
+ * ever printed them — and for the case the docs single out, inline `cid:`
+ * images, the filename selector cannot work at all: such parts rarely carry a
+ * name parameter, so extractAttachments falls back to 'unnamed' and every one
+ * of them collides. The cid is shown for the same reason, since that is what
+ * an `<img src="cid:…">` in the body refers to.
+ */
+export function describeAttachments(attachments: AttachmentMeta[]): string {
+  return attachments
+    .map((a) => {
+      const facts = [a.mimeType, formatSize(a.size)];
+      if (a.partId !== undefined) facts.push(`partId ${a.partId}`);
+      if (a.inline) facts.push(a.contentId ? `inline cid:${a.contentId}` : 'inline');
+      else if (a.contentId) facts.push(`cid:${a.contentId}`);
+      return `${a.filename} (${facts.join(', ')})`;
+    })
+    .join(', ');
 }
 
 export async function prepareAttachments(
