@@ -646,3 +646,49 @@ describe('schema v3: attachment index', () => {
     expect(stats.attachmentBytes).toBe(1024);
   });
 });
+
+describe('schema v3: integrity check', () => {
+  it('reports a healthy mirror as consistent', () => {
+    const store = new CacheStore(':memory:');
+    store.putMessages([makeMessage({ uid: 1 })]);
+    store.putBody('work', 'INBOX', 1, '100', { text: 'body' });
+
+    const result = store.checkIntegrity();
+
+    expect(result).toEqual({ ok: true, problems: [] });
+    store.close();
+  });
+
+  it('detects a search index that drifted from the message table', () => {
+    const store = new CacheStore(':memory:');
+    store.putMessages([makeMessage({ uid: 1 })]);
+
+    // Drop the insert trigger, then add a message: the FTS index is now
+    // missing an entry the content table has — exactly the drift the check
+    // exists to catch, and what would happen if a trigger were ever lost.
+    const raw = store as unknown as { db: { exec(sql: string): void } };
+    raw.db.exec('DROP TRIGGER message_fts_insert');
+    store.putMessages([makeMessage({ uid: 2, messageId: '<b@example.com>' })]);
+
+    const result = store.checkIntegrity();
+
+    expect(result.ok).toBe(false);
+    expect(result.problems.join(' ')).toMatch(/search index/i);
+    // The drift is user-visible: the unindexed message is unfindable.
+    expect(store.searchMessages('work', 'INBOX', '100', 'Hello').map((m) => m.uid)).toEqual([1]);
+    store.close();
+  });
+
+  it('reports a broken search index rather than throwing', () => {
+    const store = new CacheStore(':memory:');
+    store.putMessages([makeMessage({ uid: 1 })]);
+    const raw = store as unknown as { db: { exec(sql: string): void } };
+    raw.db.exec('DROP TABLE message_fts');
+
+    const result = store.checkIntegrity();
+
+    expect(result.ok).toBe(false);
+    expect(result.problems.join(' ')).toMatch(/message_fts/);
+    store.close();
+  });
+});

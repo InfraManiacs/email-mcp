@@ -1346,6 +1346,38 @@ export default class CacheStore {
     };
   }
 
+  /**
+   * Check the mirror for internal corruption, for `cache verify`.
+   *
+   * Covers the two things that can silently drift: SQLite's own page
+   * structure, and the external-content FTS index, which only stays in step
+   * with the message table because of triggers.
+   */
+  checkIntegrity(): { ok: boolean; problems: string[] } {
+    const problems: string[] = [];
+
+    try {
+      const rows = this.queryAll<{ integrity_check: string }>('PRAGMA integrity_check');
+      const failures = rows.map((r) => r.integrity_check).filter((r) => r !== 'ok');
+      if (failures.length > 0) problems.push(`Database: ${failures.join('; ')}`);
+    } catch (err) {
+      problems.push(`Database: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // The `rank = 1` form is the one that cross-checks the index against the
+      // external content table; the bare form only validates the index's own
+      // structure and happily passes an index missing rows the message table
+      // has — drift that makes searches silently miss mail. Verified against
+      // SQLite by dropping a trigger and observing both forms.
+      this.db.exec("INSERT INTO message_fts (message_fts, rank) VALUES ('integrity-check', 1)");
+    } catch (err) {
+      problems.push(`Search index: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return { ok: problems.length === 0, problems };
+  }
+
   /** Truncate the WAL after a sync burst; cheap when there is nothing to do. */
   checkpoint(): void {
     this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');

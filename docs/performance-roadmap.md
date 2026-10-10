@@ -1,7 +1,8 @@
 # Performance Improvements Roadmap
 
-> **Status**: Planning  
-> **Last Updated**: 2026-02-18
+> **Status**: Partially delivered — the caching and pagination items below are
+> implemented; see the "Local Cache" section of `README.md` for what shipped.  
+> **Last Updated**: 2026-10-10
 
 Performance for an Email MCP server operates across **three distinct layers**, each with different bottlenecks and optimization strategies. This roadmap identifies concrete improvements against the current implementation, ordered by impact.
 
@@ -38,10 +39,10 @@ Performance for an Email MCP server operates across **three distinct layers**, e
 | Gap | Current Behavior | Impact |
 |-----|-----------------|--------|
 | Conservative SMTP pool defaults | Pooling defaults to `max_connections=1`, `max_messages=100` | Low — tune for high-throughput workloads |
-| No ENVELOPE/BODYSTRUCTURE cache | Fresh SEARCH + FETCH every request | High — repeat listings pay full IMAP cost |
-| Client-side pagination | Fetches ALL matching UIDs, slices in memory | High — 10K-mailbox fetches all UIDs just to show page 1 |
+| ~~No ENVELOPE/BODYSTRUCTURE cache~~ | **Done** — SQLite mirror serves listings, search, threads, bodies and attachments; freshness via one STATUS probe | High — repeat listings no longer pay IMAP cost |
+| ~~Client-side pagination~~ | **Done for cached mailboxes** — SQL `LIMIT`/`OFFSET`; the live fallback path still slices in memory | High — page 50 costs the same as page 1 |
 | No IMAP command pipelining control | Relies on ImapFlow auto-pipelining (good) but fetches extra data | Low — ImapFlow handles this well already |
-| No selective MIME part fetching | Full source download for `getEmail()` | Medium — downloads HTML+attachments when only plain text needed |
+| ~~No selective MIME part fetching~~ | **Done** — `selectBodyPart` downloads one text part; cached bodies need no fetch at all | Medium |
 | No signature/quote stripping | Returns full body including signatures and quoted replies | Medium — wastes tokens on repeated content |
 | No IMAP IDLE for push | Only poll-based; no real-time arrival notifications | Low — not critical for MCP request/response model |
 | No connection keepalive (NOOP) | Connections may timeout during idle periods | Low-Medium — ImapFlow may handle internally |

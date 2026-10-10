@@ -49,6 +49,8 @@ export default function registerAllTools(server: McpServer, services: AppService
     hooksService,
     clipboardService,
     verificationCatcher,
+    cacheStore,
+    blobStore,
   } = services;
   const { readOnly } = config.settings;
 
@@ -69,7 +71,7 @@ export default function registerAllTools(server: McpServer, services: AppService
     { autoDownloadAttachments: config.settings.attachments.autoDownload },
   );
   registerAnalyticsTools(server, imapService);
-  registerHealthTools(server, connections, imapService);
+  registerHealthTools(server, connections, imapService, mailReadService, cacheStore, blobStore);
   registerLocateTools(server, mailReadService);
   registerWatcherTools(server, watcherService, hooksService);
   // Clipboard copy is a local convenience, not a mailbox write — registered
