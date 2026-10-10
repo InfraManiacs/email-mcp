@@ -49,6 +49,28 @@ jobs:
         with:
           fetch-depth: 0 # changelog + tag resolution need full history
 
+      # Fail before anything is published, not after. GoReleaser pushes the
+      # Homebrew cask near the end of the pipeline, so a missing tap token
+      # surfaced only once the GitHub release and both Docker images were
+      # already out — leaving a published release whose documented
+      # `brew install` target does not exist. Checked here instead, where the
+      # only cost is a red run.
+      - name: Check release secrets are present
+        env:
+          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          missing=()
+          [ -n "$GORELEASER_KEY" ] || missing+=("GORELEASER_KEY (GoReleaser Pro license; the config uses Pro-only keys)")
+          [ -n "$HOMEBREW_TAP_TOKEN" ] || missing+=("HOMEBREW_TAP_TOKEN (PAT with contents:write on codefuturist/homebrew-tap)")
+          if [ ${#missing[@]} -gt 0 ]; then
+            printf '::error::Missing required release secret(s):\n'
+            printf '::error::  - %s\n' "${missing[@]}"
+            printf '::error::Set them under Settings > Secrets and variables > Actions.\n'
+            exit 1
+          fi
+          echo "All required release secrets are present."
+
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v7

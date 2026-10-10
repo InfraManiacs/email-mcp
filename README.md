@@ -1331,6 +1331,24 @@ src/
 
 [@codefuturist](https://github.com/codefuturist)
 
+### Release prerequisites
+
+`release.yml` checks these before publishing anything, so a missing one is a
+fast red run rather than a half-published release:
+
+| Secret | Needed for |
+|---|---|
+| `GORELEASER_KEY` | GoReleaser Pro license — `.goreleaser.yaml` uses Pro-only keys (`includes`, `variables`), and OSS rejects the whole config |
+| `HOMEBREW_TAP_TOKEN` | PAT with `contents:write` on `codefuturist/homebrew-tap`; the default `GITHUB_TOKEN` cannot push to another repository |
+| `NPM_TOKEN` | npm publish |
+| `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | Docker Hub push (GHCR uses `GITHUB_TOKEN`) |
+
+The Homebrew cask ships the unsigned Bun binary, so its `postflight` clears
+the macOS quarantine bit — macOS only, since Linux has no `xattr(1)` and the
+cask DSL's `system_command` raises on a non-zero exit. `brew uninstall --zap`
+trashes the config, state, cache and data directories plus the two launch
+agents.
+
 ## Contributing
 
 PRs accepted. Please conform to the [standard-readme](https://github.com/RichardLitt/standard-readme) specification when editing this README.
