@@ -469,3 +469,181 @@ describe('MailReadService (cached bodies)', () => {
     expect(b.bodyText).toBe('fresh body');
   });
 });
+
+describe('MailReadService (cached search)', () => {
+  it('serves a full-text query from the mirror', async () => {
+    const { store, imap, service } = createCachedSetup();
+    store.putBody('work', 'INBOX', 1, '100', { text: 'Anbei die Rechnung fuer August.' });
+
+    const result = await service.searchEmails('work', 'Rechnung', { mailbox: 'INBOX' });
+
+    expect(imap.searchEmails).not.toHaveBeenCalled();
+    expect(result.items.map((m) => m.id)).toEqual(['1']);
+    expect(result.total).toBe(1);
+    expect(result.cache).toEqual({ source: 'cache' });
+  });
+
+  it('serves a filter-only search (no query) from the mirror', async () => {
+    const { imap, service } = createCachedSetup();
+
+    const result = await service.searchEmails('work', '', {
+      mailbox: 'INBOX',
+      hasAttachment: false,
+    });
+
+    expect(imap.searchEmails).not.toHaveBeenCalled();
+    expect(result.items.map((m) => m.id)).toEqual(['2', '1']);
+  });
+
+  it('falls through to live search when the mirror finds nothing', async () => {
+    const { imap, service } = createCachedSetup();
+
+    // Recall gap: bodies not yet backfilled, so a body term cannot match.
+    await service.searchEmails('work', 'Nebelkraehe', { mailbox: 'INBOX' });
+
+    expect(imap.searchEmails).toHaveBeenCalledExactlyOnceWith('work', 'Nebelkraehe', {
+      mailbox: 'INBOX',
+    });
+  });
+
+  it('always goes live for filters the mirror cannot evaluate', async () => {
+    const { imap, service } = createCachedSetup();
+
+    await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', to: 'x@example.com' });
+    await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', largerThan: 10 });
+    await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', smallerThan: 10 });
+
+    expect(imap.searchEmails).toHaveBeenCalledTimes(3);
+  });
+
+  it('pages cached search results', async () => {
+    const { store, service } = createCachedSetup();
+    store.putBody('work', 'INBOX', 1, '100', { text: 'Rechnung eins' });
+    store.putBody('work', 'INBOX', 2, '100', { text: 'Rechnung zwei' });
+
+    const page = await service.searchEmails('work', 'Rechnung', {
+      mailbox: 'INBOX',
+      page: 1,
+      pageSize: 1,
+    });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.total).toBe(2);
+    expect(page.hasMore).toBe(true);
+  });
+});
+
+describe('MailReadService (cached thread)', () => {
+  function seedThread(store: CacheStore) {
+    const base = Date.parse('2026-09-01T10:00:00Z');
+    store.putMessages([
+      {
+        account: 'work',
+        mailbox: 'INBOX',
+        uid: 10,
+        uidValidity: '100',
+        envelope: { subject: 'Plan', date: new Date(base).toISOString(), messageId: '<t1@x>' },
+        flags: [],
+        messageId: '<t1@x>',
+        internalDate: base,
+        subject: 'Plan',
+        hasAttachments: false,
+      },
+      {
+        account: 'work',
+        mailbox: 'INBOX',
+        uid: 11,
+        uidValidity: '100',
+        envelope: {
+          subject: 'Re: Plan',
+          date: new Date(base + 1000).toISOString(),
+          messageId: '<t2@x>',
+        },
+        flags: [],
+        messageId: '<t2@x>',
+        inReplyTo: '<t1@x>',
+        internalDate: base + 1000,
+        subject: 'Re: Plan',
+        hasAttachments: false,
+      },
+    ]);
+    store.putBody('work', 'INBOX', 10, '100', { text: 'first', headers: {} });
+    store.putBody('work', 'INBOX', 11, '100', { text: 'second', headers: {} });
+  }
+
+  it('assembles a thread from the mirror without any IMAP search', async () => {
+    const { store, imap, service } = createCachedSetup();
+    seedThread(store);
+
+    const thread = await service.getThread('work', '<t1@x>', 'INBOX');
+
+    expect(imap.getThread).not.toHaveBeenCalled();
+    expect(imap.getEmail).not.toHaveBeenCalled();
+    expect(thread.messageCount).toBe(2);
+    expect(thread.messages.map((m) => m.bodyText)).toEqual(['first', 'second']);
+    expect(thread.threadId).toBe('<t1@x>');
+  });
+
+  it('live-fetches thread members whose body is not mirrored yet', async () => {
+    const { store, imap, service } = createCachedSetup();
+    seedThread(store);
+    store.putMessages([
+      {
+        account: 'work',
+        mailbox: 'INBOX',
+        uid: 12,
+        uidValidity: '100',
+        envelope: { subject: 'Re: Plan', messageId: '<t3@x>' },
+        flags: [],
+        messageId: '<t3@x>',
+        inReplyTo: '<t2@x>',
+        internalDate: Date.parse('2026-09-01T10:00:02Z'),
+        subject: 'Re: Plan',
+        hasAttachments: false,
+      },
+    ]);
+    imap.getEmail.mockResolvedValue({
+      id: '12',
+      subject: 'Re: Plan',
+      from: { address: 'x@example.com' },
+      to: [],
+      date: '2026-09-01T10:00:02.000Z',
+      seen: false,
+      flagged: false,
+      answered: false,
+      hasAttachments: false,
+      labels: [],
+      bodyText: 'third',
+      messageId: '<t3@x>',
+      attachments: [],
+      headers: {},
+    });
+
+    const thread = await service.getThread('work', '<t1@x>', 'INBOX');
+
+    expect(imap.getThread).not.toHaveBeenCalled();
+    expect(imap.getEmail).toHaveBeenCalledExactlyOnceWith('work', '12', 'INBOX');
+    expect(thread.messages.map((m) => m.bodyText)).toEqual(['first', 'second', 'third']);
+  });
+
+  it('falls back to the live thread walk when the root is unknown to the mirror', async () => {
+    const { service, imap } = createCachedSetup();
+
+    await service.getThread('work', '<absent@x>', 'INBOX');
+
+    expect(imap.getThread).toHaveBeenCalledExactlyOnceWith('work', '<absent@x>', 'INBOX');
+  });
+});
+
+describe('MailReadService (locate)', () => {
+  it('resolves the Message-ID from the mirror and still verifies folders live', async () => {
+    const { imap, service } = createCachedSetup();
+
+    const result = await service.findEmailFolder('work', '1', 'INBOX');
+
+    // The folder list must stay live: a partial mirror would omit folders,
+    // and a missing folder here misdirects a later move or delete.
+    expect(imap.findEmailFolder).toHaveBeenCalledExactlyOnceWith('work', '1', 'INBOX');
+    expect(result.folders).toEqual(['Archive']);
+  });
+});

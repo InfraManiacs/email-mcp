@@ -490,3 +490,80 @@ describe('schema v3: body backfill bookkeeping', () => {
     expect(store.countBodies('work', 'INBOX', '100')).toBe(1);
   });
 });
+
+describe('schema v3: thread discovery', () => {
+  let store: CacheStore;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+    const base = Date.parse('2026-08-01T10:00:00Z');
+    store.putMessages([
+      makeMessage({ uid: 1, messageId: '<root@x>', internalDate: base }),
+      makeMessage({
+        uid: 2,
+        messageId: '<reply1@x>',
+        inReplyTo: '<root@x>',
+        internalDate: base + 1000,
+      }),
+      makeMessage({
+        uid: 3,
+        messageId: '<reply2@x>',
+        inReplyTo: '<reply1@x>',
+        references: ['<root@x>', '<reply1@x>'],
+        internalDate: base + 2000,
+      }),
+      makeMessage({ uid: 4, messageId: '<unrelated@x>', internalDate: base + 3000 }),
+    ]);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('walks a thread from any member, oldest first', () => {
+    const thread = store.findThreadMessages('work', 'INBOX', '100', '<reply1@x>', 50);
+
+    expect(thread.map((m) => m.uid)).toEqual([1, 2, 3]);
+  });
+
+  it('finds a thread from its newest leaf', () => {
+    const thread = store.findThreadMessages('work', 'INBOX', '100', '<reply2@x>', 50);
+
+    expect(thread.map((m) => m.messageId)).toEqual(['<root@x>', '<reply1@x>', '<reply2@x>']);
+  });
+
+  it('returns an empty list for an unknown Message-ID', () => {
+    expect(store.findThreadMessages('work', 'INBOX', '100', '<nope@x>', 50)).toEqual([]);
+  });
+
+  it('returns the lone message for a thread of one', () => {
+    const thread = store.findThreadMessages('work', 'INBOX', '100', '<unrelated@x>', 50);
+
+    expect(thread.map((m) => m.uid)).toEqual([4]);
+  });
+
+  it('honours the message cap', () => {
+    expect(store.findThreadMessages('work', 'INBOX', '100', '<root@x>', 2)).toHaveLength(2);
+  });
+
+  it('pages full-text results', () => {
+    store.putMessages(
+      Array.from({ length: 5 }, (_, i) =>
+        makeMessage({
+          uid: 100 + i,
+          messageId: `<fts${i}@x>`,
+          subject: `Rechnung ${i}`,
+          internalDate: Date.parse('2026-08-05T10:00:00Z') + i * 1000,
+        }),
+      ),
+    );
+
+    const first = store.searchMessages('work', 'INBOX', '100', 'Rechnung', 2, 0);
+    const second = store.searchMessages('work', 'INBOX', '100', 'Rechnung', 2, 2);
+
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(2);
+    expect(new Set([...first, ...second].map((m) => m.uid)).size).toBe(4);
+    expect(store.countSearchMessages('work', 'INBOX', '100', 'Rechnung')).toBe(5);
+  });
+});

@@ -77,6 +77,9 @@ type Revalidation = { kind: 'live' } | { kind: 'cache'; uidValidity: string; mar
 const DEFAULT_DEBOUNCE_MS = 10_000;
 const DEFAULT_SYNC_WAIT_MS = 5_000;
 
+/** Matches the live getThread cap, so both paths bound a runaway thread alike. */
+const MAX_THREAD_MESSAGES = 50;
+
 // ---------------------------------------------------------------------------
 // Mapping
 // ---------------------------------------------------------------------------
@@ -441,24 +444,141 @@ export default class MailReadService {
   }
 
   // -------------------------------------------------------------------------
-  // Pass-throughs (cached in later phases)
+  // Search
   // -------------------------------------------------------------------------
 
-  searchEmails(
+  async searchEmails(
     account: string,
     query: string,
-    options?: Parameters<ImapService['searchEmails']>[2],
-  ): ReturnType<ImapService['searchEmails']> {
+    options: Parameters<ImapService['searchEmails']>[2] = {},
+  ): Promise<CachedList> {
+    const store = this.store;
+    // `to`, `largerThan` and `smallerThan` have no mirrored counterpart — the
+    // mirror indexes neither recipients nor message size, so these always go
+    // live rather than silently dropping the filter.
+    const unsupported =
+      options.to !== undefined ||
+      options.largerThan !== undefined ||
+      options.smallerThan !== undefined;
+    if (!store || unsupported) return this.imapService.searchEmails(account, query, options);
+
+    const mailbox = options.mailbox ?? 'INBOX';
+    const page = options.page ?? 1;
+    const pageSize = options.pageSize ?? 20;
+
+    const reval = await this.revalidate(account, mailbox);
+    if (reval.kind === 'live') return this.imapService.searchEmails(account, query, options);
+
+    try {
+      // No query means "filters only", which is a plain filtered listing.
+      if (!query) {
+        return await this.listEmails(account, {
+          mailbox,
+          page,
+          pageSize,
+          answered: options.answered,
+          hasAttachment: options.hasAttachment,
+        });
+      }
+
+      const total = store.countSearchMessages(account, mailbox, reval.uidValidity, query);
+      if (total > 0) {
+        const hits = store.searchMessages(
+          account,
+          mailbox,
+          reval.uidValidity,
+          query,
+          pageSize,
+          (page - 1) * pageSize,
+        );
+        // Structured filters the mirror *can* evaluate are applied after the
+        // text match, mirroring the live path's post-filtering.
+        const filtered = hits.filter(
+          (m) =>
+            (options.answered === undefined || m.answered === options.answered) &&
+            (options.hasAttachment === undefined || m.hasAttachments === options.hasAttachment),
+        );
+
+        return {
+          items: filtered.map(toEmailMeta),
+          total,
+          page,
+          pageSize,
+          hasMore: (page - 1) * pageSize + hits.length < total,
+          cache: reval.marker,
+        };
+      }
+    } catch {
+      // Fall through to live.
+    }
+
+    // Zero mirrored matches is not proof of zero matches: bodies outside the
+    // backfill budget are unindexed. One live search closes that recall gap.
+    this.metrics.liveFallbacks += 1;
     return this.imapService.searchEmails(account, query, options);
   }
 
-  getThread(
+  // -------------------------------------------------------------------------
+  // Thread
+  // -------------------------------------------------------------------------
+
+  async getThread(
     account: string,
     messageId: string,
-    mailbox?: string,
+    mailbox = 'INBOX',
   ): ReturnType<ImapService['getThread']> {
-    return this.imapService.getThread(account, messageId, mailbox);
+    const store = this.store;
+    if (!store) return this.imapService.getThread(account, messageId, mailbox);
+
+    const reval = await this.revalidate(account, mailbox);
+    if (reval.kind === 'live') return this.imapService.getThread(account, messageId, mailbox);
+
+    let members: CachedMessage[];
+    try {
+      members = store.findThreadMessages(
+        account,
+        mailbox,
+        reval.uidValidity,
+        messageId,
+        MAX_THREAD_MESSAGES,
+      );
+    } catch {
+      return this.imapService.getThread(account, messageId, mailbox);
+    }
+
+    // The mirror does not know this conversation (unsynced mailbox, or older
+    // than the window) — the live walk is the only complete answer.
+    if (members.length === 0) return this.imapService.getThread(account, messageId, mailbox);
+
+    const messages: Email[] = [];
+    for (const member of members) {
+      if (member.bodyText !== undefined && member.headers !== undefined) {
+        messages.push(toEmail(member));
+      } else {
+        // Sequential: ImapFlow runs one command at a time per connection, and
+        // getEmail's read-through persists the body for the next call.
+        messages.push(await this.getEmail(account, String(member.uid), mailbox));
+      }
+    }
+
+    const participants = new Map<string, { name?: string; address: string }>();
+    for (const msg of messages) {
+      for (const addr of [msg.from, ...msg.to]) {
+        if (addr?.address && !participants.has(addr.address)) participants.set(addr.address, addr);
+      }
+    }
+
+    return {
+      threadId: messageId,
+      messages,
+      participants: [...participants.values()],
+      messageCount: messages.length,
+    };
   }
+
+  // -------------------------------------------------------------------------
+  // Pass-throughs
+  // -------------------------------------------------------------------------
 
   findEmailFolder(
     account: string,

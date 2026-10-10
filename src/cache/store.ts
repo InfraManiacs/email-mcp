@@ -724,6 +724,7 @@ export default class CacheStore {
     uidValidity: string,
     query: string,
     limit = 100,
+    offset = 0,
   ): CachedMessage[] {
     const ftsQuery = toFtsQuery(query);
     if (ftsQuery.length === 0) return [];
@@ -734,13 +735,100 @@ export default class CacheStore {
        WHERE message_fts MATCH ?
          AND m.account = ? AND m.mailbox = ? AND m.uid_validity = ?
        ORDER BY bm25(message_fts)
-       LIMIT ?`,
+       LIMIT ? OFFSET ?`,
       ftsQuery,
       account,
       mailbox,
       uidValidity,
       limit,
+      offset,
     ).map(rowToMessage);
+  }
+
+  /** Total full-text matches, so a paged search can report `total`. */
+  countSearchMessages(
+    account: string,
+    mailbox: string,
+    uidValidity: string,
+    query: string,
+  ): number {
+    const ftsQuery = toFtsQuery(query);
+    if (ftsQuery.length === 0) return 0;
+
+    return (
+      this.queryOne<{ total: number }>(
+        `SELECT COUNT(*) AS total FROM message_fts f
+         JOIN message m ON m.rowid = f.rowid
+         WHERE message_fts MATCH ?
+           AND m.account = ? AND m.mailbox = ? AND m.uid_validity = ?`,
+        ftsQuery,
+        account,
+        mailbox,
+        uidValidity,
+      )?.total ?? 0
+    );
+  }
+
+  /**
+   * Walk a conversation from any one of its members, oldest first.
+   *
+   * Replaces the live path's 3-searches-per-Message-ID storm with a bounded
+   * transitive closure over the mirror's threading columns: a message belongs
+   * to the thread when its Message-ID, In-Reply-To, or References chain
+   * touches an id already in the set.
+   *
+   * Scoped to one mailbox generation, like every other read.
+   */
+  findThreadMessages(
+    account: string,
+    mailbox: string,
+    uidValidity: string,
+    messageId: string,
+    limit: number,
+  ): CachedMessage[] {
+    const known = new Set<string>([messageId]);
+    const rows = new Map<number, MessageRow>();
+
+    // The closure converges in a few rounds for any real conversation; the
+    // iteration cap is a backstop against a pathological References graph.
+    for (let round = 0; round < 10; round += 1) {
+      const ids = [...known];
+      const placeholders = ids.map(() => '?').join(', ');
+      const refClauses = ids.map(() => "references_json LIKE '%' || ? || '%'").join(' OR ');
+
+      const found = this.queryAll<MessageRow>(
+        `SELECT * FROM message
+         WHERE account = ? AND mailbox = ? AND uid_validity = ?
+           AND (
+             message_id IN (${placeholders})
+             OR in_reply_to IN (${placeholders})
+             OR ${refClauses}
+           )`,
+        account,
+        mailbox,
+        uidValidity,
+        ...ids,
+        ...ids,
+        ...ids,
+      );
+
+      const before = known.size;
+      for (const row of found) {
+        rows.set(row.uid, row);
+        if (row.message_id) known.add(row.message_id);
+        if (row.in_reply_to) known.add(row.in_reply_to);
+        if (row.references_json) {
+          for (const ref of JSON.parse(row.references_json) as string[]) known.add(ref);
+        }
+      }
+
+      if (known.size === before) break;
+    }
+
+    return [...rows.values()]
+      .map(rowToMessage)
+      .sort((a, b) => a.internalDate - b.internalDate)
+      .slice(0, limit);
   }
 
   /**
