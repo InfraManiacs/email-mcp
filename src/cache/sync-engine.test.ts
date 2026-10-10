@@ -382,6 +382,107 @@ describe('SyncEngine', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Fetched field mapping
+  // -------------------------------------------------------------------------
+
+  describe('fetched field mapping', () => {
+    it('parses the References header chain into the mirror', async () => {
+      engine = build();
+      client.fetch.mockImplementation(() =>
+        (async function* gen() {
+          yield {
+            uid: 1,
+            envelope: { subject: 'Re: hi', date: new Date('2026-08-01') },
+            flags: new Set(['\\Seen']),
+            internalDate: new Date('2026-08-01'),
+            headers: Buffer.from(
+              'References: <a@example.com>\r\n <b@example.com>\r\nSubject: x\r\n',
+            ),
+          };
+        })(),
+      );
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.references).toEqual([
+        '<a@example.com>',
+        '<b@example.com>',
+      ]);
+    });
+
+    it('stores the stable email id when the server provides one', async () => {
+      engine = build();
+      client.fetch.mockImplementation(() =>
+        (async function* gen() {
+          yield {
+            uid: 1,
+            envelope: { subject: 'hi', date: new Date('2026-08-01') },
+            flags: new Set<string>(),
+            internalDate: new Date('2026-08-01'),
+            emailId: 'em-424242',
+          };
+        })(),
+      );
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.emailId).toBe('em-424242');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Initial sync window
+  // -------------------------------------------------------------------------
+
+  describe('initial sync window', () => {
+    it('limits the first sync to the configured window', async () => {
+      client = createMockClient();
+      // The window probe resolves UIDs within the date window; the deletion
+      // reconcile afterwards sees the same mailbox.
+      client.search.mockImplementation((criteria: Record<string, unknown>) =>
+        Promise.resolve(criteria.since ? [7, 9] : [7, 9]),
+      );
+      client.fetch.mockImplementation(messagesFrom({ uid: 7 }, { uid: 9 }));
+      client.mailbox.exists = 2;
+      engine = new SyncEngine(createConnections(client), store, { windowDays: 30 });
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      const [range] = client.fetch.mock.calls[0];
+      expect(range).toBe('7:*');
+    });
+
+    it('stores nothing when no message falls inside the window', async () => {
+      client = createMockClient();
+      client.search.mockImplementation((criteria: Record<string, unknown>) =>
+        Promise.resolve(criteria.since ? [] : []),
+      );
+      client.mailbox.exists = 0;
+      engine = new SyncEngine(createConnections(client), store, { windowDays: 30 });
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(client.fetch).not.toHaveBeenCalled();
+      expect(store.countMessages('work', 'INBOX')).toBe(0);
+      // The watermark is still recorded so the next sync is incremental.
+      expect(store.getMailboxState('work', 'INBOX')?.uidValidity).toBe('100');
+    });
+
+    it('fetches the whole mailbox on first sync when no window is configured', async () => {
+      engine = build();
+      client.fetch.mockImplementation(messagesFrom({ uid: 1 }));
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      const [range] = client.fetch.mock.calls[0];
+      expect(range).toBe('1:*');
+    });
+  });
+
   describe('resilience', () => {
     it('leaves existing rows in place when a sync fails', async () => {
       engine = build();

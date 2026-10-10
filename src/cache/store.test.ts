@@ -59,7 +59,7 @@ describe('CacheStore', () => {
 
     it('preserves an already-fetched body when re-syncing metadata', () => {
       store.putMessages([makeMessage()]);
-      store.putBody('work', 'INBOX', 1, '100', 'the full body text');
+      store.putBody('work', 'INBOX', 1, '100', { text: 'the full body text' });
 
       // A metadata resync (e.g. a flag change) must not wipe the body and
       // force another download.
@@ -104,7 +104,7 @@ describe('CacheStore', () => {
   describe('full-text search', () => {
     it('finds a message by body text', () => {
       store.putMessages([makeMessage({ uid: 1, subject: 'Rechnung' })]);
-      store.putBody('work', 'INBOX', 1, '100', 'Anbei die Rechnung für August.');
+      store.putBody('work', 'INBOX', 1, '100', { text: 'Anbei die Rechnung für August.' });
 
       const hits = store.searchMessages('work', 'INBOX', '100', 'Rechnung');
 
@@ -113,7 +113,7 @@ describe('CacheStore', () => {
 
     it('does not return a message after it is purged', () => {
       store.putMessages([makeMessage({ uid: 1 })]);
-      store.putBody('work', 'INBOX', 1, '100', 'findable text');
+      store.putBody('work', 'INBOX', 1, '100', { text: 'findable text' });
       store.deleteMessages('work', 'INBOX', [1], '100');
 
       // A stale FTS index would still match here — the triggers must keep the
@@ -213,6 +213,206 @@ describe('attachment names', () => {
     const hits = store.searchMessages('work', 'INBOX', '100', 'report');
 
     expect(hits.map((h) => h.uid)).toEqual([1]);
+  });
+});
+
+describe('schema v3: flag columns and filtered listing', () => {
+  let store: CacheStore;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+    const base = Date.parse('2026-08-01T10:00:00Z');
+    store.putMessages([
+      makeMessage({
+        uid: 1,
+        subject: 'Invoice August',
+        fromText: 'Ada <ada@example.com>',
+        flags: ['\\Seen'],
+        internalDate: base,
+      }),
+      makeMessage({
+        uid: 2,
+        subject: 'Lunch plans',
+        fromText: 'Bob <bob@example.com>',
+        flags: [],
+        hasAttachments: true,
+        internalDate: base + 60_000,
+      }),
+      makeMessage({
+        uid: 3,
+        subject: 'Re: Invoice August',
+        fromText: 'Ada <ada@example.com>',
+        flags: ['\\Seen', '\\Flagged', '\\Answered'],
+        internalDate: base + 120_000,
+      }),
+    ]);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  function uids(filters: Parameters<CacheStore['listMessages']>[4]): number[] {
+    return store
+      .listMessages('work', 'INBOX', '100', { page: 1, pageSize: 10 }, filters)
+      .items.map((m) => m.uid);
+  }
+
+  it('filters by seen state', () => {
+    expect(uids({ seen: false })).toEqual([2]);
+    expect(uids({ seen: true })).toEqual([3, 1]);
+  });
+
+  it('filters by flagged and answered state', () => {
+    expect(uids({ flagged: true })).toEqual([3]);
+    expect(uids({ answered: false })).toEqual([2, 1]);
+  });
+
+  it('filters by attachment presence', () => {
+    expect(uids({ hasAttachment: true })).toEqual([2]);
+    expect(uids({ hasAttachment: false })).toEqual([3, 1]);
+  });
+
+  it('filters by sender and subject substring', () => {
+    expect(uids({ from: 'ada@example' })).toEqual([3, 1]);
+    expect(uids({ subject: 'invoice' })).toEqual([3, 1]);
+  });
+
+  it('filters by date range', () => {
+    expect(uids({ since: '2026-08-01T10:01:00Z' })).toEqual([3, 2]);
+    expect(uids({ before: '2026-08-01T10:01:00Z' })).toEqual([1]);
+  });
+
+  it('escapes LIKE wildcards in substring filters', () => {
+    expect(uids({ subject: '%' })).toEqual([]);
+  });
+
+  it('exposes the flag state on the read model', () => {
+    const msg = store.getMessage('work', 'INBOX', 3, '100');
+    expect(msg).toMatchObject({ seen: true, flagged: true, answered: true });
+  });
+
+  it('updates flags and filterable columns via applyFlags', () => {
+    store.applyFlags('work', 'INBOX', 2, '100', ['\\Seen']);
+
+    expect(store.getMessage('work', 'INBOX', 2, '100')?.flags).toEqual(['\\Seen']);
+    expect(uids({ seen: false })).toEqual([]);
+    // The FTS triggers fire on UPDATE — the index must stay consistent.
+    expect(store.searchMessages('work', 'INBOX', '100', 'lunch').map((m) => m.uid)).toEqual([2]);
+  });
+
+  it('round-trips a stable email id', () => {
+    store.putMessages([makeMessage({ uid: 9, emailId: 'em-123' })]);
+
+    expect(store.getMessage('work', 'INBOX', 9, '100')?.emailId).toBe('em-123');
+  });
+});
+
+describe('schema v3: body tier plumbing', () => {
+  let store: CacheStore;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+    store.putMessages([makeMessage({ uid: 1 }), makeMessage({ uid: 2 }), makeMessage({ uid: 3 })]);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('stores body text with subtype, headers and preview', () => {
+    store.putBody('work', 'INBOX', 1, '100', {
+      text: '<p>Hello</p>',
+      subtype: 'html',
+      headers: { 'content-type': 'text/html' },
+      preview: 'Hello',
+    });
+
+    const msg = store.getMessage('work', 'INBOX', 1, '100');
+    expect(msg?.bodyText).toBe('<p>Hello</p>');
+    expect(msg?.bodySubtype).toBe('html');
+    expect(msg?.headers).toEqual({ 'content-type': 'text/html' });
+    expect(msg?.preview).toBe('Hello');
+    expect(msg?.bodyFetchedAt).toBeDefined();
+  });
+
+  it('preserves body, preview and headers across a metadata resync', () => {
+    store.putBody('work', 'INBOX', 1, '100', {
+      text: 'the body',
+      preview: 'the preview',
+      headers: { subject: 'Hello' },
+    });
+
+    // A flag-change resync re-upserts the row; downloaded content must stay.
+    store.putMessages([makeMessage({ uid: 1, flags: ['\\Seen', '\\Flagged'] })]);
+
+    const msg = store.getMessage('work', 'INBOX', 1, '100');
+    expect(msg?.bodyText).toBe('the body');
+    expect(msg?.preview).toBe('the preview');
+    expect(msg?.headers).toEqual({ subject: 'Hello' });
+  });
+
+  it('lists messages still missing bodies, newest first', () => {
+    store.putBody('work', 'INBOX', 2, '100', { text: 'cached' });
+
+    expect(store.listMissingBodies('work', 'INBOX', '100', 10)).toEqual([3, 1]);
+    expect(store.listMissingBodies('work', 'INBOX', '100', 1)).toEqual([3]);
+  });
+
+  it('records read access for LRU eviction', () => {
+    store.touchAccess('work', 'INBOX', '100', [1, 2]);
+
+    expect(store.getMessage('work', 'INBOX', 1, '100')?.lastAccessedAt).toBeDefined();
+    expect(store.getMessage('work', 'INBOX', 3, '100')?.lastAccessedAt).toBeUndefined();
+  });
+
+  it('reports per-mailbox statistics', () => {
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      syncTier: 'baseline',
+      totalMessages: 3,
+    });
+    store.putBody('work', 'INBOX', 1, '100', { text: 'cached' });
+
+    const stats = store.getStats();
+
+    expect(stats.messageCount).toBe(3);
+    expect(stats.bodyCount).toBe(1);
+    expect(stats.sizeBytes).toBeGreaterThan(0);
+    expect(stats.mailboxes).toEqual([
+      expect.objectContaining({
+        account: 'work',
+        mailbox: 'INBOX',
+        syncTier: 'baseline',
+        cachedMessages: 3,
+        bodiesCached: 1,
+      }),
+    ]);
+  });
+});
+
+describe('schema v3: durability pragmas', () => {
+  it('creates new database files with incremental auto-vacuum', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'cache-store-')), 'mirror.sqlite');
+    const store = new CacheStore(dbPath);
+    store.close();
+
+    // auto_vacuum is persisted in the file header; it only takes effect when
+    // set before the first table is created, so this proves the ordering.
+    const raw = new DatabaseSync(dbPath);
+    const { auto_vacuum: autoVacuum } = raw.prepare('PRAGMA auto_vacuum').get() as {
+      auto_vacuum: number;
+    };
+    raw.close();
+
+    expect(autoVacuum).toBe(2);
   });
 });
 

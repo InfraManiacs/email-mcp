@@ -69,6 +69,20 @@ interface FetchedMessage {
   modseq?: bigint;
   bodyStructure?: unknown;
   internalDate?: Date;
+  /** Raw header subset when the fetch asked for specific headers. */
+  headers?: Buffer;
+  /** RFC 8474 EMAILID / Gmail X-GM-MSGID when the server supports it. */
+  emailId?: string;
+}
+
+/** Options controlling how much of a mailbox the mirror takes on. */
+export interface SyncEngineOptions {
+  /**
+   * On the first sync of a mailbox, only messages newer than this many days
+   * are mirrored (0 = everything). Later syncs are incremental from the
+   * watermark, so the window only bounds the initial transfer.
+   */
+  windowDays?: number;
 }
 
 /** Mailbox metadata exposed by ImapFlow after SELECT. */
@@ -112,6 +126,23 @@ function attachmentNames(bodyStructure: unknown): string[] {
   return names;
 }
 
+/**
+ * Pull the References chain out of a raw header subset.
+ *
+ * The envelope carries only In-Reply-To; the full References header is what
+ * lets get_thread walk a conversation without a SEARCH per hop.
+ */
+function parseReferences(headers?: Buffer): string[] | undefined {
+  if (!headers) return undefined;
+  const text = headers.toString('utf8');
+  // `.` stops at the line end; the group then eats any folded continuation
+  // lines (RFC 5322 folding: CRLF followed by whitespace).
+  const match = /^references:[ \t]*(.*(?:\r?\n[ \t].*)*)/im.exec(text);
+  if (!match) return undefined;
+  const ids = match[1].match(/<[^>]+>/g);
+  return ids && ids.length > 0 ? ids : undefined;
+}
+
 function formatSender(from?: { name?: string; address?: string }[]): string | undefined {
   const first = from?.[0];
   if (!first) return undefined;
@@ -138,6 +169,8 @@ function toCachedMessage(
     flags,
     messageId: envelope.messageId,
     inReplyTo: envelope.inReplyTo,
+    references: parseReferences(msg.headers),
+    emailId: msg.emailId,
     internalDate: (msg.internalDate ?? envelope.date ?? new Date()).getTime(),
     subject: envelope.subject,
     fromText: formatSender(envelope.from),
@@ -172,6 +205,7 @@ export default class SyncEngine {
   constructor(
     private connections: IConnectionManager,
     private store: CacheStore,
+    private options: SyncEngineOptions = {},
   ) {
     this.onReconnect = ({ account }) => {
       this.tiers.delete(account);
@@ -372,10 +406,31 @@ export default class SyncEngine {
       flags: true,
       bodyStructure: true,
       internalDate: true,
+      // The envelope lacks References; fetch just that header for threading.
+      headers: ['references'],
+      // RFC 8474 EMAILID (X-GM-MSGID on Gmail) — stable across moves. Servers
+      // without OBJECTID simply omit it from the response.
+      emailId: true,
     };
 
     let range = '1:*';
     const options: { uid: boolean; changedSince?: bigint } = { uid: true };
+
+    // First sync of a mailbox: bound the initial transfer to the configured
+    // window. Incremental syncs ignore the window — their range comes from
+    // the stored watermark, and deletions diff only against cached UIDs, so
+    // messages older than the window are simply never mirrored.
+    const windowDays = this.options.windowDays ?? 0;
+    if (!previous && windowDays > 0) {
+      const horizon = new Date(Date.now() - windowDays * 86_400_000);
+      const inWindow = (await client.search({ since: horizon }, { uid: true })) as number[] | false;
+      if (Array.isArray(inWindow)) {
+        if (inWindow.length === 0) return 0;
+        range = `${Math.min(...inWindow)}:*`;
+      }
+      // A failed probe falls back to the unbounded range: mirroring too much
+      // is recoverable, silently mirroring nothing is not.
+    }
 
     if (tier === 'condstore' || tier === 'qresync') {
       // Ask only for messages whose modseq moved. Covers flag changes made by
