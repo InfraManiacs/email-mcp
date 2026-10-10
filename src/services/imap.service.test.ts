@@ -517,6 +517,74 @@ describe('ImapService', () => {
       expect(email.deliveryStatus).toContain('Status: 5.1.1');
     });
 
+    it('downloads only one body part when both exceed the cap', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'BothBig', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/alternative',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 700 * 1024 },
+            { part: '2', type: 'text/html', size: 900 * 1024 },
+          ],
+        },
+        headers: Buffer.from('Subject: BothBig\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockResolvedValue(downloadYielding('x'.repeat(1000)));
+
+      await service.getEmail('test', '42', 'INBOX');
+
+      // Fetching 1.6 MB to truncate both halves to 512 KB is pure waste; one
+      // readable body is the point of the cap.
+      expect(client.download).toHaveBeenCalledTimes(1);
+      expect(client.download).toHaveBeenCalledWith('42', '1', { uid: true });
+    });
+
+    it('does not split a multibyte character at the truncation boundary', async () => {
+      const cap = 512 * 1024;
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Multibyte', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: { type: 'text/plain', size: 10 * 1024 * 1024 },
+        headers: Buffer.from('Subject: Multibyte\r\n\r\n', 'utf-8'),
+      });
+      // 'ä' is two bytes, so the 512 KB boundary lands mid-character.
+      client.download.mockResolvedValue({
+        content: (async function* gen() {
+          yield Buffer.from('a'.repeat(cap - 1) + 'ä'.repeat(100), 'utf-8');
+        })(),
+      });
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyText).toContain('truncated');
+      expect(email.bodyText).not.toContain('�');
+    });
+
+    it('converts a non-UTF-8 text body using its declared charset', async () => {
+      // ImapFlow charset-converts text/plain and text/html only, so any other
+      // text subtype arrives as raw bytes with the charset in meta.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Enriched', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: { type: 'text/enriched', size: 50 },
+        headers: Buffer.from('Subject: Enriched\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockResolvedValue({
+        meta: { charset: 'iso-8859-1' },
+        content: (async function* gen() {
+          yield Buffer.from('Grüße aus München', 'latin1');
+        })(),
+      });
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyText).toBe('Grüße aus München');
+    });
+
     it('labels an S/MIME message instead of returning no content', async () => {
       client.fetchOne.mockResolvedValue({
         uid: 42,

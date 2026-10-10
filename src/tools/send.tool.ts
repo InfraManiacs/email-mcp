@@ -15,25 +15,30 @@ import type SmtpService from '../services/smtp.service.js';
  * HTML mail embedding images: give the file a cid and reference it in the
  * body as <img src="cid:...">.
  */
-const attachmentInputSchema = z.union([
+export const attachmentInputSchema = z.union([
   z.string(),
-  z.object({
-    path: z.string().describe('Local file path'),
-    filename: z
-      .string()
-      .optional()
-      .describe('Filename shown to the recipient (default: the file basename)'),
-    cid: z
-      .string()
-      .optional()
-      .describe(
-        'Content-ID for inline embedding — reference as <img src="cid:...."> in an HTML body',
-      ),
-    contentType: z
-      .string()
-      .optional()
-      .describe('Explicit MIME type when the file extension would misdetect'),
-  }),
+  z
+    .object({
+      path: z.string().describe('Local file path'),
+      filename: z
+        .string()
+        .optional()
+        .describe('Filename shown to the recipient (default: the file basename)'),
+      cid: z
+        .string()
+        .optional()
+        .describe(
+          'Content-ID for inline embedding — reference as <img src="cid:...."> in an HTML body',
+        ),
+      contentType: z
+        .string()
+        .optional()
+        .describe('Explicit MIME type when the file extension would misdetect'),
+    })
+    // Strict so a near-miss key fails loudly. Writing `contentId` for `cid`
+    // would otherwise be dropped silently and the send would "succeed" with
+    // an image that never embeds.
+    .strict(),
 ]);
 
 /** One result line per attachment, so the caller sees exactly what went out. */
