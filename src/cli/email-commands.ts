@@ -331,7 +331,7 @@ const HANDLERS: Record<string, (svc: CliServices, argv: string[]) => Promise<voi
   send: cmdSend,
 };
 
-export const EMAIL_COMMANDS = Object.keys(HANDLERS);
+const EMAIL_COMMANDS = Object.keys(HANDLERS);
 
 export default async function runEmailCommand(command: string, argv: string[]): Promise<void> {
   const handler = HANDLERS[command];

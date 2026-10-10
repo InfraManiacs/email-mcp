@@ -67,3 +67,15 @@ jobs:
           node-version: "24"
       - name: pnpm audit (high+)
         run: pnpm audit --audit-level=high
+
+  knip:
+    name: Dead code & unused deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm knip

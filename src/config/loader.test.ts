@@ -463,7 +463,7 @@ describe('send settings mapping', () => {
 
     await fs.writeFile(
       configPath,
-      MINIMAL_TOML + '\n[settings.send]\nmax_attachment_mb = 10\n',
+      `${MINIMAL_TOML}\n[settings.send]\nmax_attachment_mb = 10\n`,
       'utf-8',
     );
     const custom = await loadConfig(configPath);

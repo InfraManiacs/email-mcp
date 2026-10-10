@@ -16,7 +16,7 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "lint": "biome lint src/",
     "lint:fix": "biome lint --write src/",
     "format": "biome format --write src/",
@@ -53,7 +53,8 @@
     "scan": "pnpm run scan:audit && pnpm run scan:semgrep && pnpm run scan:trivy",
     "scan:audit": "pnpm audit --audit-level=high",
     "scan:semgrep": "semgrep --metrics=off --error --config p/security-audit --config p/secrets --config p/typescript --config p/javascript --config p/nodejs src/",
-    "scan:trivy": "trivy fs . --scanners vuln,secret,misconfig --skip-dirs node_modules --skip-dirs build --skip-dirs reports --severity HIGH,CRITICAL --exit-code 1 --quiet"
+    "scan:trivy": "trivy fs . --scanners vuln,secret,misconfig --skip-dirs node_modules --skip-dirs build --skip-dirs reports --severity HIGH,CRITICAL --exit-code 1 --quiet",
+    "knip": "knip"
   },
   "keywords": [
     "email",
@@ -97,6 +98,7 @@
     "@types/node": "^26.6.4",
     "@types/nodemailer": "^8.0.2",
     "@vitest/coverage-v8": "^5.0.3",
+    "knip": "^6.41.0",
     "lefthook": "^2.2.1",
     "testcontainers": "^12.2.0",
     "tsx": "^4.23.15",
