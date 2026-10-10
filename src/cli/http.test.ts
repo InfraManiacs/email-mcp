@@ -17,6 +17,51 @@ const serverConfig: ServerConfig = {
   allowedHosts: ['mail.example.com'],
 };
 
+describe('parseOptions rejects unknown flags', () => {
+  // Silently ignoring them meant a typo'd --token started a networked email
+  // server with no authentication at all, and a typo'd --insecure refused to
+  // start for reasons the message did not explain.
+  it('throws on a misspelled option instead of ignoring it', () => {
+    expect(() => parseOptions(['--toekn', 'secret'], {})).toThrow(/Unknown option/);
+  });
+
+  it('names the offending option', () => {
+    expect(() => parseOptions(['--insecrue'], {})).toThrow(/--insecrue/);
+  });
+
+  it('rejects a stray positional argument', () => {
+    expect(() => parseOptions(['8080'], {})).toThrow(/Unknown option/);
+  });
+
+  it('accepts every documented option', () => {
+    expect(() =>
+      parseOptions(
+        [
+          '--host',
+          '127.0.0.1',
+          '--port',
+          '9000',
+          '--path',
+          '/mcp',
+          '--token',
+          't',
+          '--allowed-hosts',
+          'a.example.com,b.example.com',
+          '--insecure',
+        ],
+        {},
+      ),
+    ).not.toThrow();
+  });
+
+  // runHttp short-circuits these before parseOptions, but server-commands
+  // forwards unrecognized flags here, so they must not become a hard error.
+  it('tolerates the help flags', () => {
+    expect(() => parseOptions(['--help'], {})).not.toThrow();
+    expect(() => parseOptions(['-h'], {})).not.toThrow();
+  });
+});
+
 describe('parseOptions precedence', () => {
   it('uses hardcoded defaults when nothing else is provided', () => {
     const opts = parseOptions([], {});

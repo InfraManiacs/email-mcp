@@ -458,6 +458,22 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
 /**
  * Save configuration to a TOML file.
  */
+/**
+ * Write the commented starter config.
+ *
+ * Not expressible through saveConfig: that serialises a config object, which
+ * would drop every explanatory comment the template exists for. The
+ * permissions matter as much as the content — the command's own next
+ * instruction is to edit this file and add an account password, so it must not
+ * be born world-readable.
+ */
+export async function writeConfigTemplate(filePath: string = CONFIG_FILE): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await fs.writeFile(filePath, generateTemplate(), { encoding: 'utf-8', mode: 0o600 });
+  // writeFile leaves the mode of an existing file alone, so tighten it.
+  await fs.chmod(filePath, 0o600);
+}
+
 export async function saveConfig(
   config: RawAppConfig,
   filePath: string = CONFIG_FILE,

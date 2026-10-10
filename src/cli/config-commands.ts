@@ -7,8 +7,6 @@
  * - config init           — create a template config file
  */
 
-import fs from 'node:fs/promises';
-
 import {
   cancel,
   confirm,
@@ -27,9 +25,9 @@ import { parse as parseTOML } from 'smol-toml';
 import {
   CONFIG_FILE,
   configExists,
-  generateTemplate,
   loadRawConfig,
   saveConfigValidated,
+  writeConfigTemplate,
 } from '../config/loader.js';
 import { AppConfigFileSchema } from '../config/schema.js';
 import { findConsistencyIssues, findUnknownKeys } from '../config/validate.js';
@@ -138,10 +136,8 @@ async function initConfig(): Promise<void> {
     }
   }
 
-  const dir = CONFIG_FILE.replace(/\/[^/]+$/, '');
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(CONFIG_FILE, generateTemplate(), 'utf-8');
-  log.success(`Template config created at ${CONFIG_FILE}`);
+  await writeConfigTemplate(CONFIG_FILE);
+  log.success(`Template config created at ${CONFIG_FILE} (owner-only, 0600)`);
   log.info("Edit the file to add your email accounts, then run 'email-mcp test'.");
   outro('Done!');
 }

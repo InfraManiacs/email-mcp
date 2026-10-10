@@ -9,6 +9,7 @@ import {
   loadRawConfig,
   saveConfig,
   saveConfigValidated,
+  writeConfigTemplate,
 } from './loader.js';
 
 const MINIMAL_TOML = `
@@ -333,6 +334,36 @@ link_action = "copy"
       expect(reloaded.accounts[0]!.name).toBe('saved-test');
       expect(reloaded.accounts[0]!.email).toBe('saved@example.com');
       expect(reloaded.accounts[0]!.imap.host).toBe('imap.saved.com');
+    });
+
+    // `config init` used to write the template with plain writeFile, so it
+    // landed at the process umask (commonly 0644) — and the very next step the
+    // command prints is "edit the file to add your email accounts", i.e. put
+    // a password in a world-readable file.
+    it('writes the template with owner-only (0600) permissions', async () => {
+      const configPath = path.join(tmpDir, 'init', 'template.toml');
+
+      await writeConfigTemplate(configPath);
+
+      const mode = (await fs.stat(configPath)).mode & 0o777;
+      expect(mode).toBe(0o600);
+      const dirMode = (await fs.stat(path.dirname(configPath))).mode & 0o777;
+      expect(dirMode).toBe(0o700);
+    });
+
+    it('tightens an already-loose template file', async () => {
+      const configPath = path.join(tmpDir, 'loose.toml');
+      await fs.writeFile(configPath, 'stale', { mode: 0o644 });
+
+      await writeConfigTemplate(configPath);
+
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    });
+
+    it('writes the generated template content', async () => {
+      const configPath = path.join(tmpDir, 'content.toml');
+      await writeConfigTemplate(configPath);
+      expect(await fs.readFile(configPath, 'utf-8')).toBe(generateTemplate());
     });
 
     it('writes the config file with owner-only (0600) permissions', async () => {
