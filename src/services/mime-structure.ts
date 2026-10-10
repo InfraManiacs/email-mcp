@@ -6,6 +6,7 @@
  * and attachment discovery can be tested without a client.
  */
 
+import libmime from 'libmime';
 import type { AttachmentMeta } from '../types/index.js';
 
 export function hasAttachments(bodyStructure: unknown): boolean {
@@ -265,6 +266,19 @@ export function parseHeaders(raw: unknown): Record<string, string> {
     if (colonIdx > 0) {
       currentKey = line.slice(0, colonIdx).trim().toLowerCase();
       headers[currentKey] = line.slice(colonIdx + 1).trim();
+    }
+  });
+
+  // RFC 2047 decoding runs after unfolding — one encoded word may span
+  // continuation lines. decodeWords is a no-op on values without "=?".
+  Object.keys(headers).forEach((key) => {
+    const value = headers[key];
+    if (value !== undefined && value.includes('=?')) {
+      try {
+        headers[key] = libmime.decodeWords(value);
+      } catch {
+        // Malformed encoded word — the raw value is still more useful than none.
+      }
     }
   });
 

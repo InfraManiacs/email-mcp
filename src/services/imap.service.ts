@@ -1861,7 +1861,20 @@ export default class ImapService {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
         if (chunks.length > 0) {
-          icsContents.push(Buffer.concat(chunks).toString('utf-8'));
+          // ImapFlow transfer-decodes this part but does not charset-convert
+          // it — its text handling covers only text/plain|html — so a Latin-1
+          // ICS would come out as mojibake under a blind utf-8 read. The
+          // declared charset rides along in the download meta.
+          const raw = Buffer.concat(chunks);
+          const charset =
+            ((part.meta as Record<string, unknown> | undefined)?.charset as string | undefined) ??
+            'utf-8';
+          try {
+            icsContents.push(new TextDecoder(charset).decode(raw));
+          } catch {
+            // Unknown charset label — utf-8 is the least-wrong fallback.
+            icsContents.push(raw.toString('utf-8'));
+          }
         }
       }
 

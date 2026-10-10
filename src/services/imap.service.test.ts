@@ -649,6 +649,36 @@ describe('ImapService', () => {
       expect(outerDrained).toBe(true);
     });
 
+    it('converts a non-UTF-8 calendar part using its declared charset', async () => {
+      client.fetch.mockImplementationOnce(() =>
+        (async function* structure() {
+          yield {
+            uid: 7,
+            bodyStructure: {
+              type: 'multipart/mixed',
+              childNodes: [
+                { part: '1', type: 'text/plain', size: 50 },
+                { part: '2', type: 'text/calendar', size: 200 },
+              ],
+            },
+          };
+        })(),
+      );
+      // ImapFlow transfer-decodes calendar parts but does NOT charset-convert
+      // them (its isTextNode list is text/plain|html only), so the raw
+      // Latin-1 bytes arrive here along with the declared charset in meta.
+      client.download.mockResolvedValue({
+        meta: { charset: 'iso-8859-1' },
+        content: (async function* gen() {
+          yield Buffer.from('SUMMARY:Grüße\r\n', 'latin1');
+        })(),
+      });
+
+      const parts = await service.getCalendarParts('test', 'INBOX', '7');
+
+      expect(parts[0]).toContain('SUMMARY:Grüße');
+    });
+
     it('returns decoded ICS text for a base64 calendar part', async () => {
       const ics = 'BEGIN:VCALENDAR\r\nSUMMARY:Review\r\nEND:VCALENDAR';
 

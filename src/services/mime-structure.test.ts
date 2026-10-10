@@ -286,8 +286,20 @@ describe('parseHeaders', () => {
     expect(parseHeaders('not a buffer')).toEqual({});
   });
 
-  it('keeps RFC 2047 encoded words raw (characterization: no decoding yet)', () => {
-    const raw = Buffer.from('Subject: =?UTF-8?B?w6TDtsO8?=\r\n\r\n', 'utf-8');
-    expect(parseHeaders(raw).subject).toBe('=?UTF-8?B?w6TDtsO8?=');
+  it('decodes RFC 2047 encoded words', () => {
+    const raw = Buffer.from(
+      'Subject: =?UTF-8?B?w6TDtsO8?=\r\nX-Note: =?ISO-8859-1?Q?Gr=FC=DFe?=\r\n\r\n',
+      'utf-8',
+    );
+    const headers = parseHeaders(raw);
+    expect(headers.subject).toBe('äöü');
+    expect(headers['x-note']).toBe('Grüße');
+  });
+
+  it('decodes an encoded word split across a folded line', () => {
+    // RFC 2047 allows one logical word to span continuation lines; decoding
+    // must happen after unfolding or each half decodes separately.
+    const raw = Buffer.from('Subject: =?UTF-8?B?w6TDtg==?=\r\n =?UTF-8?B?w7w=?=\r\n\r\n', 'utf-8');
+    expect(parseHeaders(raw).subject).toBe('äöü');
   });
 });
