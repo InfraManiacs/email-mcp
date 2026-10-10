@@ -75,6 +75,8 @@ interface FetchedMessage {
   internalDate?: Date;
   /** Raw header subset when the fetch asked for specific headers. */
   headers?: Buffer;
+  /** Bounded raw slice, used to derive a preview. */
+  source?: Buffer;
   /** RFC 8474 EMAILID / Gmail X-GM-MSGID when the server supports it. */
   emailId?: string;
 }
@@ -92,6 +94,11 @@ export interface SyncEngineOptions {
    * backfill). Bodies fetched on demand by get_email are stored regardless.
    */
   bodyMessages?: number;
+  /**
+   * The cache byte budget, so prefetching stops before it starts competing
+   * with the eviction pass.
+   */
+  maxSizeMb?: number;
 }
 
 /** Mailbox metadata exposed by ImapFlow after SELECT. */
@@ -152,6 +159,22 @@ function parseReferences(headers?: Buffer): string[] | undefined {
   return ids && ids.length > 0 ? ids : undefined;
 }
 
+/**
+ * Derive a preview from a bounded raw slice — same rule as the live mapper:
+ * take what follows the header break, collapse whitespace.
+ */
+function previewFromSource(source?: Buffer): string | undefined {
+  if (!source || !Buffer.isBuffer(source)) return undefined;
+  const text = source.toString('utf-8');
+  const bodyStart = text.indexOf('\r\n\r\n');
+  if (bodyStart < 0) return undefined;
+  const preview = text
+    .slice(bodyStart + 4, bodyStart + 204)
+    .replace(/\s+/g, ' ')
+    .trim();
+  return preview.length > 0 ? preview : undefined;
+}
+
 function formatSender(from?: { name?: string; address?: string }[]): string | undefined {
   const first = from?.[0];
   if (!first) return undefined;
@@ -183,6 +206,7 @@ function toCachedMessage(
     internalDate: (msg.internalDate ?? envelope.date ?? new Date()).getTime(),
     subject: envelope.subject,
     fromText: formatSender(envelope.from),
+    preview: previewFromSource(msg.source),
     hasAttachments: hasAttachment(msg.bodyStructure),
     attachmentNames: attachmentNames(msg.bodyStructure),
   };
@@ -238,7 +262,9 @@ export default class SyncEngine {
     // mirror is behind until the reconcile lands.
     const react = (account: string, mailbox: string): void => {
       this.markDirty(account, mailbox);
-      void this.syncMailbox(account, mailbox);
+      // syncMailbox never rejects by contract, but an unhandled rejection
+      // would take the process down under Node's default — so guard it.
+      void this.syncMailbox(account, mailbox).catch(() => {});
     };
     this.onNewEmail = ({ account, mailbox }) => react(account, mailbox);
     this.onExpunge = ({ account, mailbox }) => react(account, mailbox);
@@ -464,6 +490,10 @@ export default class SyncEngine {
       // RFC 8474 EMAILID (X-GM-MSGID on Gmail) — stable across moves. Servers
       // without OBJECTID simply omit it from the response.
       emailId: true,
+      // The same bounded slice the live listEmails path uses to derive a
+      // preview. Without it a cached listing loses its snippet line until the
+      // body backfill reaches that message — hours, on a large mailbox.
+      source: { start: 0, maxLength: 256 },
     };
 
     let range = '1:*';
@@ -479,7 +509,9 @@ export default class SyncEngine {
       const inWindow = (await client.search({ since: horizon }, { uid: true })) as number[] | false;
       if (Array.isArray(inWindow)) {
         if (inWindow.length === 0) return 0;
-        range = `${Math.min(...inWindow)}:*`;
+        // reduce, not Math.min(...uids): spreading more than ~125k arguments
+        // throws RangeError, which would make a large mailbox unsyncable.
+        range = `${inWindow.reduce((lo, uid) => (uid < lo ? uid : lo), inWindow[0])}:*`;
       }
       // A failed probe falls back to the unbounded range: mirroring too much
       // is recoverable, silently mirroring nothing is not.
@@ -530,6 +562,14 @@ export default class SyncEngine {
     if (budget <= 0) return 0;
 
     try {
+      // Stop prefetching once the cache is nearly full, or backfill and the
+      // eviction pass spend every cycle undoing each other.
+      const maxSizeMb = this.options.maxSizeMb ?? 0;
+      if (maxSizeMb > 0) {
+        const used = this.store.sizeBytes() + this.store.attachmentUsageBytes();
+        if (used > maxSizeMb * 1024 * 1024 * 0.95) return 0;
+      }
+
       const state = this.store.getMailboxState(account, mailbox);
       if (!state || state.lastSyncedAt === undefined) return 0;
 
@@ -636,10 +676,12 @@ export default class SyncEngine {
     mailbox: string,
     uidValidity: string,
   ): Promise<number> {
-    const cached = this.store.listAllUids(account, mailbox, uidValidity);
-    if (cached.length === 0) return 0;
+    // MIN in SQL rather than spreading every mirrored UID into Math.min,
+    // which throws RangeError past ~125k arguments.
+    const lowest = this.store.lowestUid(account, mailbox, uidValidity);
+    if (lowest === undefined) return 0;
 
-    const range = `${Math.min(...cached)}:*`;
+    const range = `${lowest}:*`;
     const entries: { uid: number; flags: string[] }[] = [];
     for await (const msg of client.fetch(range, { uid: true, flags: true }, { uid: true })) {
       const fetched = msg as unknown as { uid?: number; flags?: Set<string> };

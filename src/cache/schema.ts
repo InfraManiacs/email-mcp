@@ -17,7 +17,7 @@
  */
 
 /** Bumped when the statements below change shape. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 -- Per-mailbox sync watermarks.
@@ -134,7 +134,16 @@ CREATE TRIGGER IF NOT EXISTS message_fts_delete AFTER DELETE ON message BEGIN
   VALUES ('delete', old.rowid, old.subject, old.from_text, old.body_text, old.attachment_names);
 END;
 
-CREATE TRIGGER IF NOT EXISTS message_fts_update AFTER UPDATE ON message BEGIN
+-- Guarded on the indexed columns only: touchAccess writes last_accessed_at on
+-- every cached read, and an unguarded trigger would delete-and-reinsert the
+-- whole body (up to 256 KB) each time — inflating the page count that eviction
+-- measures and undoing the point of a cache hit.
+CREATE TRIGGER IF NOT EXISTS message_fts_update AFTER UPDATE ON message
+WHEN new.subject IS NOT old.subject
+  OR new.from_text IS NOT old.from_text
+  OR new.body_text IS NOT old.body_text
+  OR new.attachment_names IS NOT old.attachment_names
+BEGIN
   INSERT INTO message_fts (message_fts, rowid, subject, from_text, body_text, attachment_names)
   VALUES ('delete', old.rowid, old.subject, old.from_text, old.body_text, old.attachment_names);
   INSERT INTO message_fts (rowid, subject, from_text, body_text, attachment_names)

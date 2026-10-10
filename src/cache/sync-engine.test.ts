@@ -707,3 +707,78 @@ describe('body backfill', () => {
     expect(await engine.backfillBodies('work', 'Archive')).toBe(0);
   });
 });
+
+describe('review fixes: sync engine', () => {
+  let store: CacheStore;
+  let client: ReturnType<typeof createMockClient>;
+  let engine: SyncEngine;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    engine?.stop();
+    store.close();
+    eventBus.removeAllListeners();
+  });
+
+  it('stores a preview from the bounded source fetch, so cached listings keep their snippet', async () => {
+    client = createMockClient();
+    client.fetch.mockImplementation(() =>
+      (async function* gen() {
+        yield {
+          uid: 1,
+          envelope: { subject: 'Hi', date: new Date('2026-08-01') },
+          flags: new Set<string>(),
+          internalDate: new Date('2026-08-01'),
+          source: Buffer.from('Subject: Hi\r\n\r\nDas ist der Anfang des Textes.'),
+        };
+      })(),
+    );
+    client.search.mockResolvedValue([1]);
+    client.mailbox.exists = 1;
+    engine = new SyncEngine(createConnections(client), store);
+
+    await engine.syncMailbox('work', 'INBOX');
+
+    expect(store.getMessage('work', 'INBOX', 1, '100')?.preview).toContain('Das ist der Anfang');
+  });
+
+  it('sweeps flags on a mailbox far larger than the argument-spread limit', async () => {
+    client = createMockClient();
+    const many = Array.from({ length: 150_000 }, (_, i) => i + 1);
+    client.fetch.mockImplementation(() => (async function* none() {})());
+    client.search.mockResolvedValue(many);
+    client.mailbox.exists = many.length;
+    engine = new SyncEngine(createConnections(client), store);
+    // Seed enough rows that the sweep has to compute a lower bound over them.
+    store.putMessages(
+      many.slice(0, 130_000).map((uid) => ({
+        account: 'work',
+        mailbox: 'INBOX',
+        uid,
+        uidValidity: '100',
+        envelope: {},
+        flags: [],
+        internalDate: 1_000 + uid,
+        hasAttachments: false,
+      })),
+    );
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      uidNext: 130_001,
+      syncTier: 'baseline',
+      lastSyncedAt: Date.now(),
+    });
+
+    const result = await engine.syncMailbox('work', 'INBOX');
+
+    // Spreading 130k UIDs into Math.min throws RangeError, which runSync
+    // swallows — leaving a large mailbox permanently unable to sync.
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+  }, 60_000);
+});

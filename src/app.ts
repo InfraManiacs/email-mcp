@@ -82,6 +82,7 @@ export async function buildServices(): Promise<AppServices> {
       syncEngine = new SyncEngine(connections, cacheStore, {
         windowDays: config.settings.cache.windowDays,
         bodyMessages: config.settings.cache.bodyMessages,
+        maxSizeMb: config.settings.cache.maxSizeMb,
       });
       imapService.setCacheStore(cacheStore);
       blobStore = new BlobStore(CACHE_BLOBS_DIR);

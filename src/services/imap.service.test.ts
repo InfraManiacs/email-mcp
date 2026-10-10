@@ -927,3 +927,37 @@ describe('getMailboxStatus', () => {
     service.dispose();
   });
 });
+
+describe('label writes invalidate the mirror', () => {
+  let client: ReturnType<typeof createMockImapClient>;
+  let service: ImapService;
+  let changed: { account: string; mailbox: string }[];
+
+  beforeEach(() => {
+    client = createMockImapClient();
+    client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox', flags: new Set() }]);
+    service = new ImapService(createMockConnectionManager(client));
+    changed = [];
+    eventBus.on('email:changed', (e) => changed.push(e));
+  });
+
+  afterEach(() => {
+    service.dispose();
+    eventBus.removeAllListeners('email:changed');
+  });
+
+  it('emits email:changed after adding a label', async () => {
+    await service.addLabel('test', '10', 'INBOX', 'Work');
+
+    // On a keyword-strategy server a label is a flag write: it moves neither
+    // UIDNEXT nor MESSAGES, so STATUS cannot reveal it and only this event
+    // keeps the next read correct.
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+
+  it('emits email:changed after removing a label', async () => {
+    await service.removeLabel('test', '10', 'INBOX', 'Work');
+
+    expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+});

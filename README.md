@@ -713,7 +713,7 @@ is otherwise invisible.
 |---|---|---|
 | `enabled` | `true` | `false` reads live from IMAP every time |
 | `mailboxes` | `["INBOX"]` | Synced in the background. Others mirror lazily once read |
-| `window_days` | `90` | How far back the first sync of a mailbox reaches (`0` = all) |
+| `window_days` | `0` (all) | How far back the first sync of a mailbox reaches |
 | `body_messages` | `500` | Bodies kept per mailbox. `0` keeps the cache metadata-only |
 | `max_size_mb` | `500` | Budget for index + attachments combined |
 | `sync_interval` | `300` | Seconds between background reconciles |
@@ -722,6 +722,14 @@ Past the budget, eviction runs cheapest-to-rebuild-first: attachment files
 (least recently read first), then message bodies, then envelopes older than
 `window_days`. Envelopes are kept as long as possible, because they are what
 listings and search need.
+
+**Coverage, not just freshness.** The cache only answers a listing when it
+holds every message the server reports for that mailbox. Set `window_days` to
+something other than `0` and the mirror becomes a slice — it then cannot report
+a truthful `total` or know whether more pages exist, so reads fall back to the
+live path until it catches up. That is also why envelope eviction clears the
+mailbox's sync watermarks: the next sync rebuilds coverage instead of leaving a
+permanent, invisible hole.
 
 #### Data at rest
 

@@ -205,3 +205,56 @@ describe('collectOrphans', () => {
     store.close();
   });
 });
+
+describe('review fixes: maintenance', () => {
+  it('measures usage from the index, not by walking the blob directory', async () => {
+    const { store, blobs } = await setup();
+    store.putMessages([makeMessage(1)]);
+    const { sha256, size } = await blobs.put(Buffer.alloc(300 * 1024, 3));
+    store.putAttachment({
+      account: 'work',
+      mailbox: 'INBOX',
+      uid: 1,
+      uidValidity: '100',
+      partId: 'a.bin',
+      filename: 'a.bin',
+      mimeType: 'application/octet-stream',
+      size,
+      sha256,
+    });
+    // A synchronous stat-per-blob walk on every pass blocks the event loop of
+    // a stdio MCP server; the index already knows the byte total.
+    const walk = vi.spyOn(blobs, 'sizeBytes');
+
+    const result = await enforceBudget(store, blobs, 500);
+
+    expect(walk).not.toHaveBeenCalled();
+    expect(result.usedBytesBefore).toBeGreaterThanOrEqual(300 * 1024);
+    walk.mockRestore();
+    store.close();
+  });
+
+  it('reclaims blobs whose messages were expunged', async () => {
+    const { store, blobs } = await setup();
+    store.putMessages([makeMessage(1)]);
+    const { sha256, size } = await blobs.put(Buffer.from('attached bytes'));
+    store.putAttachment({
+      account: 'work',
+      mailbox: 'INBOX',
+      uid: 1,
+      uidValidity: '100',
+      partId: 'a.bin',
+      filename: 'a.bin',
+      mimeType: 'application/octet-stream',
+      size,
+      sha256,
+    });
+
+    store.deleteMessages('work', 'INBOX', [1], '100');
+    const removed = await collectOrphans(store, blobs);
+
+    expect(removed).toBe(1);
+    expect(await blobs.get(sha256)).toBeUndefined();
+    store.close();
+  });
+});

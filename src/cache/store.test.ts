@@ -692,3 +692,117 @@ describe('schema v3: integrity check', () => {
     store.close();
   });
 });
+
+describe('review fixes: coverage, cascade, watermarks', () => {
+  let store: CacheStore;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('reports the lowest mirrored uid so the read path can judge coverage', () => {
+    store.putMessages([makeMessage({ uid: 40 }), makeMessage({ uid: 41 })]);
+
+    expect(store.lowestUid('work', 'INBOX', '100')).toBe(40);
+    expect(store.lowestUid('work', 'Archive', '100')).toBeUndefined();
+  });
+
+  it('removes attachment rows when their message is expunged', () => {
+    store.putMessages([makeMessage({ uid: 1, hasAttachments: true })]);
+    store.putAttachment({
+      account: 'work',
+      mailbox: 'INBOX',
+      uid: 1,
+      uidValidity: '100',
+      partId: 'a.pdf',
+      filename: 'a.pdf',
+      mimeType: 'application/pdf',
+      size: 10,
+      sha256: 'c'.repeat(64),
+    });
+
+    store.deleteMessages('work', 'INBOX', [1], '100');
+
+    // Orphaned rows would keep the blob unreclaimable and let
+    // download_attachment serve content for a message that is gone.
+    expect(store.getAttachment('work', 'INBOX', 1, '100', 'a.pdf')).toBeUndefined();
+    expect(store.countBlobRefs('c'.repeat(64))).toBe(0);
+  });
+
+  it('removes attachment rows when old envelopes are evicted', () => {
+    store.putMessages([makeMessage({ uid: 1, internalDate: 1_000, hasAttachments: true })]);
+    store.putAttachment({
+      account: 'work',
+      mailbox: 'INBOX',
+      uid: 1,
+      uidValidity: '100',
+      partId: 'a.pdf',
+      filename: 'a.pdf',
+      mimeType: 'application/pdf',
+      size: 10,
+      sha256: 'd'.repeat(64),
+    });
+
+    store.deleteMessagesOlderThan(2_000, 10);
+
+    expect(store.countBlobRefs('d'.repeat(64))).toBe(0);
+  });
+
+  it('forgets the sync watermarks of a mailbox whose envelopes were evicted', () => {
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      uidNext: 50,
+      syncTier: 'baseline',
+      totalMessages: 2,
+      lastSyncedAt: Date.now(),
+    });
+    store.putMessages([makeMessage({ uid: 1, internalDate: 1_000 })]);
+
+    store.deleteMessagesOlderThan(2_000, 10);
+
+    // Without this the incremental sync never reaches back and the gap is
+    // permanent — the mirror would keep answering as if it were complete.
+    const state = store.getMailboxState('work', 'INBOX');
+    expect(state?.uidNext).toBeUndefined();
+    expect(state?.lastSyncedAt).toBeUndefined();
+  });
+
+  it('clears freshness and counts when the epoch resets', () => {
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      uidNext: 50,
+      syncTier: 'baseline',
+      totalMessages: 900,
+      lastSyncedAt: Date.now(),
+    });
+
+    store.resetEpoch('work', 'INBOX', '200');
+
+    // Otherwise the purge window reads as "synced seconds ago, 900 messages"
+    // over an empty table — an empty mailbox served as fresh.
+    const state = store.getMailboxState('work', 'INBOX');
+    expect(state?.lastSyncedAt).toBeUndefined();
+    expect(state?.totalMessages).toBeUndefined();
+  });
+
+  it('does not re-index the search entry when only access time changes', () => {
+    store.putMessages([makeMessage({ uid: 1 })]);
+    store.putBody('work', 'INBOX', 1, '100', { text: 'Nebelkraehe' });
+    const before = store.sizeBytes();
+
+    for (let i = 0; i < 50; i += 1) store.touchAccess('work', 'INBOX', '100', [1]);
+
+    // A trigger without a WHEN guard re-indexes the whole body on every
+    // cached read, inflating the very page count eviction measures.
+    expect(store.sizeBytes()).toBe(before);
+    expect(store.searchMessages('work', 'INBOX', '100', 'Nebelkraehe')).toHaveLength(1);
+  });
+});

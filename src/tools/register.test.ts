@@ -63,7 +63,7 @@ function createConfig(readOnly: boolean): AppConfig {
       cache: {
         enabled: true,
         mailboxes: ['INBOX'],
-        windowDays: 90,
+        windowDays: 0,
         bodyMessages: 500,
         maxSizeMb: 500,
         syncInterval: 300,

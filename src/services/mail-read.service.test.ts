@@ -124,6 +124,7 @@ function seedMessages(store: CacheStore) {
       internalDate: Date.parse('2026-08-01T10:00:00Z'),
       subject: 'Invoice',
       fromText: 'Ada <ada@example.com>',
+      preview: 'Snippet for one',
       hasAttachments: false,
     },
     {
@@ -142,6 +143,7 @@ function seedMessages(store: CacheStore) {
       internalDate: Date.parse('2026-08-02T10:00:00Z'),
       subject: 'Lunch',
       fromText: 'bob@example.com',
+      preview: 'Snippet for two',
       hasAttachments: false,
     },
   ]);
@@ -170,6 +172,7 @@ function createEngineStub() {
       epochReset: false,
     }),
     isDirty: vi.fn().mockReturnValue(false),
+    markDirty: vi.fn(),
   };
 }
 
@@ -754,5 +757,193 @@ describe('MailReadService (cached attachments)', () => {
     const offline = await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
 
     expect(offline.contentBase64).toBe(liveAttachment.contentBase64);
+  });
+});
+
+describe('MailReadService (review fixes)', () => {
+  it('falls back to live when the mirror does not cover the whole mailbox', async () => {
+    const { store, imap, service } = createCachedSetup();
+    // The server says 9000 messages; the mirror holds 2 (a window-bounded
+    // first sync). Serving that as a complete listing reports total: 2 and
+    // "no more pages" for a mailbox full of older mail.
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      uidNext: 3,
+      syncTier: 'baseline',
+      totalMessages: 9000,
+      lastSyncedAt: Date.now(),
+    });
+
+    const result = await service.listEmails('work', { mailbox: 'INBOX' });
+
+    expect(imap.listEmails).toHaveBeenCalledExactlyOnceWith('work', { mailbox: 'INBOX' });
+    expect(result.cache).toBeUndefined();
+  });
+
+  it('still serves the mirror when it covers the mailbox', async () => {
+    const { imap, service } = createCachedSetup();
+
+    const result = await service.listEmails('work', { mailbox: 'INBOX' });
+
+    expect(imap.listEmails).not.toHaveBeenCalled();
+    expect(result.cache).toEqual({ source: 'cache' });
+  });
+
+  it('sends a partial-coverage search to the live path too', async () => {
+    const { store, imap, service } = createCachedSetup();
+    store.putBody('work', 'INBOX', 1, '100', { text: 'Rechnung August' });
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      uidNext: 3,
+      syncTier: 'baseline',
+      totalMessages: 9000,
+      lastSyncedAt: Date.now(),
+    });
+
+    await service.searchEmails('work', 'Rechnung', { mailbox: 'INBOX' });
+
+    expect(imap.searchEmails).toHaveBeenCalled();
+  });
+
+  it('writes a live-fetched body against the epoch the read was served from', async () => {
+    const { store, imap, service } = createCachedSetup();
+    imap.getEmail.mockImplementation(async () => {
+      // A concurrent sync rotates the epoch while the fetch is in flight.
+      store.resetEpoch('work', 'INBOX', '200');
+      store.putMessages([
+        {
+          account: 'work',
+          mailbox: 'INBOX',
+          uid: 1,
+          uidValidity: '200',
+          envelope: { subject: 'A DIFFERENT MESSAGE' },
+          flags: [],
+          messageId: '<other@example.com>',
+          internalDate: Date.now(),
+          subject: 'A DIFFERENT MESSAGE',
+          hasAttachments: false,
+        },
+      ]);
+      return {
+        id: '1',
+        subject: 'Invoice',
+        from: { name: 'Ada', address: 'ada@example.com' },
+        to: [],
+        date: '2026-08-01T10:00:00.000Z',
+        seen: true,
+        flagged: false,
+        answered: false,
+        hasAttachments: false,
+        labels: [],
+        bodyText: 'body of the ORIGINAL message',
+        messageId: '<m1@example.com>',
+        attachments: [],
+        headers: {},
+      };
+    });
+
+    await service.getEmail('work', '1', 'INBOX');
+
+    // The fill must die on the old epoch key, never graft one message's body
+    // onto a different message that now holds the same UID.
+    expect(store.getMessage('work', 'INBOX', 1, '200')?.bodyText).toBeUndefined();
+  });
+
+  it('marks the mailbox dirty before awaiting a sync, so a coalesced run cannot pass as complete', async () => {
+    const { imap, engine, service } = createCachedSetup({ lastSyncedAt: Date.now() - 60_000 });
+    imap.getMailboxStatus.mockResolvedValue({ uidValidity: '100', uidNext: 7, messages: 3 });
+
+    await service.listEmails('work', { mailbox: 'INBOX' });
+
+    expect(engine.markDirty).toHaveBeenCalledWith('work', 'INBOX');
+  });
+
+  it('degrades to the live path when the mirror itself errors', async () => {
+    const { store, imap, service } = createCachedSetup();
+    // A locked or corrupt database must not surface as a tool error.
+    store.close();
+
+    const result = await service.listEmails('work', { mailbox: 'INBOX' });
+
+    expect(imap.listEmails).toHaveBeenCalled();
+    expect(result.cache).toBeUndefined();
+  });
+
+  it('serves a preview for cached listings even before any body is stored', async () => {
+    const { service } = createCachedSetup();
+
+    const { items } = await service.listEmails('work', { mailbox: 'INBOX' });
+
+    // The live path derives a preview from a 256-byte source fetch; without
+    // one, list_emails output silently loses its snippet line.
+    expect(items.find((m) => m.id === '1')?.preview).toBe('Snippet for one');
+  });
+
+  it('includes cc recipients and folds address case in thread participants', async () => {
+    const { store, imap, service } = createCachedSetup();
+    store.putMessages([
+      {
+        account: 'work',
+        mailbox: 'INBOX',
+        uid: 20,
+        uidValidity: '100',
+        envelope: {
+          subject: 'Plan',
+          messageId: '<p1@x>',
+          from: [{ address: 'Ada@Example.com' }],
+          to: [{ address: 'bob@example.com' }],
+          cc: [{ address: 'carol@example.com' }],
+        },
+        flags: [],
+        messageId: '<p1@x>',
+        internalDate: Date.now(),
+        subject: 'Plan',
+        hasAttachments: false,
+      },
+      {
+        account: 'work',
+        mailbox: 'INBOX',
+        uid: 21,
+        uidValidity: '100',
+        envelope: {
+          subject: 'Re: Plan',
+          messageId: '<p2@x>',
+          from: [{ address: 'ada@example.com' }],
+          to: [],
+        },
+        flags: [],
+        messageId: '<p2@x>',
+        inReplyTo: '<p1@x>',
+        internalDate: Date.now() + 1000,
+        subject: 'Re: Plan',
+        hasAttachments: false,
+      },
+    ]);
+    store.putBody('work', 'INBOX', 20, '100', { text: 'a', headers: {} });
+    store.putBody('work', 'INBOX', 21, '100', { text: 'b', headers: {} });
+
+    const thread = await service.getThread('work', '<p1@x>', 'INBOX');
+
+    expect(imap.getThread).not.toHaveBeenCalled();
+    const addresses = thread.participants.map((p) => p.address);
+    expect(addresses).toContain('carol@example.com');
+    // Ada appears once despite differing case between the two messages.
+    expect(addresses.filter((a) => a.toLowerCase() === 'ada@example.com')).toHaveLength(1);
+  });
+
+  it('issues one STATUS probe for a batch of concurrent reads', async () => {
+    const { imap, service } = createCachedSetup({ lastSyncedAt: Date.now() - 60_000 });
+
+    await Promise.all([
+      service.getEmail('work', '1', 'INBOX'),
+      service.getEmail('work', '2', 'INBOX'),
+      service.listEmails('work', { mailbox: 'INBOX' }),
+    ]);
+
+    expect(imap.getMailboxStatus).toHaveBeenCalledTimes(1);
   });
 });

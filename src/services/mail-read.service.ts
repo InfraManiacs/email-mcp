@@ -22,7 +22,7 @@
 
 import type BlobStore from '../cache/blob-store.js';
 import type CacheStore from '../cache/store.js';
-import type { CachedMessage, MessageFilters } from '../cache/store.js';
+import type { CachedMessage, MailboxState, MessageFilters } from '../cache/store.js';
 import { MAX_CACHED_BODY_BYTES } from '../cache/store.js';
 import type SyncEngine from '../cache/sync-engine.js';
 import type { Email, EmailMeta, PaginatedResult } from '../types/index.js';
@@ -169,12 +169,42 @@ export default class MailReadService {
   // Freshness protocol
   // -------------------------------------------------------------------------
 
+  /** In-flight revalidations, so a batch of reads shares one STATUS probe. */
+  private inFlightRevalidations = new Map<string, Promise<Revalidation>>();
+
   /**
    * Decide whether the mirror may answer for `mailbox`, revalidating or
    * resynchronizing as needed. Never throws: every failure path degrades to
    * either a marked cache serve or the live path.
+   *
+   * Coalesced per mailbox: `get_emails` fans out N concurrent reads, and
+   * without this each one would pay its own STATUS round trip on a connection
+   * that serializes commands anyway.
    */
   private async revalidate(account: string, mailbox: string): Promise<Revalidation> {
+    const key = `${account} ${mailbox}`;
+    const pending = this.inFlightRevalidations.get(key);
+    if (pending) return pending;
+
+    const run = this.runRevalidate(account, mailbox).finally(() => {
+      this.inFlightRevalidations.delete(key);
+    });
+    this.inFlightRevalidations.set(key, run);
+    return run;
+  }
+
+  private async runRevalidate(account: string, mailbox: string): Promise<Revalidation> {
+    try {
+      return await this.decideFreshness(account, mailbox);
+    } catch {
+      // A locked, corrupt or unwritable mirror must never surface as a tool
+      // error — the live path is always available.
+      this.metrics.liveFallbacks += 1;
+      return { kind: 'live' };
+    }
+  }
+
+  private async decideFreshness(account: string, mailbox: string): Promise<Revalidation> {
     const store = this.store;
     const engine = this.syncEngine;
     if (!store || !engine) return { kind: 'live' };
@@ -185,6 +215,15 @@ export default class MailReadService {
       // syncMailbox never rejects by contract; the catch guards the rule that
       // no fire-and-forget promise goes unhandled.
       void engine.syncMailbox(account, mailbox).catch(() => {});
+      this.metrics.liveFallbacks += 1;
+      return { kind: 'live' };
+    }
+
+    // Coverage, not just freshness: a window-bounded first sync (or envelope
+    // eviction) leaves the mirror holding a slice of the mailbox. Serving that
+    // slice would report a wrong `total` and "no more pages" for mail that
+    // exists — so a partial mirror answers live until it catches up.
+    if (!MailReadService.covers(store, state)) {
       this.metrics.liveFallbacks += 1;
       return { kind: 'live' };
     }
@@ -216,7 +255,12 @@ export default class MailReadService {
       this.metrics.revalidationsChanged += 1;
     }
 
-    // The mirror is known to be behind: sync, bounded.
+    // The mirror is known to be behind. Mark it dirty FIRST: syncMailbox
+    // coalesces onto an already-running sync, which may have completed its
+    // fetch before the change we just detected. The mark survives such a run
+    // (its epoch snapshot no longer matches), so the next read re-syncs
+    // instead of trusting a sync that could not have seen the change.
+    engine.markDirty(account, mailbox);
     const result = await MailReadService.race(
       engine.syncMailbox(account, mailbox),
       this.syncWaitMs,
@@ -233,6 +277,22 @@ export default class MailReadService {
     }
     this.metrics.syncedReads += 1;
     return { kind: 'cache', uidValidity, marker: { source: 'cache' } };
+  }
+
+  /**
+   * Does the mirror hold every message the server reports for this mailbox?
+   *
+   * `totalMessages` is the server's own EXISTS from the last sync, so this
+   * compares what was mirrored against what exists. Unknown server count is
+   * treated as covered: the alternative is never using the cache at all on a
+   * server that withholds the count.
+   */
+  private static covers(store: CacheStore, state: MailboxState): boolean {
+    if (state.totalMessages === undefined) return true;
+    return (
+      store.countMessagesInEpoch(state.account, state.mailbox, state.uidValidity) >=
+      state.totalMessages
+    );
   }
 
   /**
@@ -412,29 +472,43 @@ export default class MailReadService {
 
     this.metrics.liveFallbacks += 1;
     const email = await this.imapService.getEmail(account, emailId, mailbox);
-    this.persistBody(account, mailbox, uid, email);
+    // Only when the read was served against a known epoch: writing back under
+    // an epoch re-read AFTER the fetch could graft this body onto whatever
+    // message holds the same UID in a newer generation.
+    if (reval.kind === 'cache') {
+      this.persistBody(account, mailbox, uid, reval.uidValidity, email);
+    }
     return email;
   }
 
-  /** Best-effort write-back of a live-fetched body. Never throws. */
-  private persistBody(account: string, mailbox: string, uid: number, email: Email): void {
+  /**
+   * Best-effort write-back of a live-fetched body. Never throws.
+   *
+   * `uidValidity` is the epoch the read was served from, captured BEFORE the
+   * fetch: if a concurrent sync rotated the epoch meanwhile, the UPDATE
+   * matches zero rows and the fill correctly disappears.
+   */
+  private persistBody(
+    account: string,
+    mailbox: string,
+    uid: number,
+    uidValidity: string,
+    email: Email,
+  ): void {
     const store = this.store;
     if (!store) return;
 
     try {
-      const state = store.getMailboxState(account, mailbox);
-      if (!state) return;
-
       const isHtml = email.bodyText === undefined && email.bodyHtml !== undefined;
       const text = email.bodyText ?? email.bodyHtml;
       if (text === undefined || Buffer.byteLength(text, 'utf-8') > MAX_CACHED_BODY_BYTES) {
         // Nothing cacheable — record the attempt so backfill skips it too.
-        store.markBodyAttempted(account, mailbox, uid, state.uidValidity);
+        store.markBodyAttempted(account, mailbox, uid, uidValidity);
         return;
       }
 
       const previewSource = isHtml ? stripHtml(text) : text;
-      store.putBody(account, mailbox, uid, state.uidValidity, {
+      store.putBody(account, mailbox, uid, uidValidity, {
         text,
         subtype: isHtml ? 'html' : 'plain',
         headers: email.headers,
@@ -563,10 +637,14 @@ export default class MailReadService {
       }
     }
 
+    // Keyed case-insensitively and including cc, matching the live walk —
+    // otherwise the same thread lists fewer (or duplicate-cased) participants
+    // depending on which path answered.
     const participants = new Map<string, { name?: string; address: string }>();
     for (const msg of messages) {
-      for (const addr of [msg.from, ...msg.to]) {
-        if (addr?.address && !participants.has(addr.address)) participants.set(addr.address, addr);
+      for (const addr of [msg.from, ...msg.to, ...(msg.cc ?? [])]) {
+        const key = addr?.address?.toLowerCase();
+        if (key && !participants.has(key)) participants.set(key, addr);
       }
     }
 

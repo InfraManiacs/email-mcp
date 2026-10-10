@@ -338,6 +338,14 @@ export default class CacheStore {
     // failing immediately with SQLITE_BUSY.
     const db = new DatabaseSync(this.dbPath, { timeout: 5000 });
 
+    // Tighten the main file BEFORE switching on WAL: the -wal and -shm
+    // sidecars inherit their mode from it, and the WAL holds the most
+    // recently written message bodies. Doing this after the pragma leaves
+    // them world-readable (verified on this Node).
+    if (this.dbPath !== ':memory:') {
+      fs.chmodSync(this.dbPath, 0o600);
+    }
+
     // auto_vacuum must be set before the first table is created to take
     // effect — this is why migrate() recreates the file rather than dropping
     // tables. INCREMENTAL lets the eviction loop hand pages back with
@@ -929,6 +937,36 @@ export default class CacheStore {
     );
   }
 
+  /**
+   * Lowest mirrored UID for one generation, or undefined when nothing is
+   * mirrored. The read path uses it together with the server's message count
+   * to decide whether the mirror covers the whole mailbox.
+   */
+  lowestUid(account: string, mailbox: string, uidValidity: string): number | undefined {
+    return (
+      this.queryOne<{ lowest: number | null }>(
+        `SELECT MIN(uid) AS lowest FROM message
+         WHERE account = ? AND mailbox = ? AND uid_validity = ?`,
+        account,
+        mailbox,
+        uidValidity,
+      )?.lowest ?? undefined
+    );
+  }
+
+  /** Mirrored message count for one generation — the coverage numerator. */
+  countMessagesInEpoch(account: string, mailbox: string, uidValidity: string): number {
+    return (
+      this.queryOne<{ total: number }>(
+        `SELECT COUNT(*) AS total FROM message
+         WHERE account = ? AND mailbox = ? AND uid_validity = ?`,
+        account,
+        mailbox,
+        uidValidity,
+      )?.total ?? 0
+    );
+  }
+
   countMessages(account: string, mailbox: string): number {
     return (
       this.queryOne<{ total: number }>(
@@ -946,10 +984,18 @@ export default class CacheStore {
       DELETE FROM message
       WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
     `);
+    // Attachment rows must go with their message: left behind they keep the
+    // blob unreclaimable (collectOrphans still sees it referenced) and let a
+    // download serve content for a message that no longer exists.
+    const dropAttachments = this.prep(`
+      DELETE FROM attachment
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
+    `);
 
     this.transaction(() => {
       uids.forEach((uid) => {
         stmt.run(account, mailbox, uid, uidValidity);
+        dropAttachments.run(account, mailbox, uid, uidValidity);
       });
     });
   }
@@ -1157,12 +1203,53 @@ export default class CacheStore {
    * @returns how many rows were removed.
    */
   deleteMessagesOlderThan(cutoffMs: number, limit: number): number {
-    const { changes } = this.prep(`
-      DELETE FROM message WHERE rowid IN (
-        SELECT rowid FROM message WHERE internal_date < ? ORDER BY internal_date ASC LIMIT ?
-      )
-    `).run(cutoffMs, limit);
-    return Number(changes);
+    return this.transaction(() => {
+      const victims = this.queryAll<{
+        account: string;
+        mailbox: string;
+        uid: number;
+        uid_validity: string;
+      }>(
+        `SELECT account, mailbox, uid, uid_validity FROM message
+         WHERE internal_date < ? ORDER BY internal_date ASC LIMIT ?`,
+        cutoffMs,
+        limit,
+      );
+      if (victims.length === 0) return 0;
+
+      const dropMessage = this.prep(`
+        DELETE FROM message
+        WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
+      `);
+      const dropAttachments = this.prep(`
+        DELETE FROM attachment
+        WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
+      `);
+      const touched = new Set<string>();
+
+      for (const v of victims) {
+        dropMessage.run(v.account, v.mailbox, v.uid, v.uid_validity);
+        dropAttachments.run(v.account, v.mailbox, v.uid, v.uid_validity);
+        touched.add(`${v.account}\u0000${v.mailbox}`);
+      }
+
+      // Evicting envelopes opens a hole the incremental sync can never reach
+      // back into (its range starts at the stored uidNext). Forgetting the
+      // watermarks forces the next sync to rebuild coverage instead of leaving
+      // the gap permanent and invisible.
+      const forget = this.prep(`
+        UPDATE mailbox_state
+        SET uid_next = NULL, highest_modseq = NULL, body_backfill_uid = NULL,
+            last_synced_at = NULL, total_messages = NULL
+        WHERE account = ? AND mailbox = ?
+      `);
+      for (const key of touched) {
+        const [account, mailbox] = key.split('\u0000');
+        forget.run(account, mailbox);
+      }
+
+      return victims.length;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1250,7 +1337,11 @@ export default class CacheStore {
           uid_validity      = excluded.uid_validity,
           uid_next          = NULL,
           highest_modseq    = NULL,
-          body_backfill_uid = NULL
+          body_backfill_uid = NULL,
+          -- Without these the purge window reads as "synced moments ago, N
+          -- messages" over an empty table: an empty mailbox served as fresh.
+          last_synced_at    = NULL,
+          total_messages    = NULL
       `).run(account, mailbox, newUidValidity);
 
       return Number(changes);
@@ -1280,6 +1371,20 @@ export default class CacheStore {
         this.db.exec('DELETE FROM mailbox_state');
       }
     });
+  }
+
+  /**
+   * Attachment bytes held, per the index.
+   *
+   * The eviction loop measures with this rather than walking the blob
+   * directory: it runs on every reconcile and after every eviction, and a
+   * synchronous stat per file would stall the server.
+   */
+  attachmentUsageBytes(): number {
+    return (
+      this.queryOne<{ bytes: number | null }>('SELECT SUM(size) AS bytes FROM attachment')?.bytes ??
+      0
+    );
   }
 
   /** On-disk size in bytes, for `cache status`. */

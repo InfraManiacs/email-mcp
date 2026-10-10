@@ -905,6 +905,10 @@ export default class ImapService {
     const strategy = await this.getLabelStrategy(accountName);
     const client = await this.connections.getImapClient(accountName);
     await strategy.addLabel(client, emailId, mailbox, label);
+    // On a keyword-strategy server a label is a flag write: it moves neither
+    // UIDNEXT nor MESSAGES, so the cache's STATUS probe cannot see it. Without
+    // this event the next read serves the old label set, marked fresh.
+    ImapService.emitChanged(accountName, sanitizeMailboxName(mailbox));
   }
 
   async removeLabel(
@@ -916,6 +920,7 @@ export default class ImapService {
     const strategy = await this.getLabelStrategy(accountName);
     const client = await this.connections.getImapClient(accountName);
     await strategy.removeLabel(client, emailId, mailbox, label);
+    ImapService.emitChanged(accountName, sanitizeMailboxName(mailbox));
   }
 
   async createLabel(accountName: string, name: string): Promise<void> {

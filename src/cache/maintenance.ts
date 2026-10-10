@@ -42,9 +42,17 @@ interface BudgetOptions {
 const DEFAULT_LOW_WATER_RATIO = 0.8;
 const BATCH = 200;
 
-/** Bytes currently held: the SQLite mirror plus the attachment blobs. */
-function usage(store: CacheStore, blobs: BlobStore): number {
-  return store.sizeBytes() + blobs.sizeBytes();
+/**
+ * Bytes currently held: the SQLite mirror plus the attachment blobs.
+ *
+ * Attachment bytes come from the index, not from a directory walk — this is
+ * called on every reconcile and again after each eviction, and a synchronous
+ * stat-per-blob sweep would block the event loop of a stdio MCP server for
+ * seconds once a few thousand attachments are cached. The directory is
+ * reconciled against the index separately, in `collectOrphans`.
+ */
+function usage(store: CacheStore): number {
+  return store.attachmentUsageBytes() + store.sizeBytes();
 }
 
 /**
@@ -59,7 +67,7 @@ export async function enforceBudget(
   options: BudgetOptions = {},
 ): Promise<BudgetResult> {
   const budgetBytes = maxSizeMb * 1024 * 1024;
-  const usedBytesBefore = usage(store, blobs);
+  const usedBytesBefore = usage(store);
   const result: BudgetResult = {
     usedBytesBefore,
     usedBytesAfter: usedBytesBefore,
@@ -74,7 +82,7 @@ export async function enforceBudget(
   const lowWater = budgetBytes * (options.lowWaterRatio ?? DEFAULT_LOW_WATER_RATIO);
 
   // ---- 1. Attachment blobs, coldest first.
-  while (usage(store, blobs) > lowWater) {
+  while (usage(store) > lowWater) {
     const candidates = store.listEvictableAttachments(BATCH);
     if (candidates.length === 0) break;
 
@@ -85,7 +93,7 @@ export async function enforceBudget(
         await blobs.delete(row.sha256);
       }
       result.evictedBlobs += 1;
-      if (usage(store, blobs) <= lowWater) break;
+      if (usage(store) <= lowWater) break;
     }
   }
 
@@ -97,7 +105,7 @@ export async function enforceBudget(
   // back. Without this the loop would read "still over budget" after every
   // eviction and drain the whole cache. Bodies are large, so the number of
   // iterations here is small.
-  while (usage(store, blobs) > lowWater) {
+  while (usage(store) > lowWater) {
     const candidates = store.listEvictableBodies(BATCH);
     if (candidates.length === 0) break;
 
@@ -107,7 +115,7 @@ export async function enforceBudget(
       store.incrementalVacuum();
       result.evictedBodies += 1;
       progressed = true;
-      if (usage(store, blobs) <= lowWater) break;
+      if (usage(store) <= lowWater) break;
     }
     if (!progressed) break;
   }
@@ -116,7 +124,7 @@ export async function enforceBudget(
   const windowDays = options.windowDays ?? 0;
   if (windowDays > 0) {
     let cutoff = Date.now() - windowDays * 86_400_000;
-    while (usage(store, blobs) > lowWater) {
+    while (usage(store) > lowWater) {
       const removed = store.deleteMessagesOlderThan(cutoff, BATCH);
       if (removed === 0) {
         // Nothing left that old; walk the cutoff forward a day at a time
@@ -131,7 +139,7 @@ export async function enforceBudget(
   }
 
   store.incrementalVacuum();
-  result.usedBytesAfter = usage(store, blobs);
+  result.usedBytesAfter = usage(store);
 
   if (result.evictedBlobs + result.evictedBodies + result.evictedMessages > 0) {
     await mcpLog(

@@ -143,11 +143,20 @@ export const CacheConfigSchema = z.object({
    */
   mailboxes: z.array(z.string()).default(() => ['INBOX']),
   /**
-   * How far back the FIRST sync of a mailbox reaches. 0 means no limit. Later
-   * syncs are incremental, so this bounds the initial transfer; it also marks
-   * which envelopes may be dropped if the size budget is ever exhausted.
+   * How far back the FIRST sync of a mailbox reaches. 0 (the default) means no
+   * limit. Later syncs are incremental, so this only bounds the initial
+   * transfer; it also marks which envelopes may be dropped if the size budget
+   * is ever exhausted.
+   *
+   * Defaulting to 0 is deliberate: a bounded window leaves the mirror holding
+   * a slice, and a slice cannot answer "how many messages are in this
+   * mailbox", so every listing has to go live — the cache would cost disk and
+   * buy nothing. Envelopes are about a kilobyte each, so a complete mirror of
+   * a 9,000-message mailbox is roughly 9 MB of the 500 MB budget. Set a window
+   * only for mailboxes too large to mirror; reads then stay correct by falling
+   * back to the live path.
    */
-  window_days: z.number().int().min(0).default(90),
+  window_days: z.number().int().min(0).default(0),
   /**
    * How many message bodies to keep per mailbox. The newest are prefetched in
    * the background; anything read beyond this is cached on demand. 0 keeps
@@ -271,7 +280,7 @@ export const SettingsSchema = z.object({
       ({
         enabled: true,
         mailboxes: ['INBOX'],
-        window_days: 90,
+        window_days: 0,
         body_messages: 500,
         max_size_mb: 500,
         sync_interval: 300,
@@ -340,7 +349,7 @@ export const AppConfigFileSchema = z.object({
         cache: {
           enabled: true,
           mailboxes: ['INBOX'],
-          window_days: 90,
+          window_days: 0,
           body_messages: 500,
           max_size_mb: 500,
           sync_interval: 300,

@@ -274,7 +274,11 @@ async function runClear(args: CacheArgs): Promise<void> {
     const scope = args.account ? `account "${args.account}"` : 'all accounts';
     const freeable = before.sizeBytes + blobs.sizeBytes();
 
-    if (before.messageCount === 0 && before.attachmentCount === 0) {
+    // Blob files can outlive the index — a schema bump recreates the database
+    // file and leaves every attachment behind as an orphan. Refusing to run
+    // here would make that disk permanently unreclaimable through the CLI.
+    const strayBlobs = blobs.list().length;
+    if (before.messageCount === 0 && before.attachmentCount === 0 && strayBlobs === 0) {
       console.log('Nothing to clear — the cache is already empty.');
       return;
     }
