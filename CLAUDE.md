@@ -23,8 +23,9 @@ See `README.md` for the feature list and `docs/` for deeper guides.
 | Concern | Tool |
 |---|---|
 | Format / import organisation | Biome (`pnpm format`, `pnpm format:check`) |
-| Lint | ESLint (Airbnb Extended + TS strict) (`pnpm lint`) |
-| Combined static checks | `pnpm check` (Biome + ESLint) |
+| Lint | Biome (`pnpm lint`) |
+| Combined static checks | `pnpm check` (Biome format + lint) |
+| Dead code / unused deps | knip (`pnpm knip`) |
 | Type-check | `pnpm typecheck` |
 | Unit tests | Vitest (`pnpm test`) |
 | Integration tests | Vitest with `vitest.config.integration.ts` (`pnpm test:integration`) — uses testcontainers |
@@ -71,7 +72,7 @@ work done. For changes touching IMAP/SMTP behaviour, run
 
 ## Validation before you call it done
 
-1. `pnpm check` — Biome + ESLint clean.
+1. `pnpm check` — Biome format + lint clean.
 2. `pnpm typecheck` — no type errors.
 3. `pnpm test` — unit tests green.
 4. `pnpm test:integration` — only if touching IMAP/SMTP, watcher,
