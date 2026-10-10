@@ -207,6 +207,12 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'logs': {
+      const { default: runLogs } = await import('./cli/logs.js');
+      await runLogs(process.argv.slice(3));
+      break;
+    }
+
     case 'update': {
       const { default: runUpdateCommand } = await import('./cli/update.js');
       await runUpdateCommand(process.argv.slice(3));

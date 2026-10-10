@@ -641,15 +641,6 @@ async function uninstallServer(): Promise<void> {
   }
 }
 
-async function showLogs(args: ServerArgs): Promise<void> {
-  try {
-    const text = await fsp.readFile(DAEMON_LOG_FILE, 'utf-8');
-    console.log(tailLines(text, args.lines));
-  } catch {
-    console.log(`No log file yet at ${DAEMON_LOG_FILE}.`);
-  }
-}
-
 /** Per-subcommand usage, keyed for `server <sub> --help`. */
 const SERVER_SUBUSAGE: Record<string, string> = {
   start:
@@ -734,9 +725,11 @@ export default async function runServerCommand(argv: string[]): Promise<void> {
       await startServer(startArgs);
       return;
     }
-    case 'logs':
-      await showLogs(args);
+    case 'logs': {
+      const { default: runLogs } = await import('./logs.js');
+      await runLogs(rest);
       return;
+    }
     default:
       printServerUsage();
   }

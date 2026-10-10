@@ -242,6 +242,16 @@ export const COMMANDS: CommandSpec[] = [
     ],
   },
   {
+    name: 'logs',
+    description: 'View the daemon log (tail, follow, filter)',
+    flags: [
+      { flag: '--lines', description: 'Number of lines (-n)', takesValue: true },
+      { flag: '--follow', description: 'Stream new lines live (-f)' },
+      { flag: '--level', description: 'Minimum level: debug|info|warn|error', takesValue: true },
+      { flag: '--grep', description: 'Only lines containing TEXT', takesValue: true },
+    ],
+  },
+  {
     name: 'update',
     description: 'Self-update the binary to the latest release',
     flags: [

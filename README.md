@@ -539,6 +539,24 @@ Completions cover every command, subcommand, and flag — and complete **account
 names from your config** (`email-mcp test <TAB>`, `account edit <TAB>`) and
 **settings sections** (`config edit <TAB>`) dynamically.
 
+### Checking logs
+
+The background daemon logs to `$XDG_STATE_HOME/email-mcp/server.log`. View it
+with a tail/follow/filter viewer — no need to find the file:
+
+```bash
+email-mcp logs                 # last 40 lines (colored by level)
+email-mcp logs -n 200          # more lines
+email-mcp logs -f              # live follow (Ctrl-C to stop)
+email-mcp logs --level warn    # only WARN and ERROR (continuation lines kept)
+email-mcp logs --grep imap     # only lines matching a substring
+email-mcp logs -f --level error  # watch for errors as they happen
+```
+
+`email-mcp server logs` is an alias with the same options. Color auto-disables
+when piped or under `NO_COLOR`; on a systemd host, `journalctl --user -u
+email-mcp` is also available.
+
 ### Reading and sending mail from the CLI
 
 Beyond running as an MCP server, `email-mcp` is a usable mail client in its own
