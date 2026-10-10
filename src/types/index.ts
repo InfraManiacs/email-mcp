@@ -444,6 +444,17 @@ export interface ScheduledEmail {
   createdAt: string;
   status: 'pending' | 'sending' | 'sent' | 'failed';
   attempts: number;
+  /**
+   * When a runner claimed this entry. Lock staleness is measured from here,
+   * not from createdAt — a long-scheduled email is not a stale lock.
+   */
+  claimedAt?: string;
+  /**
+   * Set immediately before handing the message to SMTP. Its presence after a
+   * crash is what separates "never reached the server, safe to retry" from
+   * "may already be delivered, must not be resent blindly".
+   */
+  sendStartedAt?: string;
   lastError?: string;
   draftMessageId?: string;
   draftMailbox?: string;
