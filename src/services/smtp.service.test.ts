@@ -112,7 +112,7 @@ describe('SmtpService', () => {
       );
     });
 
-    it('sends as HTML when html=true', async () => {
+    it('sends HTML with a generated plain-text alternative', async () => {
       await service.sendEmail('test', {
         to: ['a@example.com'],
         subject: 'HTML Test',
@@ -120,9 +120,36 @@ describe('SmtpService', () => {
         html: true,
       });
 
+      // nodemailer 10 removed text:'auto', so the service generates the
+      // text/plain alternative itself — HTML mail goes out as
+      // multipart/alternative, not as a single text/html part.
       const call = transport.sendMail.mock.calls[0][0];
       expect(call.html).toBe('<h1>Hello</h1>');
-      expect(call.text).toBeUndefined();
+      expect(call.text).toBe('Hello');
+    });
+  });
+
+  describe('sendDraft', () => {
+    it('sends both parts for an HTML draft', async () => {
+      const imap = {
+        fetchDraft: vi.fn().mockResolvedValue({
+          email: {
+            to: [{ address: 'a@b.c' }],
+            subject: 'Draft',
+            bodyHtml: '<p>drafted <b>text</b></p>',
+            references: [],
+          },
+          mailbox: 'Drafts',
+        }),
+        deleteDraft: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ImapService;
+      service = new SmtpService(connections, rateLimiter, imap);
+
+      await service.sendDraft('test', 7);
+
+      const call = transport.sendMail.mock.calls[0][0];
+      expect(call.html).toBe('<p>drafted <b>text</b></p>');
+      expect(call.text).toBe('drafted text');
     });
   });
 });
@@ -197,6 +224,58 @@ describe('outbound attachments', () => {
         contentType: 'application/pdf',
       },
     ]);
+  });
+
+  it('forwardEmail converts an HTML-only original and quotes it', async () => {
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyText: undefined,
+        bodyHtml: '<p>Hello <b>world</b></p><p>second line</p>',
+        attachments: [],
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], body: 'FYI' });
+
+    const payload = transport.sendMail.mock.calls[0][0];
+    // 165/169 real messages are HTML-only; the old text ?? html fallback
+    // stuffed raw markup into a text/plain part.
+    expect(payload.text).not.toContain('<p>');
+    expect(payload.text).toContain('FYI');
+    expect(payload.text).toContain('---------- Forwarded message ----------');
+    expect(payload.text).toContain('> Hello world');
+    expect(payload.text).toContain('> second line');
+    expect(payload.html).toBeUndefined();
+  });
+
+  it('forwardEmail html=true carries the original HTML in a blockquote', async () => {
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyText: undefined,
+        bodyHtml: '<p>original rich content</p>',
+        attachments: [],
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], body: 'note', html: true });
+
+    const payload = transport.sendMail.mock.calls[0][0];
+    expect(payload.html).toContain('note');
+    expect(payload.html).toContain('<blockquote');
+    expect(payload.html).toContain('<p>original rich content</p>');
+    // The text alternative still ships, quoted and markup-free.
+    expect(payload.text).toContain('> original rich content');
+    expect(payload.text).not.toContain('<p>');
   });
 
   it('forwardEmail skips attachments when includeAttachments is false', async () => {

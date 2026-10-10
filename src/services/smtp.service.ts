@@ -6,7 +6,9 @@
 
 import type { IConnectionManager } from '../connections/types.js';
 import type RateLimiter from '../safety/rate-limiter.js';
+import { sanitizeTemplateVariable } from '../safety/validation.js';
 import type { SendResult } from '../types/index.js';
+import { stripHtml } from '../utils/html.js';
 import type { PreparedAttachment } from './attachments.js';
 import type ImapService from './imap.service.js';
 
@@ -47,7 +49,11 @@ export default class SmtpService {
       cc: options.cc?.join(', '),
       bcc: options.bcc?.join(', '),
       subject: options.subject,
-      ...(options.html ? { html: options.body } : { text: options.body }),
+      // nodemailer 10 removed text:'auto' — generate the plain alternative
+      // here so HTML mail goes out as multipart/alternative, not single-part.
+      ...(options.html
+        ? { html: options.body, text: stripHtml(options.body) }
+        : { text: options.body }),
       ...(options.attachments?.length
         ? { attachments: options.attachments.map(({ filename, path }) => ({ filename, path })) }
         : {}),
@@ -114,7 +120,9 @@ export default class SmtpService {
       subject,
       inReplyTo: original.messageId,
       references: references.join(' '),
-      ...(options.html ? { html: options.body } : { text: options.body }),
+      ...(options.html
+        ? { html: options.body, text: stripHtml(options.body) }
+        : { text: options.body }),
       ...(options.attachments?.length
         ? { attachments: options.attachments.map(({ filename, path }) => ({ filename, path })) }
         : {}),
@@ -139,6 +147,7 @@ export default class SmtpService {
       body?: string;
       cc?: string[];
       includeAttachments?: boolean;
+      html?: boolean;
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -185,8 +194,28 @@ export default class SmtpService {
       '',
     ].join('\n');
 
-    const originalBody = original.bodyText ?? original.bodyHtml ?? '';
-    const fullBody = (options.body ?? '') + forwardHeader + originalBody;
+    // The common case is an HTML-only original — raw markup in a text/plain
+    // part is unreadable, so the original is converted and "> "-quoted. The
+    // forward header stays unquoted: it is this message's text, not theirs.
+    const originalText =
+      original.bodyText ?? (original.bodyHtml ? stripHtml(original.bodyHtml) : '');
+    const quotedOriginal = originalText
+      .split('\n')
+      .map((line) => (line.trim() ? `> ${line}` : '>'))
+      .join('\n');
+    const textBody = (options.body ?? '') + forwardHeader + quotedOriginal;
+
+    let htmlBody: string | undefined;
+    if (options.html) {
+      const esc = (s: string) => sanitizeTemplateVariable(s, true);
+      const note = options.body ? `<p>${esc(options.body).replace(/\n/g, '<br>')}</p>` : '';
+      const headerHtml = forwardHeader.trim().split('\n').map(esc).join('<br>');
+      const originalHtml =
+        original.bodyHtml ?? (originalText ? `<pre>${esc(originalText)}</pre>` : '');
+      htmlBody =
+        `${note}<div>${headerHtml}</div>` +
+        `<blockquote style="border-left:2px solid #ccc;margin:0 0 0 8px;padding-left:8px">${originalHtml}</blockquote>`;
+    }
 
     const transport = await this.connections.getSmtpTransport(accountName);
 
@@ -195,7 +224,8 @@ export default class SmtpService {
       to: options.to.join(', '),
       cc: options.cc?.join(', '),
       subject,
-      text: fullBody,
+      text: textBody,
+      ...(htmlBody ? { html: htmlBody } : {}),
       ...(attachments.length ? { attachments } : {}),
     });
 
@@ -245,7 +275,9 @@ export default class SmtpService {
       subject: draft.subject,
       inReplyTo: draft.inReplyTo,
       references: draft.references?.join(' '),
-      ...(draft.bodyHtml ? { html: draft.bodyHtml } : { text: draft.bodyText ?? '' }),
+      ...(draft.bodyHtml
+        ? { html: draft.bodyHtml, text: draft.bodyText ?? stripHtml(draft.bodyHtml) }
+        : { text: draft.bodyText ?? '' }),
     });
 
     // Delete the draft after successful send

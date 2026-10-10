@@ -40,7 +40,9 @@ export async function seedEmail(options: SeedEmailOptions = {}) {
       from,
       to: options.to ?? 'test@localhost',
       subject: options.subject ?? 'Test Email',
-      text: options.text ?? 'Hello from integration tests',
+      // An html-only seed must stay single-part — injecting the default text
+      // would silently turn it into multipart/alternative.
+      text: options.text ?? (options.html ? undefined : 'Hello from integration tests'),
       html: options.html,
       cc: options.cc?.join(', '),
       bcc: options.bcc?.join(', '),

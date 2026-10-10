@@ -180,7 +180,10 @@ export default function registerSendTools(
     {
       title: 'Forward email',
       description:
-        'Forward an email to new recipients with optional additional message. Original email is quoted below and its attachments are re-attached unless includeAttachments is false.',
+        'Forward an email to new recipients with optional additional message. The original is converted ' +
+        'to readable text and "> "-quoted below your note; its attachments are re-attached unless ' +
+        'includeAttachments is false. Set html=true to also send an HTML part carrying the original ' +
+        'HTML in a blockquote.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID to forward (from list_emails or get_email)'),
@@ -192,6 +195,12 @@ export default function registerSendTools(
           .boolean()
           .default(true)
           .describe('Re-attach the original attachments (default: true)'),
+        html: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Also send an HTML part with the original HTML preserved in a blockquote (default: false — text only)',
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
