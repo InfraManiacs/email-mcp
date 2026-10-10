@@ -128,6 +128,7 @@ async function downloadBodyPart(
   client: ImapFlow,
   uid: number,
   path: TextPart['path'],
+  subtype?: string,
 ): Promise<string | undefined> {
   try {
     const part = await client.download(String(uid), path, { uid: true });
@@ -146,7 +147,45 @@ async function downloadBodyPart(
       }
       if (buf.length > room) truncated = true;
     }
-    const decoded = Buffer.concat(chunks).toString('utf-8');
+    let raw = Buffer.concat(chunks);
+
+    // A cut at an arbitrary byte can land inside a multibyte character, whose
+    // remaining bytes then decode to U+FFFD. Back off to the last codepoint
+    // boundary — a lead byte is 0b0xxxxxxx or 0b11xxxxxx, continuations are
+    // 0b10xxxxxx.
+    if (truncated) {
+      for (let back = 0; back < 4 && raw.length - back > 0; back += 1) {
+        const byte = raw[raw.length - 1 - back] as number;
+        if ((byte & 0b1100_0000) !== 0b1000_0000) {
+          const seqLen =
+            // biome-ignore format: the width ladder reads better aligned
+            byte < 0x80 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+          // Keep the sequence only when all of its bytes survived the cut.
+          if (back + 1 < seqLen) raw = raw.subarray(0, raw.length - 1 - back);
+          break;
+        }
+      }
+    }
+
+    // ImapFlow charset-converts text/plain and text/html only (its isTextNode
+    // list), so any other text subtype — text/calendar, text/enriched —
+    // arrives as raw bytes with the declared charset in meta.
+    const charset = (part.meta as Record<string, unknown> | undefined)?.charset as
+      | string
+      | undefined;
+    const needsDecode = subtype !== undefined && subtype !== 'plain' && subtype !== 'html';
+    let decoded: string;
+    if (needsDecode && charset) {
+      try {
+        decoded = new TextDecoder(charset).decode(raw);
+      } catch {
+        // Unknown charset label — utf-8 is the least-wrong fallback.
+        decoded = raw.toString('utf-8');
+      }
+    } else {
+      decoded = raw.toString('utf-8');
+    }
+
     return truncated ? `${decoded}\n…[body truncated at 512 KB]` : decoded;
   } catch (err) {
     // Part may not exist on this server — better an empty body than a throw,
@@ -182,15 +221,19 @@ async function messageToEmail(
   // download() applies the decoding declared by Content-Transfer-Encoding.
   let { plain, html } = selectBodyParts(collectTextParts(msg.bodyStructure));
 
-  // An over-cap part loses to a within-cap sibling outright; a sole over-cap
-  // part is downloaded and truncated instead (see downloadBodyPart).
-  if (plain && html) {
-    if (plain.size > BODY_PART_MAX_BYTES && html.size <= BODY_PART_MAX_BYTES) plain = undefined;
-    else if (html.size > BODY_PART_MAX_BYTES && plain.size <= BODY_PART_MAX_BYTES) html = undefined;
+  // An over-cap part loses to a within-cap sibling outright. When both are
+  // over the cap, fetch only one — transferring 1.6 MB to truncate both
+  // halves to 512 KB buys nothing — and prefer plain, which is both cheaper
+  // in context-window terms and already readable.
+  if (plain && html && plain.size > BODY_PART_MAX_BYTES) {
+    if (html.size <= BODY_PART_MAX_BYTES) plain = undefined;
+    else html = undefined;
+  } else if (plain && html && html.size > BODY_PART_MAX_BYTES) {
+    html = undefined;
   }
 
-  if (plain) bodyText = await downloadBodyPart(client, uid, plain.path);
-  if (html) bodyHtml = await downloadBodyPart(client, uid, html.path);
+  if (plain) bodyText = await downloadBodyPart(client, uid, plain.path, plain.subtype);
+  if (html) bodyHtml = await downloadBodyPart(client, uid, html.path, html.subtype);
 
   if (bodyText === undefined && bodyHtml === undefined) {
     // No displayable part at all — S/MIME and PGP payloads land here. A
