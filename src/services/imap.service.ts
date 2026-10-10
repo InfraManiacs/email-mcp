@@ -478,6 +478,41 @@ export default class ImapService {
     });
   }
 
+  /**
+   * One cheap STATUS round trip, used by the cached read path as its
+   * freshness probe (compare against the mirror's stored watermarks — the
+   * IMAP equivalent of a conditional request).
+   */
+  async getMailboxStatus(
+    accountName: string,
+    mailbox: string,
+  ): Promise<{
+    uidValidity?: string;
+    uidNext?: number;
+    highestModseq?: string;
+    messages?: number;
+  }> {
+    const client = await this.connections.getImapClient(accountName);
+    const status = (await client.status(sanitizeMailboxName(mailbox), {
+      uidValidity: true,
+      uidNext: true,
+      highestModseq: true,
+      messages: true,
+    })) as {
+      uidValidity?: bigint;
+      uidNext?: number;
+      highestModseq?: bigint;
+      messages?: number;
+    };
+
+    return {
+      uidValidity: status.uidValidity?.toString(),
+      uidNext: status.uidNext,
+      highestModseq: status.highestModseq?.toString(),
+      messages: status.messages,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // List emails
   // -------------------------------------------------------------------------
@@ -1012,6 +1047,7 @@ export default class ImapService {
     } finally {
       lock.release();
     }
+    ImapService.emitChanged(accountName, safeSource, safeDest);
   }
 
   async deleteEmail(
@@ -1033,6 +1069,7 @@ export default class ImapService {
       } finally {
         lock.release();
       }
+      ImapService.emitChanged(accountName, safeMailbox);
     } else {
       await ImapService.assertRealMailbox(client, safeMailbox);
       const mailboxes = await client.list();
@@ -1050,6 +1087,7 @@ export default class ImapService {
       } finally {
         lock.release();
       }
+      ImapService.emitChanged(accountName, safeMailbox, trashPath);
     }
   }
 
@@ -1085,6 +1123,20 @@ export default class ImapService {
       }
     } finally {
       lock.release();
+    }
+    ImapService.emitChanged(accountName, safeMailbox);
+  }
+
+  /**
+   * Tell the local mirror a mailbox changed under this process's own hands.
+   *
+   * Emitted only after the server acknowledged the write, so the mirror never
+   * resyncs toward a state that was rejected. Fires after the lock is
+   * released: the sync engine's reaction needs that same mailbox lock.
+   */
+  private static emitChanged(account: string, ...mailboxes: string[]): void {
+    for (const mailbox of new Set(mailboxes)) {
+      eventBus.emit('email:changed', { account, mailbox });
     }
   }
 
@@ -1133,6 +1185,9 @@ export default class ImapService {
     } finally {
       lock.release();
     }
+    if (result.succeeded > 0) {
+      ImapService.emitChanged(accountName, sanitizeMailboxName(mailbox));
+    }
     if (result.errors?.length === 0) delete result.errors;
     return result;
   }
@@ -1172,6 +1227,9 @@ export default class ImapService {
     } finally {
       lock.release();
     }
+    if (result.succeeded > 0) {
+      ImapService.emitChanged(accountName, sanitizeMailboxName(mailbox), safeDestination);
+    }
     if (result.errors?.length === 0) delete result.errors;
     return result;
   }
@@ -1207,6 +1265,9 @@ export default class ImapService {
       } finally {
         lock.release();
       }
+      if (result.succeeded > 0) {
+        ImapService.emitChanged(accountName, sanitizeMailboxName(mailbox));
+      }
     } else {
       await ImapService.assertRealMailbox(client, mailbox);
       const mailboxes = await client.list();
@@ -1230,6 +1291,9 @@ export default class ImapService {
         result.errors = [err instanceof Error ? err.message : String(err)];
       } finally {
         lock.release();
+      }
+      if (result.succeeded > 0) {
+        ImapService.emitChanged(accountName, sanitizeMailboxName(mailbox), trashPath);
       }
     }
 

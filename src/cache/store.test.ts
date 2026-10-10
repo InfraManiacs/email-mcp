@@ -301,6 +301,29 @@ describe('schema v3: flag columns and filtered listing', () => {
     expect(store.searchMessages('work', 'INBOX', '100', 'lunch').map((m) => m.uid)).toEqual([2]);
   });
 
+  it('reconciles swept flags, touching only rows that changed', () => {
+    const updated = store.reconcileFlags('work', 'INBOX', '100', [
+      { uid: 1, flags: ['\\Seen'] }, // unchanged
+      { uid: 2, flags: ['\\Flagged'] }, // changed
+      { uid: 99, flags: ['\\Seen'] }, // not mirrored — ignored
+    ]);
+
+    expect(updated).toBe(1);
+    const msg = store.getMessage('work', 'INBOX', 2, '100');
+    expect(msg?.flags).toEqual(['\\Flagged']);
+    expect(msg?.flagged).toBe(true);
+  });
+
+  it('treats flag order as irrelevant when deciding whether a row changed', () => {
+    store.putMessages([makeMessage({ uid: 7, flags: ['\\Seen', '\\Flagged'] })]);
+
+    const updated = store.reconcileFlags('work', 'INBOX', '100', [
+      { uid: 7, flags: ['\\Flagged', '\\Seen'] },
+    ]);
+
+    expect(updated).toBe(0);
+  });
+
   it('round-trips a stable email id', () => {
     store.putMessages([makeMessage({ uid: 9, emailId: 'em-123' })]);
 

@@ -66,28 +66,6 @@ export async function buildServices(): Promise<AppServices> {
   const connections = new ConnectionManager(config.accounts, oauthService);
   const rateLimiter = new RateLimiter(config.settings.rateLimit);
   const imapService = new ImapService(connections);
-  const mailReadService = new MailReadService(imapService);
-  const smtpService = new SmtpService(connections, rateLimiter, imapService);
-  const templateService = new TemplateService();
-  const calendarService = new CalendarService();
-  const localCalendarService = new LocalCalendarService();
-  const remindersService = new RemindersService();
-  const schedulerService = new SchedulerService(smtpService, imapService);
-  const watcherService = new WatcherService(config.settings.watcher, config.accounts);
-  const hooksService = new HooksService(config.settings.hooks, imapService, {
-    autoDownloadAttachments: config.settings.attachments.autoDownload,
-  });
-  const clipboardService = new ClipboardService();
-  const dialogService = new DialogService();
-  // Shares the hooks notifier so desktop notifications from both features
-  // sit behind one rate limit (and one lifecycle — hooks owns stop()).
-  const verificationCatcher = new VerificationCatcherService(
-    config.settings.verification,
-    imapService,
-    hooksService.getNotifier(),
-    clipboardService,
-    dialogService,
-  );
 
   // The mirror is optional and must never block startup: if SQLite cannot be
   // opened (read-only volume, corrupt file, unwritable XDG dir) the server
@@ -113,6 +91,29 @@ export async function buildServices(): Promise<AppServices> {
       );
     }
   }
+
+  const mailReadService = new MailReadService(imapService, cacheStore, syncEngine);
+  const smtpService = new SmtpService(connections, rateLimiter, imapService);
+  const templateService = new TemplateService();
+  const calendarService = new CalendarService();
+  const localCalendarService = new LocalCalendarService();
+  const remindersService = new RemindersService();
+  const schedulerService = new SchedulerService(smtpService, imapService);
+  const watcherService = new WatcherService(config.settings.watcher, config.accounts);
+  const hooksService = new HooksService(config.settings.hooks, imapService, {
+    autoDownloadAttachments: config.settings.attachments.autoDownload,
+  });
+  const clipboardService = new ClipboardService();
+  const dialogService = new DialogService();
+  // Shares the hooks notifier so desktop notifications from both features
+  // sit behind one rate limit (and one lifecycle — hooks owns stop()).
+  const verificationCatcher = new VerificationCatcherService(
+    config.settings.verification,
+    imapService,
+    hooksService.getNotifier(),
+    clipboardService,
+    dialogService,
+  );
 
   return {
     config,

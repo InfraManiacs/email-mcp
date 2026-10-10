@@ -537,6 +537,62 @@ export default class CacheStore {
     );
   }
 
+  /**
+   * Apply a server flag sweep to the mirror.
+   *
+   * Only rows whose flag set actually differs are written — every row UPDATE
+   * rewrites its FTS entry via the triggers, so no-op writes are not free.
+   * Entries for UIDs the mirror does not hold are ignored.
+   *
+   * @returns how many rows changed.
+   */
+  reconcileFlags(
+    account: string,
+    mailbox: string,
+    uidValidity: string,
+    entries: { uid: number; flags: string[] }[],
+  ): number {
+    if (entries.length === 0) return 0;
+
+    const read = this.prep(`
+      SELECT flags_json FROM message
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
+    `);
+    const write = this.prep(`
+      UPDATE message SET flags_json = ?, seen = ?, flagged = ?, answered = ?
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
+    `);
+
+    return this.transaction(() => {
+      let updated = 0;
+      for (const { uid, flags } of entries) {
+        const row = read.get(account, mailbox, uid, uidValidity) as
+          | { flags_json: string }
+          | undefined;
+        if (!row) continue;
+
+        // Order-insensitive compare: servers return flag sets, not lists.
+        const current = [...(JSON.parse(row.flags_json) as string[])].sort();
+        const incoming = [...flags].sort();
+        if (JSON.stringify(current) === JSON.stringify(incoming)) continue;
+
+        const cols = flagColumns(flags);
+        write.run(
+          JSON.stringify(flags),
+          cols.seen,
+          cols.flagged,
+          cols.answered,
+          account,
+          mailbox,
+          uid,
+          uidValidity,
+        );
+        updated += 1;
+      }
+      return updated;
+    });
+  }
+
   /** Record a read access, so eviction can rank by recency. */
   touchAccess(account: string, mailbox: string, uidValidity: string, uids: number[]): void {
     if (uids.length === 0) return;

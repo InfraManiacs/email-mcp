@@ -168,6 +168,7 @@ export default function registerEmailsTools(
             hasMore: result.hasMore,
             count: result.items.length,
             emails: result.items,
+            ...(result.cache ? { cache: result.cache } : {}),
           },
         };
       } catch (err) {

@@ -31,6 +31,7 @@ import { mcpLog } from '../logging.js';
 import type {
   ExpungeEvent,
   FlagsEvent,
+  MailboxChangedEvent,
   NewEmailEvent,
   ReconnectEvent,
 } from '../services/event-bus.js';
@@ -192,6 +193,14 @@ export default class SyncEngine {
   /** Serializes syncs per mailbox so two runs cannot interleave. */
   private inFlight = new Map<string, Promise<SyncResult>>();
 
+  /**
+   * Change-event epochs per mailbox. A mailbox is dirty while its counter is
+   * non-zero; a sync snapshots the counter at start and clears it on success
+   * only if no further event arrived mid-run — so an event landing during a
+   * sync that cannot have observed it keeps the mailbox dirty.
+   */
+  private dirtyEpochs = new Map<string, number>();
+
   private listening = false;
 
   private readonly onReconnect: (event: ReconnectEvent) => void;
@@ -201,6 +210,8 @@ export default class SyncEngine {
   private readonly onExpunge: (event: ExpungeEvent) => void;
 
   private readonly onFlags: (event: FlagsEvent) => void;
+
+  private readonly onChanged: (event: MailboxChangedEvent) => void;
 
   constructor(
     private connections: IConnectionManager,
@@ -212,18 +223,19 @@ export default class SyncEngine {
       this.tierPending.delete(account);
     };
 
-    // The watcher reports mail arriving, disappearing and changing flags. Each
-    // is a reason to reconcile, but never a reason to block a tool call, so
-    // these are fire-and-forget.
-    this.onNewEmail = ({ account, mailbox }) => {
+    // The watcher reports mail arriving, disappearing and changing flags, and
+    // ImapService reports this process's own writes. Each is a reason to
+    // reconcile, but never a reason to block a tool call, so these are
+    // fire-and-forget; the dirty mark is what lets the read path know the
+    // mirror is behind until the reconcile lands.
+    const react = (account: string, mailbox: string): void => {
+      this.markDirty(account, mailbox);
       void this.syncMailbox(account, mailbox);
     };
-    this.onExpunge = ({ account, mailbox }) => {
-      void this.syncMailbox(account, mailbox);
-    };
-    this.onFlags = ({ account, mailbox }) => {
-      void this.syncMailbox(account, mailbox);
-    };
+    this.onNewEmail = ({ account, mailbox }) => react(account, mailbox);
+    this.onExpunge = ({ account, mailbox }) => react(account, mailbox);
+    this.onFlags = ({ account, mailbox }) => react(account, mailbox);
+    this.onChanged = ({ account, mailbox }) => react(account, mailbox);
   }
 
   /** Subscribe to change notifications. */
@@ -234,6 +246,7 @@ export default class SyncEngine {
     eventBus.on('email:new', this.onNewEmail);
     eventBus.on('email:expunge', this.onExpunge);
     eventBus.on('email:flags', this.onFlags);
+    eventBus.on('email:changed', this.onChanged);
   }
 
   stop(): void {
@@ -243,6 +256,22 @@ export default class SyncEngine {
     eventBus.off('email:new', this.onNewEmail);
     eventBus.off('email:expunge', this.onExpunge);
     eventBus.off('email:flags', this.onFlags);
+    eventBus.off('email:changed', this.onChanged);
+  }
+
+  // -------------------------------------------------------------------------
+  // Dirty tracking
+  // -------------------------------------------------------------------------
+
+  /** Record that a mailbox changed and the mirror may be behind. */
+  markDirty(account: string, mailbox: string): void {
+    const key = `${account} ${mailbox}`;
+    this.dirtyEpochs.set(key, (this.dirtyEpochs.get(key) ?? 0) + 1);
+  }
+
+  /** True while a change event has not yet been absorbed by a successful sync. */
+  isDirty(account: string, mailbox: string): boolean {
+    return (this.dirtyEpochs.get(`${account} ${mailbox}`) ?? 0) > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -318,6 +347,11 @@ export default class SyncEngine {
       epochReset: false,
     };
 
+    // Snapshot the dirty epoch: events arriving while this run is in flight
+    // were not necessarily observed by it and must keep the mailbox dirty.
+    const dirtyKey = `${account} ${mailbox}`;
+    const dirtyAtStart = this.dirtyEpochs.get(dirtyKey);
+
     try {
       const tier = await this.detectTier(account);
       const client = await this.connections.getImapClient(account);
@@ -356,6 +390,14 @@ export default class SyncEngine {
           baseline,
         );
 
+        // Baseline servers have no modseq: a flag changed on an existing
+        // message (by another client, or by this process between syncs) is
+        // invisible to the watermark fetch. RFC 4549's answer is a second,
+        // FLAGS-only fetch over what the mirror already holds.
+        if (tier === 'baseline' && baseline) {
+          result.stored += await this.sweepFlags(client, account, mailbox, uidValidity);
+        }
+
         result.removed += await this.reconcileDeletions(
           client,
           account,
@@ -376,6 +418,9 @@ export default class SyncEngine {
         });
 
         result.ok = true;
+        if (this.dirtyEpochs.get(dirtyKey) === dirtyAtStart) {
+          this.dirtyEpochs.delete(dirtyKey);
+        }
       } finally {
         lock.release();
       }
@@ -456,6 +501,35 @@ export default class SyncEngine {
 
     this.store.putMessages(messages);
     return messages.length;
+  }
+
+  /**
+   * Refresh the flags of already-mirrored messages.
+   *
+   * FLAGS-only, ranged from the lowest mirrored UID: cheap next to the
+   * envelope fetch, and the only way a baseline server ever reveals a flag
+   * change on an existing message.
+   *
+   * @returns how many rows changed.
+   */
+  private async sweepFlags(
+    client: ImapFlow,
+    account: string,
+    mailbox: string,
+    uidValidity: string,
+  ): Promise<number> {
+    const cached = this.store.listAllUids(account, mailbox, uidValidity);
+    if (cached.length === 0) return 0;
+
+    const range = `${Math.min(...cached)}:*`;
+    const entries: { uid: number; flags: string[] }[] = [];
+    for await (const msg of client.fetch(range, { uid: true, flags: true }, { uid: true })) {
+      const fetched = msg as unknown as { uid?: number; flags?: Set<string> };
+      if (typeof fetched.uid !== 'number') continue;
+      entries.push({ uid: fetched.uid, flags: [...(fetched.flags ?? new Set<string>())] });
+    }
+
+    return this.store.reconcileFlags(account, mailbox, uidValidity, entries);
   }
 
   /**

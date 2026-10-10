@@ -58,6 +58,19 @@ export interface ReconnectEvent {
   account: string;
 }
 
+/**
+ * A mailbox was modified by THIS process — a flag write, move, or delete
+ * acknowledged by the server.
+ *
+ * Deliberately separate from the watcher's `email:new`/`email:flags` events:
+ * those carry notification semantics (hooks react to them), while this one
+ * exists purely so the local mirror resynchronizes before the next read.
+ */
+export interface MailboxChangedEvent {
+  account: string;
+  mailbox: string;
+}
+
 // ---------------------------------------------------------------------------
 // Event map
 // ---------------------------------------------------------------------------
@@ -66,6 +79,7 @@ interface EmailEventMap {
   'email:new': [NewEmailEvent];
   'email:expunge': [ExpungeEvent];
   'email:flags': [FlagsEvent];
+  'email:changed': [MailboxChangedEvent];
   'imap:reconnect': [ReconnectEvent];
 }
 

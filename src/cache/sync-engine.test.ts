@@ -284,6 +284,49 @@ describe('SyncEngine', () => {
     });
   });
 
+  describe('baseline flag sweep', () => {
+    it('picks up a flag change made by another client on a server without CONDSTORE', async () => {
+      engine = build();
+      client.fetch.mockImplementation(messagesFrom({ uid: 1, flags: new Set(['\\Seen']) }));
+      client.search.mockResolvedValue([1]);
+      client.mailbox.exists = 1;
+      await engine.syncMailbox('work', 'INBOX');
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.flags).toEqual(['\\Seen']);
+
+      // Another client flags uid 1. No modseq exists to reveal it; only the
+      // RFC 4549-style FLAGS sweep below the watermark can.
+      client.fetch.mockImplementation((_range: string, query: Record<string, unknown>) =>
+        (async function* gen() {
+          if (query.envelope) return; // new-mail fetch: nothing above watermark
+          yield { uid: 1, flags: new Set(['\\Seen', '\\Flagged']) };
+        })(),
+      );
+      await engine.syncMailbox('work', 'INBOX');
+
+      const msg = store.getMessage('work', 'INBOX', 1, '100');
+      expect(msg?.flags).toEqual(['\\Seen', '\\Flagged']);
+      expect(msg?.flagged).toBe(true);
+    });
+
+    it('sweeps only from the lowest mirrored UID upwards', async () => {
+      engine = build();
+      client.fetch.mockImplementation(messagesFrom({ uid: 40 }, { uid: 41 }));
+      client.search.mockResolvedValue([40, 41]);
+      client.mailbox.exists = 2;
+      await engine.syncMailbox('work', 'INBOX');
+
+      client.fetch.mockClear();
+      client.fetch.mockImplementation(messagesFrom());
+      await engine.syncMailbox('work', 'INBOX');
+
+      // Second call is the sweep; it must not refetch below the mirror.
+      const sweepCall = client.fetch.mock.calls.find(
+        (call) => !(call[1] as Record<string, unknown>).envelope,
+      );
+      expect(sweepCall?.[0]).toBe('40:*');
+    });
+  });
+
   // -------------------------------------------------------------------------
   // CONDSTORE tier
   // -------------------------------------------------------------------------
@@ -480,6 +523,59 @@ describe('SyncEngine', () => {
 
       const [range] = client.fetch.mock.calls[0];
       expect(range).toBe('1:*');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Dirty tracking
+  // -------------------------------------------------------------------------
+
+  describe('dirty tracking', () => {
+    it('reports a mailbox dirty after a local change event', () => {
+      engine = build();
+      engine.start();
+
+      eventBus.emit('email:changed', { account: 'work', mailbox: 'INBOX' });
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(true);
+      expect(engine.isDirty('work', 'Archive')).toBe(false);
+    });
+
+    it('clears the dirty mark once a sync completes successfully', async () => {
+      engine = build();
+      engine.start();
+      client.search.mockResolvedValue([]);
+      client.mailbox.exists = 0;
+
+      eventBus.emit('email:changed', { account: 'work', mailbox: 'INBOX' });
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(false);
+    });
+
+    it('keeps the dirty mark when the sync fails', async () => {
+      engine = build();
+      engine.start();
+      client.getMailboxLock.mockRejectedValue(new Error('ECONNRESET'));
+
+      engine.markDirty('work', 'INBOX');
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(true);
+    });
+
+    it('marks dirty on watcher events too', () => {
+      engine = build();
+      engine.start();
+
+      eventBus.emit('email:flags', {
+        account: 'work',
+        mailbox: 'INBOX',
+        seq: 1,
+        flags: ['\\Seen'],
+      });
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(true);
     });
   });
 
