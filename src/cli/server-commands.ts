@@ -34,6 +34,22 @@ const DEFAULT_LOG_LINES = 40;
 const LAUNCHD_LABEL = 'com.email-mcp.server';
 const LAUNCHD_PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
 
+// Linux: a systemd --user service (no root, starts with the user session).
+const SYSTEMD_UNIT_NAME = 'email-mcp.service';
+const SYSTEMD_UNIT_PATH = path.join(
+  process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'),
+  'systemd',
+  'user',
+  SYSTEMD_UNIT_NAME,
+);
+
+/** Human name for the OS service manager on this platform. */
+function serviceManagerName(): string {
+  if (process.platform === 'darwin') return 'launchd login item';
+  if (process.platform === 'linux') return 'systemd --user service';
+  return 'OS service';
+}
+
 export interface ServerArgs {
   attach: boolean;
   force: boolean;
@@ -168,6 +184,33 @@ ${programArgs}
 `;
 }
 
+/**
+ * A systemd --user unit that runs `email-mcp http` and keeps it up. Mirrors the
+ * launchd plist: RunAtLoad≈WantedBy=default.target, KeepAlive≈Restart=on-failure.
+ * ExecStart needs an absolute command (systemd does not resolve PATH the way a
+ * login shell does); the installer passes `selfCommand(...)` which is absolute.
+ */
+export function buildSystemdUnit(command: string[], passthrough: string[]): string {
+  const execStart = [...command, 'http', ...passthrough].join(' ');
+  return `[Unit]
+Description=Email MCP server (IMAP/SMTP over the Model Context Protocol)
+Documentation=https://github.com/codefuturist/email-mcp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${execStart}
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:${DAEMON_LOG_FILE}
+StandardError=append:${DAEMON_LOG_FILE}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
 // ---------------------------------------------------------------------------
 // Daemon state
 // ---------------------------------------------------------------------------
@@ -236,6 +279,20 @@ function launchctl(args: string[]): Promise<boolean> {
       resolve(!err);
     });
   });
+}
+
+/** Run `systemctl --user <args>`; resolves true on exit 0. */
+function systemctlUser(args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('systemctl', ['--user', ...args], { timeout: 10_000 }, (err) => {
+      resolve(!err);
+    });
+  });
+}
+
+async function systemdActive(): Promise<boolean> {
+  if (process.platform !== 'linux') return false;
+  return systemctlUser(['is-active', '--quiet', SYSTEMD_UNIT_NAME]);
 }
 
 function probeHost(host: string): string {
@@ -409,6 +466,17 @@ async function serverStatus(args: ServerArgs): Promise<void> {
       if (!healthy) process.exitCode = 1;
       return;
     }
+    if (await systemdActive()) {
+      const healthy = await healthOk(args.host, args.port);
+      console.log(`✅ Server running (systemd --user service)`);
+      console.log(`   Unit:    ${SYSTEMD_UNIT_NAME}`);
+      console.log(`   Address: http://${args.host}:${args.port}/mcp`);
+      console.log(`   Health:  ${healthy ? '✅ /healthz ok' : '❌ /healthz not answering'}`);
+      console.log(`   Unit:    ${SYSTEMD_UNIT_PATH}`);
+      console.log(`   Logs:    ${DAEMON_LOG_FILE}  (journalctl --user -u ${SYSTEMD_UNIT_NAME})`);
+      if (!healthy) process.exitCode = 1;
+      return;
+    }
     console.log(
       record
         ? `Server not running (stale state for pid ${record.pid}). 'server start' will clean up.`
@@ -428,11 +496,68 @@ async function serverStatus(args: ServerArgs): Promise<void> {
   console.log(`   Logs:    ${DAEMON_LOG_FILE}`);
 }
 
-async function installServer(args: ServerArgs): Promise<void> {
-  if (process.platform !== 'darwin') {
+async function installSystemd(command: string[], args: ServerArgs): Promise<void> {
+  await fsp.mkdir(path.dirname(SYSTEMD_UNIT_PATH), { recursive: true });
+  await fsp.mkdir(path.dirname(DAEMON_LOG_FILE), { recursive: true });
+  await fsp.writeFile(SYSTEMD_UNIT_PATH, buildSystemdUnit(command, args.passthrough));
+
+  await systemctlUser(['daemon-reload']);
+  const enabled = await systemctlUser(['enable', '--now', SYSTEMD_UNIT_NAME]);
+  if (!enabled) {
     console.error(
-      'server install (login item) is macOS-only for now. Use `email-mcp server start` ' +
-        'or wire `email-mcp http` into your init system (systemd unit, etc.).',
+      `❌ systemctl --user enable --now ${SYSTEMD_UNIT_NAME} failed.\n` +
+        `   Unit written to ${SYSTEMD_UNIT_PATH}. Check: systemctl --user status ${SYSTEMD_UNIT_NAME}\n` +
+        `   (A user service needs a user systemd instance; on a headless box run ` +
+        `\`loginctl enable-linger $USER\` so it starts without an active login.)`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const deadline = Date.now() + START_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (await healthOk(args.host, args.port)) {
+      console.log(`✅ Installed as a systemd --user service (${SYSTEMD_UNIT_NAME})`);
+      console.log(`   Address: http://${args.host}:${args.port}/mcp`);
+      console.log(`   Starts with your user session and restarts on failure.`);
+      console.log(`   Unit:    ${SYSTEMD_UNIT_PATH}`);
+      console.log(
+        `   Logs:    ${DAEMON_LOG_FILE}  (also: journalctl --user -u ${SYSTEMD_UNIT_NAME})`,
+      );
+      console.log(`   Persist: loginctl enable-linger $USER  (start without an active login)`);
+      console.log(`   Remove:  email-mcp server uninstall`);
+      return;
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  console.log(
+    `⚠️ Service installed, but /healthz did not answer within ${START_WAIT_MS / 1000}s.\n` +
+      `   Check: systemctl --user status ${SYSTEMD_UNIT_NAME} ; logs at ${DAEMON_LOG_FILE}`,
+  );
+}
+
+async function uninstallSystemd(): Promise<void> {
+  const wasActive = await systemctlUser(['disable', '--now', SYSTEMD_UNIT_NAME]);
+  let hadUnit = true;
+  try {
+    await fsp.rm(SYSTEMD_UNIT_PATH);
+  } catch {
+    hadUnit = false;
+  }
+  await systemctlUser(['daemon-reload']);
+  if (wasActive || hadUnit) {
+    console.log(`✅ systemd service removed (${SYSTEMD_UNIT_NAME}). The server is stopped.`);
+  } else {
+    console.log('No systemd service was installed.');
+  }
+}
+
+async function installServer(args: ServerArgs): Promise<void> {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    console.error(
+      `server install is supported on macOS (launchd) and Linux (systemd --user). ` +
+        `On ${process.platform}, run \`email-mcp server start\` or wire \`email-mcp http\` ` +
+        `into your init system.`,
     );
     process.exitCode = 1;
     return;
@@ -452,6 +577,11 @@ async function installServer(args: ServerArgs): Promise<void> {
         `Run 'email-mcp server stop' first, then install.`,
     );
     process.exitCode = 1;
+    return;
+  }
+
+  if (process.platform === 'linux') {
+    await installSystemd(command, args);
     return;
   }
 
@@ -488,8 +618,12 @@ async function installServer(args: ServerArgs): Promise<void> {
 }
 
 async function uninstallServer(): Promise<void> {
+  if (process.platform === 'linux') {
+    await uninstallSystemd();
+    return;
+  }
   if (process.platform !== 'darwin') {
-    console.error('server uninstall is macOS-only for now.');
+    console.error('server uninstall is supported on macOS (launchd) and Linux (systemd --user).');
     process.exitCode = 1;
     return;
   }
@@ -516,8 +650,29 @@ async function showLogs(args: ServerArgs): Promise<void> {
   }
 }
 
-function printServerUsage(): void {
-  console.log(`Usage: email-mcp server <subcommand>
+/** Per-subcommand usage, keyed for `server <sub> --help`. */
+const SERVER_SUBUSAGE: Record<string, string> = {
+  start:
+    'email-mcp server start [--attach] [--host H] [--port N] [--path /mcp] [--token T] [--allowed-hosts a,b] [--insecure]',
+  stop: 'email-mcp server stop [--force]',
+  status: 'email-mcp server status',
+  restart: 'email-mcp server restart [http flags]',
+  logs: `email-mcp server logs [-n N]   (default ${DEFAULT_LOG_LINES} lines)`,
+  install: 'email-mcp server install [http flags]',
+  uninstall: 'email-mcp server uninstall',
+};
+
+/**
+ * Usage for one server subcommand, or the overview when none is given.
+ * `install`/`uninstall` describe the per-OS service manager so the help is
+ * accurate on whatever platform the user is on.
+ */
+export function serverUsage(subcommand?: string): string {
+  if (subcommand && SERVER_SUBUSAGE[subcommand]) {
+    return `Usage: ${SERVER_SUBUSAGE[subcommand]}`;
+  }
+  const mgr = serviceManagerName();
+  return `Usage: email-mcp server <subcommand>
 
 Run the Streamable HTTP server as an always-on background service, so the
 IMAP watcher and verification catching work without an attached MCP client.
@@ -530,16 +685,24 @@ Subcommands:
   status                         Show pid, address, health, and uptime (exit 1 if stopped)
   restart [http flags]           Stop and start again (reuses previous flags)
   logs [-n N]                    Show the last N daemon log lines (default ${DEFAULT_LOG_LINES})
-  install [http flags]           Install as a macOS login item (launchd, KeepAlive) — true always-on
-  uninstall                      Remove the login item and stop the server
+  install [http flags]           Install as an always-on service (${mgr}); restarts on crash
+  uninstall                      Remove the service and stop the server
 
 Binding is configured in [settings.server] in config.toml; flags and
-EMAIL_MCP_HTTP_* env vars override it per invocation.
-`);
+EMAIL_MCP_HTTP_* env vars override it per invocation.`;
+}
+
+function printServerUsage(): void {
+  console.log(serverUsage());
 }
 
 export default async function runServerCommand(argv: string[]): Promise<void> {
   const [subcommand, ...rest] = argv;
+  // Answer --help before loading config or touching the daemon.
+  if (rest.includes('--help') || rest.includes('-h') || subcommand === 'help') {
+    console.log(serverUsage(subcommand === 'help' ? rest[0] : subcommand));
+    return;
+  }
   // Best-effort: daemon commands still work without a config file (env mode).
   const serverConfig = await loadConfig()
     .then((c) => c.settings.server)
