@@ -59,7 +59,7 @@ export function validateWebhookUrl(url: string): void {
 
   const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
   if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
+    const [, a = 0, b = 0] = ipv4Match.map(Number);
     if (a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
       throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
     }

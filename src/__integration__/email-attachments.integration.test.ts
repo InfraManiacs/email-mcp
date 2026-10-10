@@ -110,7 +110,7 @@ describe('Attachment features (MCP tool layer, size-aware)', () => {
         id,
         filename: 'photo.bin',
       });
-      const meta = JSON.parse(res.text.split('\n--- Base64')[0]);
+      const meta = JSON.parse(res.text.split('\n--- Base64')[0]!);
       expect(meta.size).toBe(photoBytes);
     });
   });

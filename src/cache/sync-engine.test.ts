@@ -232,7 +232,7 @@ describe('SyncEngine', () => {
       await engine.syncMailbox('work', 'INBOX');
 
       // Refetching from 1 would re-download the entire mailbox every sync.
-      const [range] = client.fetch.mock.calls[0];
+      const [range] = client.fetch.mock.calls[0]!;
       expect(range).toBe('10:*');
     });
 

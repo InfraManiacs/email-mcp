@@ -267,9 +267,10 @@ export default class ConnectionManager implements IConnectionManager {
         messageCount = inbox ? (inbox.messages ?? 0) : 0;
       } catch {
         // INBOX may not exist (e.g. Google Workspace uses "All Mail")
-        if (mailboxes.length > 0) {
+        const firstMailbox = mailboxes[0];
+        if (firstMailbox) {
           try {
-            const first = await client.status(mailboxes[0].path, {
+            const first = await client.status(firstMailbox.path, {
               messages: true,
             });
             messageCount = first ? (first.messages ?? 0) : 0;

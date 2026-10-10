@@ -57,7 +57,7 @@ describe('Connection Modes', () => {
     it('should fetch full email content without encryption', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        const email = await services.imapService.getEmail(account.name, list.items[0].id);
+        const email = await services.imapService.getEmail(account.name, list.items[0]!.id);
         expect(email.subject).toBeTruthy();
       }
     });
@@ -65,8 +65,8 @@ describe('Connection Modes', () => {
     it('should set flags without encryption', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        await services.imapService.setFlags(account.name, list.items[0].id, 'INBOX', 'read');
-        const flags = await services.imapService.getEmailFlags(account.name, list.items[0].id);
+        await services.imapService.setFlags(account.name, list.items[0]!.id, 'INBOX', 'read');
+        const flags = await services.imapService.getEmailFlags(account.name, list.items[0]!.id);
         expect(flags.seen).toBe(true);
       }
     });
@@ -160,7 +160,7 @@ describe('Connection Modes', () => {
     it('should fetch full email content via IMAPS', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        const email = await services.imapService.getEmail(account.name, list.items[0].id);
+        const email = await services.imapService.getEmail(account.name, list.items[0]!.id);
         expect(email.subject).toBeTruthy();
       }
     });
@@ -168,8 +168,8 @@ describe('Connection Modes', () => {
     it('should set flags via IMAPS', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        await services.imapService.setFlags(account.name, list.items[0].id, 'INBOX', 'flag');
-        const flags = await services.imapService.getEmailFlags(account.name, list.items[0].id);
+        await services.imapService.setFlags(account.name, list.items[0]!.id, 'INBOX', 'flag');
+        const flags = await services.imapService.getEmailFlags(account.name, list.items[0]!.id);
         expect(flags.flagged).toBe(true);
       }
     });

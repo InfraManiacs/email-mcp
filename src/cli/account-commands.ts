@@ -596,7 +596,7 @@ async function editAccount(nameArg?: string): Promise<void> {
     }
   } else if (accounts.length === 1) {
     accountIndex = 0;
-    log.info(`Editing account "${accounts[0].name}".`);
+    log.info(`Editing account "${accounts[0]?.name}".`);
   } else {
     const chosen = await select({
       message: 'Which account do you want to edit?',
@@ -611,6 +611,10 @@ async function editAccount(nameArg?: string): Promise<void> {
   }
 
   const current = accounts[accountIndex];
+  if (!current) {
+    cancel('Account not found.');
+    return;
+  }
 
   // Field selector — let user choose what to edit
   const fields = await select({
@@ -772,6 +776,10 @@ async function deleteAccount(nameArg?: string): Promise<void> {
   }
 
   const target = accounts[accountIndex];
+  if (!target) {
+    cancel('Account not found.');
+    return;
+  }
 
   // Require explicit confirmation
   const confirmed = await confirm({

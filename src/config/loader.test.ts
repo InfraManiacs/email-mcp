@@ -77,10 +77,10 @@ describe('Config Loader', () => {
       const config = await loadConfig(configPath);
 
       expect(config.accounts).toHaveLength(1);
-      expect(config.accounts[0].name).toBe('test');
-      expect(config.accounts[0].email).toBe('test@example.com');
-      expect(config.accounts[0].imap.host).toBe('imap.example.com');
-      expect(config.accounts[0].smtp.host).toBe('smtp.example.com');
+      expect(config.accounts[0]!.name).toBe('test');
+      expect(config.accounts[0]!.email).toBe('test@example.com');
+      expect(config.accounts[0]!.imap.host).toBe('imap.example.com');
+      expect(config.accounts[0]!.smtp.host).toBe('smtp.example.com');
     });
 
     it('throws when config file does not exist', async () => {
@@ -112,8 +112,8 @@ read_only = true
 
       const config = await loadConfig(configPath);
 
-      expect(config.accounts[0].imap.verifySsl).toBe(false);
-      expect(config.accounts[0].smtp.verifySsl).toBe(false);
+      expect(config.accounts[0]!.imap.verifySsl).toBe(false);
+      expect(config.accounts[0]!.smtp.verifySsl).toBe(false);
       expect(config.settings.rateLimit).toBe(5);
       expect(config.settings.readOnly).toBe(true);
     });
@@ -125,12 +125,12 @@ read_only = true
       const config = await loadConfig(configPath);
 
       // Account defaults
-      expect(config.accounts[0].imap.port).toBe(993);
-      expect(config.accounts[0].imap.tls).toBe(true);
-      expect(config.accounts[0].imap.verifySsl).toBe(true);
-      expect(config.accounts[0].smtp.port).toBe(465);
-      expect(config.accounts[0].smtp.pool?.enabled).toBe(true);
-      expect(config.accounts[0].smtp.pool?.maxConnections).toBe(1);
+      expect(config.accounts[0]!.imap.port).toBe(993);
+      expect(config.accounts[0]!.imap.tls).toBe(true);
+      expect(config.accounts[0]!.imap.verifySsl).toBe(true);
+      expect(config.accounts[0]!.smtp.port).toBe(465);
+      expect(config.accounts[0]!.smtp.pool?.enabled).toBe(true);
+      expect(config.accounts[0]!.smtp.pool?.maxConnections).toBe(1);
 
       // Settings defaults
       expect(config.settings.rateLimit).toBe(10);
@@ -156,9 +156,9 @@ read_only = true
       const config = await loadConfig(path.join(tmpDir, 'nonexistent.toml'));
 
       expect(config.accounts).toHaveLength(1);
-      expect(config.accounts[0].email).toBe('env@example.com');
-      expect(config.accounts[0].imap.host).toBe('imap.env.com');
-      expect(config.accounts[0].smtp.host).toBe('smtp.env.com');
+      expect(config.accounts[0]!.email).toBe('env@example.com');
+      expect(config.accounts[0]!.imap.host).toBe('imap.env.com');
+      expect(config.accounts[0]!.smtp.host).toBe('smtp.env.com');
     });
 
     it('reads read_only from MCP_EMAIL_READ_ONLY', async () => {
@@ -293,9 +293,9 @@ link_action = "copy"
       await saveConfig(rawConfig as unknown as Parameters<typeof saveConfig>[0], configPath);
 
       const reloaded = await loadConfig(configPath);
-      expect(reloaded.accounts[0].name).toBe('saved-test');
-      expect(reloaded.accounts[0].email).toBe('saved@example.com');
-      expect(reloaded.accounts[0].imap.host).toBe('imap.saved.com');
+      expect(reloaded.accounts[0]!.name).toBe('saved-test');
+      expect(reloaded.accounts[0]!.email).toBe('saved@example.com');
+      expect(reloaded.accounts[0]!.imap.host).toBe('imap.saved.com');
     });
 
     it('writes the config file with owner-only (0600) permissions', async () => {
@@ -512,13 +512,13 @@ host = "smtp.example.com"
     await fs.writeFile(configPath, toml, 'utf-8');
 
     const config = await loadConfig(configPath);
-    expect(config.accounts[0].password).toBe('resolved-from-env');
+    expect(config.accounts[0]!.password).toBe('resolved-from-env');
   });
 
   it('leaves a plaintext password untouched (backward compatible)', async () => {
     const configPath = path.join(tmpDir, 'plain.toml');
     await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
     const config = await loadConfig(configPath);
-    expect(config.accounts[0].password).toBe('secret');
+    expect(config.accounts[0]!.password).toBe('secret');
   });
 });

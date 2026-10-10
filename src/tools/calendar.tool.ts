@@ -162,8 +162,8 @@ export default function registerCalendarTools(
       const icsContents = await imapService.getCalendarParts(account, mailbox, emailId);
       if (icsContents.length > 0) {
         const events = calendarService.extractFromParts(icsContents);
-        if (events.length > 0) {
-          const ev = events[0];
+        const ev = events[0];
+        if (ev) {
           eventStart = new Date(ev.start);
           eventEnd = new Date(ev.end);
           eventLocation = ev.location;
@@ -632,17 +632,18 @@ export default function registerCalendarTools(
         const events = calendarService.extractFromParts(icsContents);
         if (events.length > 0) {
           const ev = events[0];
-          detectedEvent = {
-            source: 'ics_attachment',
-            confidence: 'high',
-            title: ev.summary,
-            start: ev.start,
-            end: ev.end,
-            location: ev.location,
-            uid: ev.uid,
-            organizer: ev.organizer?.address,
-            attendees: ev.attendees.map((a) => a.address),
-          };
+          if (ev)
+            detectedEvent = {
+              source: 'ics_attachment',
+              confidence: 'high',
+              title: ev.summary,
+              start: ev.start,
+              end: ev.end,
+              location: ev.location,
+              uid: ev.uid,
+              organizer: ev.organizer?.address,
+              attendees: ev.attendees.map((a) => a.address),
+            };
         }
       }
 

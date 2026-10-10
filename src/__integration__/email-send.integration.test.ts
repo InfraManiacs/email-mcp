@@ -96,7 +96,7 @@ describe('Email Send Operations', () => {
       });
       expect(list.items.length).toBeGreaterThanOrEqual(1);
 
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       // Reply
       const reply = await services.smtpService.replyToEmail(TEST_ACCOUNT_NAME, {
@@ -128,7 +128,7 @@ describe('Email Send Operations', () => {
       });
       expect(list.items.length).toBeGreaterThanOrEqual(1);
 
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       // Forward
       const fwd = await services.smtpService.forwardEmail(TEST_ACCOUNT_NAME, {

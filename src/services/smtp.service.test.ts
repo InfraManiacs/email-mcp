@@ -120,7 +120,7 @@ describe('SmtpService', () => {
         html: true,
       });
 
-      const call = transport.sendMail.mock.calls[0][0];
+      const call = transport.sendMail.mock.calls[0]![0];
       expect(call.html).toBe('<h1>Hello</h1>');
       expect(call.text).toBeUndefined();
     });
@@ -157,7 +157,7 @@ describe('outbound attachments', () => {
     const svc = service();
     await svc.sendEmail('test', { to: ['a@b.c'], subject: 's', body: 'b' });
 
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect('attachments' in payload).toBe(false);
   });
 
@@ -189,7 +189,7 @@ describe('outbound attachments', () => {
       'invoice.pdf',
       expect.any(Number),
     );
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect(payload.attachments).toEqual([
       {
         filename: 'invoice.pdf',
@@ -216,7 +216,7 @@ describe('outbound attachments', () => {
     await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], includeAttachments: false });
 
     expect(imap.downloadAttachment).not.toHaveBeenCalled();
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect('attachments' in payload).toBe(false);
   });
 });

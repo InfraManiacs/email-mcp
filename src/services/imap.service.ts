@@ -447,11 +447,11 @@ export default class ImapService {
       // the connection is degraded. Leave the counts undefined rather than
       // reporting 0: a caller (or the cache) must not mistake this for an empty
       // mailbox.
-      const mb = mailboxes[idx];
+      const mb = mailboxes[idx]; // parallel to statusResults (same source array)
       return {
-        name: mb.name,
-        path: mb.path,
-        specialUse: mb.specialUse ?? undefined,
+        name: mb?.name ?? '',
+        path: mb?.path ?? '',
+        specialUse: mb?.specialUse ?? undefined,
         totalMessages: undefined,
         unseenMessages: undefined,
       };
@@ -888,7 +888,7 @@ export default class ImapService {
       if (msg && msg.headers && Buffer.isBuffer(msg.headers)) {
         const headerText = msg.headers.toString('utf-8');
         const match = /^message-id:\s*(.+)$/im.exec(headerText);
-        if (match) {
+        if (match?.[1]) {
           messageId = match[1].trim();
         }
       }
@@ -1021,7 +1021,7 @@ export default class ImapService {
     const safeMailbox = sanitizeMailboxName(mailbox);
     const lock = await client.getMailboxLock(safeMailbox);
     try {
-      const flagMap: Record<string, { flags: string[]; add: boolean }> = {
+      const flagMap: Record<typeof action, { flags: string[]; add: boolean }> = {
         read: { flags: ['\\Seen'], add: true },
         unread: { flags: ['\\Seen'], add: false },
         flag: { flags: ['\\Flagged'], add: true },
@@ -1061,7 +1061,7 @@ export default class ImapService {
       errors: [],
     };
     try {
-      const flagMap: Record<string, { flags: string[]; add: boolean }> = {
+      const flagMap: Record<typeof action, { flags: string[]; add: boolean }> = {
         mark_read: { flags: ['\\Seen'], add: true },
         mark_unread: { flags: ['\\Seen'], add: false },
         flag: { flags: ['\\Flagged'], add: true },
@@ -1503,7 +1503,7 @@ export default class ImapService {
           if (raw.source && Buffer.isBuffer(raw.source)) {
             const src = raw.source.toString('utf-8');
             const refMatch = /^References:\s*(.+?)(?:\r?\n(?!\s))/ms.exec(src);
-            if (refMatch) {
+            if (refMatch?.[1]) {
               refMatch[1]
                 .split(/\s+/)
                 .filter(Boolean)
@@ -1747,8 +1747,8 @@ export default class ImapService {
         return {
           period,
           dateRange: {
-            from: since.toISOString().split('T')[0],
-            to: now.toISOString().split('T')[0],
+            from: since.toISOString().slice(0, 10),
+            to: now.toISOString().slice(0, 10),
           },
           totalReceived: 0,
           unreadCount: 0,
@@ -1796,15 +1796,16 @@ export default class ImapService {
           name?: string;
           address?: string;
         }[];
-        if (fromList.length > 0 && fromList[0].address) {
-          const key = fromList[0].address.toLowerCase();
+        const first = fromList[0];
+        if (first?.address) {
+          const key = first.address.toLowerCase();
           const existing = senderMap.get(key);
           if (existing) {
             existing.count += 1;
           } else {
             senderMap.set(key, {
-              email: fromList[0].address,
-              name: fromList[0].name,
+              email: first.address,
+              name: first.name,
               count: 1,
             });
           }
@@ -1812,7 +1813,7 @@ export default class ImapService {
 
         // Track daily volume
         const date = envelope.date ? new Date(envelope.date as string) : new Date();
-        const dayKey = date.toISOString().split('T')[0];
+        const dayKey = date.toISOString().slice(0, 10);
         dailyMap.set(dayKey, (dailyMap.get(dayKey) ?? 0) + 1);
       }
 
@@ -1829,8 +1830,8 @@ export default class ImapService {
       return {
         period,
         dateRange: {
-          from: since.toISOString().split('T')[0],
-          to: now.toISOString().split('T')[0],
+          from: since.toISOString().slice(0, 10),
+          to: now.toISOString().slice(0, 10),
         },
         totalReceived: uids.length,
         unreadCount: unread,

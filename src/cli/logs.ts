@@ -28,7 +28,7 @@ const LEVEL_TOKEN = /\b(DEBUG|INFO|WARN|WARNING|ERROR|TRACE|FATAL)\b/;
 /** Normalize a log token to our 4-level scale (null if unknown). */
 function lineLevelIndex(line: string): number | null {
   const m = line.match(LEVEL_TOKEN);
-  if (!m) return null;
+  if (!m?.[1]) return null;
   const t = m[1].toLowerCase();
   if (t === 'trace') return 0; // debug-ish
   if (t === 'warning') return LOG_LEVELS.indexOf('warn');
@@ -86,7 +86,7 @@ export function colorizeLogLine(line: string, opts: { color: boolean }): string 
   const idx = lineLevelIndex(line);
   if (idx === null) return line;
   const level = LOG_LEVELS[idx];
-  const color = COLORS[level];
+  const color = level ? COLORS[level] : undefined;
   return color ? `${color}${line}${RESET}` : line;
 }
 

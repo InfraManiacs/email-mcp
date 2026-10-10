@@ -41,12 +41,12 @@ describe('filterLogLines', () => {
 
 describe('colorizeLogLine', () => {
   it('is a no-op when color is off', () => {
-    const line = SAMPLE.split('\n')[2];
+    const line = SAMPLE.split('\n')[2]!;
     expect(colorizeLogLine(line, { color: false })).toBe(line);
   });
 
   it('wraps ERROR lines in red when color is on', () => {
-    const out = colorizeLogLine(SAMPLE.split('\n')[2], { color: true });
+    const out = colorizeLogLine(SAMPLE.split('\n')[2]!, { color: true });
     expect(out).toContain('\x1b[31m'); // red
     expect(out).toContain('send failed');
   });

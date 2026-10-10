@@ -21,7 +21,7 @@ const TOP_LEVEL_ALIASES = new Set(['help', 'setup']); // setup has its own COMMA
 const ACCOUNT_ALIASES = new Set(['ls', 'new', 'rm', 'remove', 'set-password']);
 
 function caseLabels(source: string): string[] {
-  return [...source.matchAll(/case '([a-z][a-z-]*)':/g)].map((m) => m[1]);
+  return [...source.matchAll(/case '([a-z][a-z-]*)':/g)].map((m) => m[1]!);
 }
 
 describe('completion spec stays in sync with the dispatch', () => {

@@ -64,7 +64,7 @@ describe('WatcherService', () => {
     if (!client) throw new Error('no ImapFlow client was constructed');
 
     // uidNext is 100, so lastSeenUid seeds to 99 and the range is "100:*".
-    client.handlers.exists({ path: 'INBOX', count: 2, prevCount: 1 });
+    client.handlers.exists!({ path: 'INBOX', count: 2, prevCount: 1 });
     await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled());
 
     // Without { uid: true } as the third argument ImapFlow reads "100:*" as a
@@ -101,7 +101,7 @@ describe('WatcherService', () => {
       })(),
     );
 
-    client.handlers.exists({ path: 'INBOX', count: 2, prevCount: 1 });
+    client.handlers.exists!({ path: 'INBOX', count: 2, prevCount: 1 });
     await vi.waitFor(() => expect(eventBus.emit).toHaveBeenCalled());
 
     expect(eventBus.emit).toHaveBeenCalledWith(
@@ -122,7 +122,7 @@ describe('WatcherService', () => {
     const client = instances.at(-1);
     if (!client) throw new Error('no ImapFlow client was constructed');
 
-    client.handlers.expunge({ path: 'INBOX', seq: 4, uid: 88 });
+    client.handlers.expunge!({ path: 'INBOX', seq: 4, uid: 88 });
 
     expect(eventBus.emit).toHaveBeenCalledWith('email:expunge', {
       account: 'test',
@@ -142,7 +142,7 @@ describe('WatcherService', () => {
     const client = instances.at(-1);
     if (!client) throw new Error('no ImapFlow client was constructed');
 
-    client.handlers.flags({ path: 'INBOX', seq: 7, uid: 91, flags: new Set(['\\Seen']) });
+    client.handlers.flags!({ path: 'INBOX', seq: 7, uid: 91, flags: new Set(['\\Seen']) });
 
     expect(eventBus.emit).toHaveBeenCalledWith('email:flags', {
       account: 'test',
@@ -163,7 +163,7 @@ describe('WatcherService', () => {
 
     // Without a UID a consumer cannot key the change — but swallowing the
     // event would leave it believing its cached flags are still valid.
-    client.handlers.flags({ path: 'INBOX', seq: 7, flags: new Set(['\\Seen']) });
+    client.handlers.flags!({ path: 'INBOX', seq: 7, flags: new Set(['\\Seen']) });
 
     expect(eventBus.emit).toHaveBeenCalledWith('email:flags', {
       account: 'test',
@@ -189,9 +189,9 @@ describe('WatcherService', () => {
     await watcher.start();
     const status = watcher.getStatus();
     expect(status).toHaveLength(1);
-    expect(status[0].account).toBe('test');
-    expect(status[0].folder).toBe('INBOX');
-    expect(status[0].connected).toBe(true);
+    expect(status[0]!.account).toBe('test');
+    expect(status[0]!.folder).toBe('INBOX');
+    expect(status[0]!.connected).toBe(true);
     await watcher.stop();
   });
 

@@ -64,7 +64,7 @@ function resolveAccount(config: AppConfig, requested?: string): string {
   if (config.accounts.length === 0) {
     throw new Error('No accounts configured. Run `email-mcp account add` first.');
   }
-  return config.accounts[0].name;
+  return config.accounts[0]?.name ?? config.accounts[0]?.email ?? '';
 }
 
 const colorOpts = () => ({ color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR });
