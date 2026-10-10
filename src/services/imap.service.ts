@@ -29,12 +29,15 @@ import type { LabelStrategy } from './label-strategy.js';
 import { detectLabelStrategy } from './label-strategy.js';
 import {
   collectTextParts,
+  describeUndisplayableStructure,
   extractAttachments,
+  findDeliveryStatusPart,
   findMimePartByFilename,
   hasAttachments,
   parseHeaders,
-  selectBodyPart,
+  selectBodyParts,
   splitMimeType,
+  type TextPart,
 } from './mime-structure.js';
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,55 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
   };
 }
 
+/**
+ * Cap on a single downloaded body part. Checked against the BODYSTRUCTURE
+ * size, which is the encoded octet count — conservative, since encoded is
+ * never smaller than decoded.
+ */
+const BODY_PART_MAX_BYTES = 512 * 1024;
+
+/**
+ * Download one body part, transfer-decoded by ImapFlow, bounded by
+ * BODY_PART_MAX_BYTES. Past the cap the stream is still drained to the end —
+ * destroying an ImapFlow download stream mid-command corrupts the
+ * connection's command state — but only the first cap bytes are kept.
+ */
+async function downloadBodyPart(
+  client: ImapFlow,
+  uid: number,
+  path: TextPart['path'],
+): Promise<string | undefined> {
+  try {
+    const part = await client.download(String(uid), path, { uid: true });
+    if (!part?.content) return undefined;
+
+    const chunks: Buffer[] = [];
+    let kept = 0;
+    let truncated = false;
+    // eslint-disable-next-line no-restricted-syntax
+    for await (const chunk of part.content) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const room = BODY_PART_MAX_BYTES - kept;
+      if (room > 0) {
+        chunks.push(buf.length > room ? buf.subarray(0, room) : buf);
+        kept += Math.min(buf.length, room);
+      }
+      if (buf.length > room) truncated = true;
+    }
+    const decoded = Buffer.concat(chunks).toString('utf-8');
+    return truncated ? `${decoded}\n…[body truncated at 512 KB]` : decoded;
+  } catch (err) {
+    // Part may not exist on this server — better an empty body than a throw,
+    // but not a silent one. stderr is safe under the stdio transport.
+    process.stderr.write(
+      `email-mcp: body part ${path} of uid ${uid} failed to download: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+    return undefined;
+  }
+}
+
 async function messageToEmail(
   msg: Record<string, unknown>,
   client: ImapFlow,
@@ -124,30 +176,35 @@ async function messageToEmail(
   // bytes of header.
   const headers = parseHeaders(msg.headers);
 
-  // Always download the body part; never read it out of `source`. Raw source
+  // Always download body parts; never read them out of `source`. Raw source
   // is transfer-encoded (quoted-printable, base64) with soft line breaks, so
   // using it directly yields "=3D" for '=' and words split mid-token.
   // download() applies the decoding declared by Content-Transfer-Encoding.
-  const chosen = selectBodyPart(collectTextParts(msg.bodyStructure));
+  let { plain, html } = selectBodyParts(collectTextParts(msg.bodyStructure));
 
-  if (chosen) {
-    try {
-      const part = await client.download(String(uid), chosen.path, { uid: true });
-      if (part?.content) {
-        const chunks: Buffer[] = [];
-        // eslint-disable-next-line no-restricted-syntax
-        for await (const chunk of part.content) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        }
-        const decoded = Buffer.concat(chunks).toString('utf-8');
-        if (chosen.subtype === 'html') {
-          bodyHtml = decoded;
-        } else {
-          bodyText = decoded;
-        }
-      }
-    } catch {
-      // Part may not exist on this server — better an empty body than a throw.
+  // An over-cap part loses to a within-cap sibling outright; a sole over-cap
+  // part is downloaded and truncated instead (see downloadBodyPart).
+  if (plain && html) {
+    if (plain.size > BODY_PART_MAX_BYTES && html.size <= BODY_PART_MAX_BYTES) plain = undefined;
+    else if (html.size > BODY_PART_MAX_BYTES && plain.size <= BODY_PART_MAX_BYTES) html = undefined;
+  }
+
+  if (plain) bodyText = await downloadBodyPart(client, uid, plain.path);
+  if (html) bodyHtml = await downloadBodyPart(client, uid, html.path);
+
+  if (bodyText === undefined && bodyHtml === undefined) {
+    // No displayable part at all — S/MIME and PGP payloads land here. A
+    // labeled placeholder beats the bare "(no content)" the tool layer shows.
+    bodyText = describeUndisplayableStructure(msg.bodyStructure);
+  }
+
+  // Bounces carry their actual status codes in a machine-readable part that
+  // is not text/* and would otherwise never be surfaced.
+  const statusPath = findDeliveryStatusPart(msg.bodyStructure);
+  if (statusPath) {
+    const status = await downloadBodyPart(client, uid, statusPath);
+    if (status?.trim()) {
+      bodyText = `${bodyText ?? ''}\n\n--- Delivery status ---\n${status.trim()}`.trim();
     }
   }
 

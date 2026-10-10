@@ -98,6 +98,58 @@ describe('Email Read Operations', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // body format handling
+  // ---------------------------------------------------------------------------
+
+  describe('body parts', () => {
+    async function seededEmail(subject: string) {
+      const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, { pageSize: 50 });
+      const meta = list.items.find((m) => m.subject === subject);
+      if (!meta) throw new Error(`seeded email "${subject}" not found in INBOX`);
+      return services.imapService.getEmail(TEST_ACCOUNT_NAME, meta.id);
+    }
+
+    it('returns both bodies of a multipart/alternative message', async () => {
+      await seedEmail({
+        subject: 'AltBody',
+        text: 'plain variant here',
+        html: '<p>html <b>variant</b> here</p>',
+      });
+      await waitForDelivery();
+
+      const email = await seededEmail('AltBody');
+
+      expect(email.bodyText).toContain('plain variant here');
+      expect(email.bodyHtml).toContain('<b>variant</b>');
+    });
+
+    it('never uses an attached message as the body', async () => {
+      const attachedEml = [
+        'From: inner@localhost',
+        'To: test@localhost',
+        'Subject: Inner',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'inner attached body',
+        '',
+      ].join('\r\n');
+      await seedEmail({
+        subject: 'OuterFwd',
+        html: '<p>outer html body</p>',
+        attachments: [
+          { filename: 'forwarded.eml', content: attachedEml, contentType: 'message/rfc822' },
+        ],
+      });
+      await waitForDelivery();
+
+      const email = await seededEmail('OuterFwd');
+
+      expect(email.bodyText ?? '').not.toContain('inner attached body');
+      expect(email.bodyHtml).toContain('outer html body');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // get_email_flags (status)
   // ---------------------------------------------------------------------------
 

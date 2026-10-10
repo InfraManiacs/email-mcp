@@ -1,10 +1,12 @@
 import {
   collectTextParts,
+  describeUndisplayableStructure,
   extractAttachments,
+  findDeliveryStatusPart,
   findMimePartByFilename,
   hasAttachments,
   parseHeaders,
-  selectBodyPart,
+  selectBodyParts,
   splitMimeType,
 } from './mime-structure.js';
 
@@ -156,10 +158,10 @@ describe('collectTextParts', () => {
     expect(collectTextParts(bs)).toEqual([{ path: '1', subtype: 'plain', size: 500 }]);
   });
 
-  it('KNOWN BUG: collects text parts inside an attached message/rfc822', () => {
-    // An attached .eml's inner text parts become body candidates because only
-    // leaf disposition is checked, never an ancestor's. Pinned here; the fix
-    // (ancestor exclusion) lands with the dual-body download change.
+  it('excludes text parts inside an attached message/rfc822', () => {
+    // An attached .eml's inner text is the attachment's content, not this
+    // message's body — the exclusion must apply to the whole subtree, not
+    // just the leaf's own disposition.
     const bs = {
       type: 'multipart/mixed',
       childNodes: [
@@ -171,42 +173,99 @@ describe('collectTextParts', () => {
         },
       ],
     };
-    const paths = collectTextParts(bs).map((p) => p.path);
-    expect(paths).toContain('2.1');
+    expect(collectTextParts(bs).map((p) => p.path)).toEqual(['1']);
+  });
+
+  it('excludes text inside an embedded message even without a disposition', () => {
+    const bs = {
+      type: 'multipart/mixed',
+      childNodes: [textHtml(), { type: 'message/rfc822', childNodes: [textPlain(300)] }],
+    };
+    expect(collectTextParts(bs).map((p) => p.path)).toEqual(['1']);
   });
 });
 
-describe('selectBodyPart', () => {
-  it('prefers text/plain over text/html', () => {
+describe('selectBodyParts', () => {
+  it('returns both halves of multipart/alternative', () => {
     const parts = collectTextParts({
       type: 'multipart/alternative',
       childNodes: [textPlain(), textHtml()],
     });
-    expect(selectBodyPart(parts)?.subtype).toBe('plain');
+    const { plain, html } = selectBodyParts(parts);
+    expect(plain?.path).toBe('1');
+    expect(html?.path).toBe('2');
   });
 
-  it('overrides a stub plain part (<200 bytes) when HTML is >5x larger', () => {
-    const parts = collectTextParts({
-      type: 'multipart/alternative',
-      childNodes: [textPlain(80), textHtml(5000)],
-    });
-    expect(selectBodyPart(parts)?.subtype).toBe('html');
+  it('suppresses a stub plain part (<200 bytes next to >5x HTML) instead of returning it', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(80), textHtml(5000)],
+      }),
+    );
+    expect(plain).toBeUndefined();
+    expect(html?.subtype).toBe('html');
   });
 
   it('keeps a small plain part when the HTML sibling is not 5x larger', () => {
-    const parts = collectTextParts({
-      type: 'multipart/alternative',
-      childNodes: [textPlain(80), textHtml(300)],
-    });
-    expect(selectBodyPart(parts)?.subtype).toBe('plain');
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(80), textHtml(300)],
+      }),
+    );
+    expect(plain?.subtype).toBe('plain');
+    expect(html?.subtype).toBe('html');
   });
 
-  it('falls back to html, then the first part, then undefined', () => {
-    expect(selectBodyPart([{ path: '1', subtype: 'html', size: 10 }])?.subtype).toBe('html');
-    expect(selectBodyPart([{ path: '1', subtype: 'enriched', size: 10 }])?.subtype).toBe(
-      'enriched',
-    );
-    expect(selectBodyPart([])).toBeUndefined();
+  it('slots a lone non-plain/html text part as the plain body', () => {
+    const { plain, html } = selectBodyParts([{ path: '1', subtype: 'enriched', size: 10 }]);
+    expect(plain?.subtype).toBe('enriched');
+    expect(html).toBeUndefined();
+  });
+
+  it('returns nothing for an empty part list', () => {
+    expect(selectBodyParts([])).toEqual({});
+  });
+});
+
+describe('describeUndisplayableStructure', () => {
+  it('labels S/MIME messages', () => {
+    const label = describeUndisplayableStructure({ type: 'application/pkcs7-mime', size: 4000 });
+    expect(label).toMatch(/S\/MIME/);
+  });
+
+  it('labels PGP/MIME encrypted messages', () => {
+    const bs = {
+      type: 'multipart/encrypted',
+      childNodes: [
+        { type: 'application/pgp-encrypted', size: 10 },
+        { type: 'application/octet-stream', size: 5000 },
+      ],
+    };
+    expect(describeUndisplayableStructure(bs)).toMatch(/PGP/);
+  });
+
+  it('returns undefined for ordinary structures', () => {
+    expect(describeUndisplayableStructure(textHtml())).toBeUndefined();
+  });
+});
+
+describe('findDeliveryStatusPart', () => {
+  it('locates the machine-readable part of a bounce report', () => {
+    const bs = {
+      type: 'multipart/report',
+      childNodes: [
+        textPlain(400),
+        { type: 'message/delivery-status', size: 300 },
+        { type: 'message/rfc822', childNodes: [textPlain(100)] },
+      ],
+    };
+    expect(findDeliveryStatusPart(bs)).toBe('2');
+  });
+
+  it('returns undefined when there is no delivery-status part', () => {
+    expect(findDeliveryStatusPart(textPlain())).toBeUndefined();
   });
 });
 

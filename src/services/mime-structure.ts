@@ -95,71 +95,150 @@ export function splitMimeType(type: unknown): { type: string; subtype: string } 
   return { type: full.slice(0, slash), subtype: full.slice(slash + 1) };
 }
 
-/**
- * Collect every non-attachment text/* part in the MIME tree, in document order.
- *
- * Mirrors the traversal in `findMimePartByFilename` — part paths come from
- * `bs.part` when the server supplies one, otherwise from the 1-based child
- * index chain.
- */
-export function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
+function walkTextParts(
+  bodyStructure: unknown,
+  partPath: string,
+  excluded: boolean,
+  isRoot: boolean,
+): TextPart[] {
   if (!bodyStructure || typeof bodyStructure !== 'object') return [];
 
   const bs = bodyStructure as Record<string, unknown>;
   const effectivePath = (bs.part as string | undefined) ?? partPath;
-  const found: TextPart[] = [];
+  const { type, subtype } = splitMimeType(bs.type);
+
+  // An attached subtree is never body content — neither is a message
+  // encapsulated inside this one (a forwarded .eml), whose text parts belong
+  // to the attachment, not to the message being read.
+  const nodeExcluded =
+    excluded ||
+    bs.disposition === 'attachment' ||
+    (!isRoot && type === 'message' && subtype === 'rfc822');
 
   if (Array.isArray(bs.childNodes)) {
+    const found: TextPart[] = [];
     bs.childNodes.forEach((child, i) => {
       const childPath = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
-      found.push(...collectTextParts(child, childPath));
+      found.push(...walkTextParts(child, childPath, nodeExcluded, false));
     });
     return found;
   }
 
-  // Leaf node. Attachments are never body content, even when text/*.
-  const { type, subtype } = splitMimeType(bs.type);
-  if (type === 'text' && bs.disposition !== 'attachment') {
-    found.push({
-      // A single-part message has no `part` field at all — the body is
-      // addressable as part "1", which is what the vast majority of real mail
-      // looks like. Without this the caller falls back to raw `source`, which
-      // is still transfer-encoded.
-      path: effectivePath || '1',
-      subtype,
-      size: typeof bs.size === 'number' ? bs.size : 0,
-    });
+  if (type === 'text' && !nodeExcluded) {
+    return [
+      {
+        // A single-part message has no `part` field at all — the body is
+        // addressable as part "1", which is what the vast majority of real
+        // mail looks like. Without this the caller falls back to raw
+        // `source`, which is still transfer-encoded.
+        path: effectivePath || '1',
+        subtype,
+        size: typeof bs.size === 'number' ? bs.size : 0,
+      },
+    ];
   }
 
-  return found;
+  return [];
 }
 
 /**
- * Choose which text part to download for an email's body, or `undefined` to
- * skip the extra round trip and use the body already parsed from `source`.
+ * Collect every displayable text/* part in the MIME tree, in document order.
  *
- * `parts` is in document order and excludes attachments.
+ * Excludes attachments — including everything nested under one — and the
+ * contents of embedded message/rfc822 parts. Part paths come from `bs.part`
+ * when the server supplies one, otherwise from the 1-based child index chain
+ * (mirroring the traversal in `findMimePartByFilename`).
+ */
+export function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
+  return walkTextParts(bodyStructure, partPath, false, true);
+}
+
+/**
+ * Choose which text parts to download for an email's body.
  *
- * Prefers `text/plain`: it is far cheaper in agent context-window terms, which
- * `docs/performance-roadmap.md` identifies as the real constraint.
+ * `parts` is in document order and excludes attachments. Both halves of a
+ * multipart/alternative are returned so bodyText and bodyHtml can coexist —
+ * magic-link extraction and calendar scanning each want a specific side.
  *
  * The exception is the stub plain part — a few dozen bytes of "This message
  * requires an HTML-capable reader" shipped next to the real content in HTML.
  * Taking it literally makes the model report the placeholder as the email, so
- * an implausibly small plain part loses to a much larger HTML sibling.
+ * an implausibly small plain part is suppressed next to a much larger HTML
+ * sibling rather than returned.
  */
 const STUB_PLAIN_MAX_BYTES = 200;
 const STUB_PLAIN_RATIO = 5;
 
-export function selectBodyPart(parts: TextPart[]): TextPart | undefined {
+export function selectBodyParts(parts: TextPart[]): { plain?: TextPart; html?: TextPart } {
   const plain = parts.find((p) => p.subtype === 'plain');
   const html = parts.find((p) => p.subtype === 'html');
 
-  if (!plain) return html ?? parts[0];
-  if (html && plain.size < STUB_PLAIN_MAX_BYTES && html.size > plain.size * STUB_PLAIN_RATIO) {
-    return html;
+  if (!plain && !html) {
+    // A lone text part of another subtype (text/enriched, text/x-amp-html…)
+    // is still the closest thing to a readable body.
+    const first = parts[0];
+    if (!first) return {};
+    return first.subtype === 'html' ? { html: first } : { plain: first };
   }
-  return plain;
+  if (
+    plain &&
+    html &&
+    plain.size < STUB_PLAIN_MAX_BYTES &&
+    html.size > plain.size * STUB_PLAIN_RATIO
+  ) {
+    return { html };
+  }
+  return { ...(plain ? { plain } : {}), ...(html ? { html } : {}) };
+}
+
+/**
+ * Explain a structure that yields no displayable text part, instead of the
+ * bare "(no content)" the tool layer would otherwise show. Encrypted payloads
+ * are not parsed — the label tells the model (and the user) what it is
+ * looking at and what to do about it.
+ */
+export function describeUndisplayableStructure(bodyStructure: unknown): string | undefined {
+  if (!bodyStructure || typeof bodyStructure !== 'object') return undefined;
+  const bs = bodyStructure as Record<string, unknown>;
+  const { type, subtype } = splitMimeType(bs.type);
+
+  if (type === 'application' && (subtype === 'pkcs7-mime' || subtype === 'x-pkcs7-mime')) {
+    return (
+      '(S/MIME encrypted or signed message — content is not displayable here; ' +
+      'download the smime.p7m attachment to process it externally)'
+    );
+  }
+  if (type === 'multipart' && subtype === 'encrypted') {
+    return '(PGP/MIME encrypted message — the payload is encrypted and not readable here)';
+  }
+  return undefined;
+}
+
+/**
+ * Find the machine-readable part of a bounce (multipart/report). Its
+ * message/delivery-status part is plain key-value text carrying the Action,
+ * Status, and Diagnostic-Code fields that say what actually failed.
+ */
+export function findDeliveryStatusPart(bodyStructure: unknown, partPath = ''): string | undefined {
+  if (!bodyStructure || typeof bodyStructure !== 'object') return undefined;
+
+  const bs = bodyStructure as Record<string, unknown>;
+  const effectivePath = (bs.part as string | undefined) ?? partPath;
+
+  if (typeof bs.type === 'string' && bs.type.toLowerCase() === 'message/delivery-status') {
+    return effectivePath || '1';
+  }
+
+  if (Array.isArray(bs.childNodes)) {
+    // eslint-disable-next-line no-plusplus
+    for (let i = 0; i < bs.childNodes.length; i++) {
+      const childPath = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
+      const found = findDeliveryStatusPart(bs.childNodes[i], childPath);
+      if (found) return found;
+    }
+  }
+
+  return undefined;
 }
 
 /**
