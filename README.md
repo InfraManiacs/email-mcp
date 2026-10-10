@@ -504,6 +504,8 @@ Commands:
   account delete [name]     Remove an account
   setup                     Alias for 'account add'
   test                      Test connections for all or a specific account
+  open <id> [--print]       Open an email in the native mail client via its message: link
+                            (macOS; --print or other platforms print the URL instead)
   install                   Register email-mcp with MCP clients interactively
   install status            Show registration status for detected clients
   install remove            Unregister email-mcp from MCP clients
@@ -601,11 +603,18 @@ Located at `$XDG_CONFIG_HOME/email-mcp/config.toml` (default: `~/.config/email-m
 [settings]
 rate_limit = 10  # max emails per minute per account
 
+[settings.send]
+max_attachment_mb = 25  # global cap on the base64-encoded attachment total
+
+[settings.attachments]
+auto_download = true  # save attachments locally when calendar events are created from emails
+
 [[accounts]]
 name = "personal"
 email = "you@gmail.com"
 full_name = "Your Name"
 password = "keychain:personal"  # or "env:VAR", or a plaintext app password
+# max_attachment_mb = 25  # optional per-account override (beats global + provider limits)
 
 [accounts.imap]
 host = "imap.gmail.com"
@@ -984,6 +993,56 @@ harmless copy → read-back → clear round-trip).
 
 > **Structured output:** `list_emails`, `search_emails`, `get_email_status`, and `list_mailboxes` also return machine-readable results (`outputSchema` + `structuredContent`) alongside the human-readable text, for clients that consume typed tool output.
 
+#### Email bodies: HTML and other formats
+
+Nearly all real mail is HTML — in one sampled mailbox, 165 of 169 messages were
+single-part `text/html` — so the read tools convert it rather than handing back
+markup.
+
+`get_email`, `get_emails`, and `get_thread` take a `format`:
+
+| `format` | Body you get |
+|---|---|
+| `text` *(default)* | HTML converted to readable text: links become `[label](url)`, tables keep cell boundaries, lists are numbered or bulleted, quotes are `> `-prefixed, images become `[image: alt]` |
+| `stripped` | As `text`, minus quoted reply chains and signatures |
+| `full` | The raw body part, HTML included |
+
+Bodies are capped by default — 10 000 characters for `get_email`, 5 000 per
+message for `get_emails` and `get_thread` — and a hint reports how much was
+left out. Pass `maxLength: 0` for no cap. Each side of the body (text, HTML) is
+read up to 512 KB, shared across its parts.
+
+Other formats behave as follows:
+
+- **`multipart/alternative`** — both halves are fetched, so `bodyText` and
+  `bodyHtml` are both available. A plain part too small to hold the same
+  content as its HTML sibling is treated as a "view this in an HTML reader"
+  placeholder and skipped.
+- **`multipart/mixed` with several text parts** — concatenated in order, so a
+  note split either side of an inline image (Apple Mail) or a per-message
+  digest section is not truncated to its first part.
+- **`text/plain; format=flowed`** (RFC 3676) — soft line wraps are undone, so
+  paragraphs read as paragraphs rather than hard-wrapped at 72 columns;
+  `DelSp` and space-stuffing are honoured.
+- **Inline (`cid:`) images** — listed as attachments with `partId`,
+  `contentId`, and `inline`, and downloadable via `download_attachment`'s
+  `partId`. To embed one when sending, pass
+  `{path, cid, contentType}` in `attachments` and reference it as
+  `<img src="cid:…">`.
+- **Bounces** (`multipart/report`) — the machine-readable
+  `message/delivery-status` part is surfaced separately from the body.
+- **Calendar invites** — handled by `extract_calendar` / `add_to_calendar`,
+  honouring the part's declared charset.
+- **Encrypted mail** (S/MIME, PGP/MIME) — not decrypted; the body says so
+  plainly instead of appearing empty.
+- **Attached messages** (`message/rfc822`) — never mistaken for the body, but
+  used as the body when the message carries no other text (forward-as-attachment,
+  digests).
+
+Outbound HTML (`html: true`) is sent as `multipart/alternative` with a
+generated plain-text alternative. Forwards quote the original as converted
+text; pass `html: true` to `forward_email` to also carry the original HTML.
+
 #### Read (14)
 
 | Tool | Description |
@@ -991,11 +1050,11 @@ harmless copy → read-back → clear round-trip).
 | `list_accounts` | List all configured email accounts |
 | `list_mailboxes` | List folders with unread counts and special-use flags |
 | `list_emails` | Paginated email listing with date, sender, subject, and flag filters |
-| `get_email` | Read full email content with attachment metadata |
+| `get_email` | Read full email content with attachment metadata (HTML converted to readable text by default) |
 | `get_emails` | Fetch full content of multiple emails in a single call (max 20) |
 | `get_email_status` | Get read/flag/label state of an email without fetching the body |
 | `search_emails` | Search by keyword across subject, sender, and body |
-| `download_attachment` | Download an email attachment by filename |
+| `download_attachment` | Download an email attachment by filename or MIME part id |
 | `find_email_folder` | Discover the real folder(s) an email resides in (resolves virtual folders) |
 | `extract_contacts` | Extract unique contacts from recent email headers |
 | `get_thread` | Reconstruct a conversation thread via References/In-Reply-To |
@@ -1064,8 +1123,8 @@ harmless copy → read-back → clear round-trip).
 |------|-------------|
 | `extract_calendar` | Extract ICS/iCalendar events from an email |
 | `analyze_email_for_scheduling` | Analyze an email to detect events and reminder-worthy content |
-| `add_to_calendar` | Add an email event to the local calendar (macOS/Linux) |
-| `create_reminder` | Create a reminder in macOS Reminders.app from an email |
+| `add_to_calendar` | Add an email event to the local calendar (macOS/Linux); event notes link back to the source email |
+| `create_reminder` | Create a reminder in macOS Reminders.app from an email; reminder notes link back to the source email |
 | `list_calendars` | List all available local calendars |
 | `check_calendar_permissions` | Check whether the local calendar is accessible |
 
@@ -1181,6 +1240,10 @@ locks in the size-awareness contract: every send reports each file's size and
 the raw≈base64 total, the cap is enforced on the **encoded** total (what the
 wire carries), an over-cap send fails closed (nothing is delivered), and
 forwards carry the original attachments unless `includeAttachments: false`.
+The effective cap is resolved per account: an explicit per-account
+`max_attachment_mb` wins outright; otherwise the stricter of the global
+`[settings.send]` cap and the provider's documented limit applies (Gmail,
+Yahoo, and Proton 25 MB; Outlook.com, iCloud, and GMX 20 MB; Fastmail 50 MB).
 
 `pnpm smoke` drives all tools over stdio the way a client does, which reaches
 what GreenMail cannot: provider quirks, real-world MIME, and the macOS

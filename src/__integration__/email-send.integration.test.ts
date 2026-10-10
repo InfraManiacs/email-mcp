@@ -3,6 +3,7 @@ import {
   buildSecondTestAccount,
   buildTestAccount,
   createTestServices,
+  seedEmail,
   TEST_ACCOUNT_NAME,
   waitForDelivery,
 } from './helpers/index.js';
@@ -56,6 +57,28 @@ describe('Email Send Operations', () => {
       });
 
       expect(result.messageId).toBeTruthy();
+    });
+
+    it('delivers HTML mail as multipart/alternative with a generated text part', async () => {
+      await services.smtpService.sendEmail(TEST_ACCOUNT_NAME, {
+        to: ['bob@localhost'],
+        subject: 'AltDelivery',
+        body: '<h1>Title</h1><p>Hello <b>Bob</b></p>',
+        html: true,
+      });
+      await waitForDelivery();
+
+      // Re-fetch the DELIVERED message — asserting only the messageId says
+      // nothing about the MIME structure that actually landed.
+      const list = await services.imapService.listEmails('integration-2', {
+        subject: 'AltDelivery',
+      });
+      expect(list.items.length).toBeGreaterThanOrEqual(1);
+      const email = await services.imapService.getEmail('integration-2', list.items[0]!.id);
+
+      expect(email.bodyHtml).toContain('<b>Bob</b>');
+      expect(email.bodyText).toContain('Hello Bob');
+      expect(email.bodyText ?? '').not.toContain('<b>');
     });
 
     it('should deliver email to recipient inbox', async () => {
@@ -138,6 +161,36 @@ describe('Email Send Operations', () => {
       });
 
       expect(fwd.messageId).toBeTruthy();
+    });
+
+    it('forwards an HTML-only original as quoted readable text', async () => {
+      await seedEmail({
+        subject: 'FwdSource',
+        html: '<p>Original <b>rich</b> body</p>',
+      });
+      await waitForDelivery();
+
+      const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, {
+        subject: 'FwdSource',
+      });
+      expect(list.items.length).toBeGreaterThanOrEqual(1);
+
+      await services.smtpService.forwardEmail(TEST_ACCOUNT_NAME, {
+        emailId: list.items[0]!.id,
+        to: ['bob@localhost'],
+        body: 'FYI',
+      });
+      await waitForDelivery();
+
+      const fwdList = await services.imapService.listEmails('integration-2', {
+        subject: 'Fwd: FwdSource',
+      });
+      expect(fwdList.items.length).toBeGreaterThanOrEqual(1);
+      const delivered = await services.imapService.getEmail('integration-2', fwdList.items[0]!.id);
+
+      expect(delivered.bodyText).toContain('FYI');
+      expect(delivered.bodyText).toContain('> Original rich body');
+      expect(delivered.bodyText ?? '').not.toContain('<p>');
     });
   });
 });

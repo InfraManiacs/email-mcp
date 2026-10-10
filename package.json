@@ -88,6 +88,7 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@modelcontextprotocol/server": "^2.3.1",
     "imapflow": "^2.3.0",
+    "libmime": "^5.4.7",
     "node-ical": "^0.27.3",
     "nodemailer": "^10.0.16",
     "smol-toml": "^1.9.1",

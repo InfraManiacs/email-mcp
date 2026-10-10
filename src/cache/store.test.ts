@@ -170,3 +170,71 @@ describe('CacheStore', () => {
     });
   });
 });
+
+describe('attachment names', () => {
+  let store: CacheStore;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('round-trips attachment names', () => {
+    store.putMessages([
+      makeMessage({ hasAttachments: true, attachmentNames: ['Q3 report.pdf', 'invoice.xlsx'] }),
+    ]);
+
+    expect(store.getMessage('work', 'INBOX', 1, '100')?.attachmentNames).toEqual([
+      'Q3 report.pdf',
+      'invoice.xlsx',
+    ]);
+  });
+
+  it('returns an empty list when a message has no attachments', () => {
+    store.putMessages([makeMessage()]);
+
+    expect(store.getMessage('work', 'INBOX', 1, '100')?.attachmentNames).toEqual([]);
+  });
+
+  it('finds messages by attachment filename via full-text search', () => {
+    store.putMessages([
+      makeMessage({
+        uid: 1,
+        subject: 'Quarterly numbers',
+        hasAttachments: true,
+        attachmentNames: ['Q3 report.pdf'],
+      }),
+      makeMessage({ uid: 2, subject: 'Lunch plans' }),
+    ]);
+
+    const hits = store.searchMessages('work', 'INBOX', '100', 'report');
+
+    expect(hits.map((h) => h.uid)).toEqual([1]);
+  });
+});
+
+describe('schema migration', () => {
+  it('rebuilds the mirror when the on-disk schema version differs', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'cache-store-')), 'mirror.sqlite');
+    const first = new CacheStore(dbPath);
+    first.putMessages([makeMessage()]);
+    first.close();
+
+    // Simulate a file written by an older build.
+    const raw = new DatabaseSync(dbPath);
+    raw.exec('PRAGMA user_version = 0');
+    raw.close();
+
+    const reopened = new CacheStore(dbPath);
+    expect(reopened.countMessages('work', 'INBOX')).toBe(0);
+    reopened.close();
+  });
+});

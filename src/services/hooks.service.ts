@@ -58,6 +58,9 @@ type StaticMatchOutcome = RuleMatchResult | RuleNoMatch;
 export default class HooksService {
   private config: HooksConfig;
 
+  /** Whether calendar-event creation may save email attachments locally. */
+  private readonly autoDownloadAttachments: boolean;
+
   private imapService: ImapService;
 
   private lowLevelServer: Server | null = null;
@@ -96,7 +99,12 @@ export default class HooksService {
     this.onNewEmail(event);
   };
 
-  constructor(config: HooksConfig, imapService: ImapService) {
+  constructor(
+    config: HooksConfig,
+    imapService: ImapService,
+    opts: { autoDownloadAttachments: boolean } = { autoDownloadAttachments: true },
+  ) {
+    this.autoDownloadAttachments = opts.autoDownloadAttachments;
     this.config = config;
     this.imapService = imapService;
     this.notifier = new NotifierService(config.alerts);
@@ -551,9 +559,9 @@ export default class HooksService {
       const meetingUrl = extractMeetingUrl(combined);
       const conference = extractConferenceDetails(bodyText !== '' ? bodyText : bodyHtml);
 
-      // Save attachments
+      // Save attachments (unless disabled via [settings.attachments] auto_download)
       let savedAttachments: Awaited<ReturnType<typeof this.imapService.saveEmailAttachments>> = [];
-      if (full.attachments.length > 0) {
+      if (this.autoDownloadAttachments && full.attachments.length > 0) {
         const destDir = path.join(
           CALENDAR_ATTACHMENTS_DIR,
           `${email.account}-${email.meta.id}`.replace(/[^a-zA-Z0-9-_]/g, '_'),

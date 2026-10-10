@@ -221,6 +221,41 @@ describe('send settings', () => {
     expect(result.settings.send.max_attachment_mb).toBe(10);
   });
 
+  it('accepts an optional per-account max_attachment_mb', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount({ max_attachment_mb: 40 })],
+    });
+    expect(result.accounts[0]!.max_attachment_mb).toBe(40);
+  });
+
+  it('leaves the per-account max_attachment_mb unset by default', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.accounts[0]!.max_attachment_mb).toBeUndefined();
+  });
+
+  it('rejects a non-positive per-account max_attachment_mb', () => {
+    expect(() =>
+      AppConfigFileSchema.parse({
+        accounts: [validAccount({ max_attachment_mb: 0 })],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('attachments settings', () => {
+  it('defaults auto_download to true when settings.attachments is absent', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.settings.attachments).toEqual({ auto_download: true });
+  });
+
+  it('accepts disabling auto_download', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount()],
+      settings: { attachments: { auto_download: false } },
+    });
+    expect(result.settings.attachments.auto_download).toBe(false);
+  });
+
   it('rejects a non-positive max_attachment_mb', () => {
     expect(() =>
       AppConfigFileSchema.parse({

@@ -22,12 +22,12 @@ import {
 } from '@clack/prompts';
 
 import { CONFIG_FILE, configExists, loadRawConfig, saveConfigValidated } from '../config/loader.js';
+import { detectProvider } from '../config/providers.js';
 import type { RawAccountConfig, RawAppConfig } from '../config/schema.js';
 import ConnectionManager from '../connections/manager.js';
 import type { AccountConfig } from '../types/index.js';
 import ensureInteractive, { assertNotCancel, CancelledError } from './guard.js';
 import { KEYCHAIN_SERVICE, keychainRefFor, runKeychainStore } from './keychain-store.js';
-import { detectProvider } from './providers.js';
 import { migrateAccountSecret } from './secret-migrate.js';
 
 // ---------------------------------------------------------------------------
@@ -488,6 +488,7 @@ async function addAccount(): Promise<void> {
           rate_limit: 10,
           read_only: false,
           send: { max_attachment_mb: 25 },
+          attachments: { auto_download: true },
           server: {
             host: '127.0.0.1',
             port: 8080,

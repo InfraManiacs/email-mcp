@@ -10,6 +10,37 @@ import { validateInputLength } from '../safety/validation.js';
 import { formatSize, prepareAttachments } from '../services/attachments.js';
 import type SmtpService from '../services/smtp.service.js';
 
+/**
+ * A bare path, or a path with inline/cid metadata. The object form exists for
+ * HTML mail embedding images: give the file a cid and reference it in the
+ * body as <img src="cid:...">.
+ */
+export const attachmentInputSchema = z.union([
+  z.string(),
+  z
+    .object({
+      path: z.string().describe('Local file path'),
+      filename: z
+        .string()
+        .optional()
+        .describe('Filename shown to the recipient (default: the file basename)'),
+      cid: z
+        .string()
+        .optional()
+        .describe(
+          'Content-ID for inline embedding — reference as <img src="cid:...."> in an HTML body',
+        ),
+      contentType: z
+        .string()
+        .optional()
+        .describe('Explicit MIME type when the file extension would misdetect'),
+    })
+    // Strict so a near-miss key fails loudly. Writing `contentId` for `cid`
+    // would otherwise be dropped silently and the send would "succeed" with
+    // an image that never embeds.
+    .strict(),
+]);
+
 /** One result line per attachment, so the caller sees exactly what went out. */
 function attachmentReport(prepared: Awaited<ReturnType<typeof prepareAttachments>> | null): string {
   if (!prepared || prepared.attachments.length === 0) return '';
@@ -17,10 +48,18 @@ function attachmentReport(prepared: Awaited<ReturnType<typeof prepareAttachments
   return `\n📎 Attachments (${prepared.attachments.length}, ${formatSize(prepared.totalBytes)} raw ≈ ${formatSize(prepared.totalEncodedBytes)} encoded):\n${lines.join('\n')}`;
 }
 
+/** Attachment caps the send tools enforce (resolved per account at call time). */
+export interface SendLimit {
+  /** Global `[settings.send]` cap, used in tool descriptions. */
+  globalMb: number;
+  /** Effective cap for one account (per-account override / provider limit / global). */
+  forAccount: (account: string) => number;
+}
+
 export default function registerSendTools(
   server: McpServer,
   smtpService: SmtpService,
-  maxAttachmentMb: number,
+  sendLimit: SendLimit,
 ): void {
   // ---------------------------------------------------------------------------
   // send_email
@@ -39,10 +78,10 @@ export default function registerSendTools(
         bcc: z.array(z.string().email()).optional().describe('BCC recipients'),
         html: z.boolean().default(false).describe('Send as HTML (default: plain text)'),
         attachments: z
-          .array(z.string())
+          .array(attachmentInputSchema)
           .optional()
           .describe(
-            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the configured limit (currently ${maxAttachmentMb} MB).`,
+            `Files to attach: plain paths, or {path, cid, contentType, filename} objects for inline images. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
           ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -52,7 +91,7 @@ export default function registerSendTools(
         validateInputLength(params.subject, 998, 'Subject');
         validateInputLength(params.body, 5_000_000, 'Body');
         const prepared = params.attachments?.length
-          ? await prepareAttachments(params.attachments, maxAttachmentMb)
+          ? await prepareAttachments(params.attachments, sendLimit.forAccount(params.account))
           : null;
         const result = await smtpService.sendEmail(params.account, {
           ...params,
@@ -111,10 +150,10 @@ export default function registerSendTools(
         replyAll: z.boolean().default(false).describe('Reply to all recipients'),
         html: z.boolean().default(false).describe('Send as HTML'),
         attachments: z
-          .array(z.string())
+          .array(attachmentInputSchema)
           .optional()
           .describe(
-            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the configured limit (currently ${maxAttachmentMb} MB).`,
+            `Files to attach: plain paths, or {path, cid, contentType, filename} objects for inline images. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
           ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -122,7 +161,7 @@ export default function registerSendTools(
     async (params) => {
       try {
         const prepared = params.attachments?.length
-          ? await prepareAttachments(params.attachments, maxAttachmentMb)
+          ? await prepareAttachments(params.attachments, sendLimit.forAccount(params.account))
           : null;
         const result = await smtpService.replyToEmail(params.account, {
           ...params,
@@ -172,7 +211,10 @@ export default function registerSendTools(
     {
       title: 'Forward email',
       description:
-        'Forward an email to new recipients with optional additional message. Original email is quoted below and its attachments are re-attached unless includeAttachments is false.',
+        'Forward an email to new recipients with optional additional message. The original is converted ' +
+        'to readable text and "> "-quoted below your note; its attachments are re-attached unless ' +
+        'includeAttachments is false. Set html=true to also send an HTML part carrying the original ' +
+        'HTML in a blockquote.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID to forward (from list_emails or get_email)'),
@@ -184,6 +226,12 @@ export default function registerSendTools(
           .boolean()
           .default(true)
           .describe('Re-attach the original attachments (default: true)'),
+        html: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Also send an HTML part with the original HTML preserved in a blockquote (default: false — text only)',
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },

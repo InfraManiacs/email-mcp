@@ -12,6 +12,7 @@ import type { z } from 'zod';
 import type { RawAppConfig } from '../config/schema.js';
 import {
   AlertsConfigSchema,
+  AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
   SendConfigSchema,
@@ -25,6 +26,7 @@ export type SectionId =
   | 'general'
   | 'server'
   | 'send'
+  | 'attachments'
   | 'watcher'
   | 'verification'
   | 'cache'
@@ -74,6 +76,7 @@ function onOff(value: unknown): string {
 
 const generalShape = SettingsSchema.shape;
 const sendShape = SendConfigSchema.shape;
+const attachmentsShape = AttachmentsConfigSchema.shape;
 const serverShape = ServerConfigSchema.shape;
 const watcherShape = WatcherConfigSchema.shape;
 const verificationShape = VerificationConfigSchema.shape;
@@ -269,6 +272,21 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
         label: 'Max attachment total per message, MB (base64-encoded; 1+)',
         kind: 'int',
         schema: sendShape.max_attachment_mb,
+      },
+    ],
+  },
+  {
+    id: 'attachments',
+    label: 'Attachments (inbound handling)',
+    resolve: (raw) => raw.settings.attachments as unknown as Record<string, unknown>,
+    summarize: (raw) =>
+      `auto-download ${onOff(raw.settings.attachments.auto_download)} (calendar events from tools & hooks)`,
+    fields: [
+      {
+        key: 'auto_download',
+        label: 'Save attachments locally when creating calendar events from emails',
+        kind: 'boolean',
+        schema: attachmentsShape.auto_download,
       },
     ],
   },

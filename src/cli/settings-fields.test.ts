@@ -2,6 +2,7 @@ import type { RawAppConfig } from '../config/schema.js';
 import {
   AlertsConfigSchema,
   AppConfigFileSchema,
+  AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
   SendConfigSchema,
@@ -52,11 +53,12 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     [
       'general',
       SettingsSchema.shape,
-      ['verification', 'cache', 'watcher', 'hooks', 'server', 'send'],
+      ['verification', 'cache', 'watcher', 'hooks', 'server', 'send', 'attachments'],
     ],
     ['watcher', WatcherConfigSchema.shape, []],
     ['verification', VerificationConfigSchema.shape, []],
     ['send', SendConfigSchema.shape, []],
+    ['attachments', AttachmentsConfigSchema.shape, []],
     ['cache', CacheConfigSchema.shape, []],
     ['hooks', HooksConfigSchema.shape, ['rules', 'alerts']],
     ['alerts', AlertsConfigSchema.shape, []],
@@ -73,13 +75,14 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     expect(catalogKeys).toEqual(schemaKeys);
   });
 
-  it('exposes all eight sections in order', () => {
+  it('exposes all nine sections in order', () => {
     expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
       'general',
       'server',
       'watcher',
       'verification',
       'send',
+      'attachments',
       'cache',
       'hooks',
       'alerts',

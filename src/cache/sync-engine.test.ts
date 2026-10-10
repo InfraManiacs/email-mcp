@@ -190,6 +190,33 @@ describe('SyncEngine', () => {
       expect(store.getMailboxState('work', 'INBOX')?.uidValidity).toBe('999');
     });
 
+    it('records attachment filenames so search can match them', async () => {
+      engine = build();
+      client.fetch.mockImplementation(
+        messagesFrom({
+          uid: 1,
+          bodyStructure: {
+            type: 'multipart/mixed',
+            childNodes: [
+              { type: 'text/plain', size: 10 },
+              {
+                type: 'application/pdf',
+                disposition: 'attachment',
+                dispositionParameters: { filename: 'Q3-report.pdf' },
+              },
+            ],
+          },
+        }),
+      );
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.attachmentNames).toEqual([
+        'Q3-report.pdf',
+      ]);
+    });
+
     it('keeps the mirror when UIDVALIDITY is unchanged', async () => {
       engine = build();
       client.fetch.mockImplementation(messagesFrom({ uid: 1 }));

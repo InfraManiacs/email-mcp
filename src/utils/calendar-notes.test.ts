@@ -1,4 +1,4 @@
-import { buildCalendarNotes } from './calendar-notes.js';
+import { appendEmailLink, buildCalendarNotes, buildReminderNotes } from './calendar-notes.js';
 
 describe('buildCalendarNotes', () => {
   it('includes email origin info', () => {
@@ -71,5 +71,74 @@ describe('buildCalendarNotes', () => {
 
   it('returns empty string for empty input', () => {
     expect(buildCalendarNotes({})).toBe('');
+  });
+
+  it('includes an open-email deep link in the origin section when emailUrl is given', () => {
+    const result = buildCalendarNotes({
+      emailFrom: 'alice@example.com',
+      emailUrl: 'message://%3Cabc@host%3E',
+    });
+    expect(result).toContain('🔗 Open email: message://%3Cabc@host%3E');
+  });
+
+  it('omits the open-email line when emailUrl is absent', () => {
+    const result = buildCalendarNotes({ emailFrom: 'alice@example.com' });
+    expect(result).not.toContain('Open email');
+  });
+});
+
+describe('appendEmailLink', () => {
+  it('appends the link after a blank line', () => {
+    expect(appendEmailLink('Some notes', 'message://%3Cabc@host%3E')).toBe(
+      'Some notes\n\n🔗 Open email: message://%3Cabc@host%3E',
+    );
+  });
+
+  it('returns the notes unchanged when there is no URL', () => {
+    expect(appendEmailLink('Some notes', undefined)).toBe('Some notes');
+  });
+
+  it('returns just the link line for empty notes', () => {
+    expect(appendEmailLink('', 'message://%3Cabc@host%3E')).toBe(
+      '🔗 Open email: message://%3Cabc@host%3E',
+    );
+  });
+
+  it('does not stack blank lines when the notes already end with whitespace', () => {
+    expect(appendEmailLink('Some notes\n\n', 'message://%3Cabc@host%3E')).toBe(
+      'Some notes\n\n🔗 Open email: message://%3Cabc@host%3E',
+    );
+  });
+});
+
+describe('buildReminderNotes', () => {
+  it('builds from, subject, excerpt, and the open-email link', () => {
+    const result = buildReminderNotes({
+      emailFrom: 'Alice <alice@example.com>',
+      emailSubject: 'Invoice due',
+      bodyExcerpt: 'Please pay by Friday.',
+      emailUrl: 'message://%3Cabc@host%3E',
+    });
+    expect(result).toBe(
+      '📧 From: Alice <alice@example.com>\n' +
+        '📌 Subject: Invoice due\n\n' +
+        'Please pay by Friday.\n\n' +
+        '🔗 Open email: message://%3Cabc@host%3E',
+    );
+  });
+
+  it('omits the link line when no emailUrl is given', () => {
+    const result = buildReminderNotes({
+      emailFrom: 'alice@example.com',
+      emailSubject: 'Invoice due',
+      bodyExcerpt: 'Please pay by Friday.',
+    });
+    expect(result).not.toContain('Open email');
+    expect(result).toContain('📧 From: alice@example.com');
+  });
+
+  it('skips empty fields without leaving blank lines', () => {
+    const result = buildReminderNotes({ emailSubject: 'Invoice due' });
+    expect(result).toBe('📌 Subject: Invoice due');
   });
 });

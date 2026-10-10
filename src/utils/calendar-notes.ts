@@ -9,6 +9,8 @@ export interface CalendarNotesInput {
   emailFrom?: string;
   emailSubject?: string;
   emailDate?: string;
+  /** Deep link that reopens the source email (e.g. a `message://` URL). */
+  emailUrl?: string;
   attendees?: string[];
   organizer?: string;
   dialIn?: string;
@@ -37,6 +39,7 @@ export function buildCalendarNotes(input: CalendarNotesInput): string {
   if (input.emailFrom) originLines.push(`📧 From: ${input.emailFrom}`);
   if (input.emailSubject) originLines.push(`📧 Subject: ${input.emailSubject}`);
   if (input.emailDate) originLines.push(`📧 Received: ${input.emailDate}`);
+  if (input.emailUrl) originLines.push(`🔗 Open email: ${input.emailUrl}`);
   if (originLines.length > 0) sections.push(originLines.join('\n'));
 
   // Attendees
@@ -93,4 +96,33 @@ export function buildCalendarNotes(input: CalendarNotesInput): string {
   }
 
   return sections.join('\n\n');
+}
+
+/** Append an "open email" deep link to existing notes (no-op without a URL). */
+export function appendEmailLink(notes: string, emailUrl?: string): string {
+  if (!emailUrl) return notes;
+  const link = `🔗 Open email: ${emailUrl}`;
+  const trimmed = notes.replace(/\s+$/, '');
+  return trimmed ? `${trimmed}\n\n${link}` : link;
+}
+
+export interface ReminderNotesInput {
+  emailFrom?: string;
+  emailSubject?: string;
+  bodyExcerpt?: string;
+  /** Deep link that reopens the source email (e.g. a `message://` URL). */
+  emailUrl?: string;
+}
+
+/** Build the default notes for a reminder created from an email. */
+export function buildReminderNotes(input: ReminderNotesInput): string {
+  const headerLines: string[] = [];
+  if (input.emailFrom) headerLines.push(`📧 From: ${input.emailFrom}`);
+  if (input.emailSubject) headerLines.push(`📌 Subject: ${input.emailSubject}`);
+
+  const sections: string[] = [];
+  if (headerLines.length > 0) sections.push(headerLines.join('\n'));
+  if (input.bodyExcerpt) sections.push(input.bodyExcerpt);
+
+  return appendEmailLink(sections.join('\n\n'), input.emailUrl);
 }

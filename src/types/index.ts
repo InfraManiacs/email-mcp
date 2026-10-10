@@ -66,6 +66,8 @@ export interface AccountConfig {
   username: string;
   password?: string;
   oauth2?: OAuth2Config;
+  /** Optional per-account attachment cap (MB, base64-encoded total). */
+  maxAttachmentMb?: number;
   imap: ImapConfig;
   smtp: SmtpConfig;
 }
@@ -169,6 +171,11 @@ export interface SendConfig {
   maxAttachmentMb: number;
 }
 
+/** Inbound attachment handling — see AttachmentsConfigSchema for scope. */
+export interface AttachmentsConfig {
+  autoDownload: boolean;
+}
+
 /** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
 export interface CacheConfig {
   enabled: boolean;
@@ -186,6 +193,7 @@ export interface AppConfig {
     server: ServerConfig;
     verification: VerificationConfig;
     send: SendConfig;
+    attachments: AttachmentsConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;
@@ -228,7 +236,18 @@ export interface EmailMeta {
 export interface AttachmentMeta {
   filename: string;
   mimeType: string;
+  /** BODYSTRUCTURE octet count — the ENCODED size, so ~33% above the real
+   *  bytes for base64 parts. Treat as approximate. */
   size: number;
+  /** IMAP part path ("2", "1.2") — the unambiguous way to download this part. */
+  partId?: string;
+  /** Content-Transfer-Encoding as reported by the server ("base64", …). */
+  encoding?: string;
+  /** Content-ID without angle brackets; what HTML `cid:` references point at. */
+  contentId?: string;
+  /** True for parts shipped as inline content (cid images) rather than as
+   *  classic attachments. */
+  inline?: boolean;
 }
 
 export interface Email extends EmailMeta {
@@ -241,6 +260,12 @@ export interface Email extends EmailMeta {
   references?: string[];
   attachments: AttachmentMeta[];
   headers: Record<string, string>;
+  /**
+   * Machine-readable status of a bounce (multipart/report's
+   * message/delivery-status part): Action, Status, Diagnostic-Code. Separate
+   * from the body so it can never displace the human-readable explanation.
+   */
+  deliveryStatus?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +341,8 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   variables: string[];
+  /** When true, the body is HTML and variables are HTML-escaped on apply. */
+  html?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +354,8 @@ export interface ProviderConfig {
   domains: string[];
   imap: ImapConfig;
   smtp: SmtpConfig;
+  /** Documented total-message cap (MB, base64-encoded) this provider accepts. */
+  maxAttachmentMb?: number;
   notes?: string;
   oauth2?: {
     authUrl: string;

@@ -184,6 +184,9 @@ importers:
       imapflow:
         specifier: ^2.3.0
         version: 2.3.0(patch_hash=5b5a09cecc5544c17feea0928c83e6b8120e14b0a4dad17da274d776517a5404)
+      libmime:
+        specifier: ^5.4.7
+        version: 5.4.7
       node-ical:
         specifier: ^0.27.3
         version: 0.27.3
