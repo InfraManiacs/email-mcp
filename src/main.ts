@@ -15,6 +15,7 @@
 // MCP SDK + service graph costs ~165 ms, which must not tax `--version`,
 // `config …`, or the shell-completion helper (TAB latency).
 import type { BackgroundHandle } from './app.js';
+import { mailCommandRows } from './cli/email-help.js';
 import { PKG_VERSION } from './version.js';
 
 const HELP = `
@@ -34,9 +35,16 @@ Commands:
   config      Config management (show, edit, path, init)
   scheduler   Email scheduling management (check, list, install, uninstall, status)
   notify      Test and diagnose desktop notifications
+  logs        View the server log (tail, follow, filter by level)
   update      Self-update the binary to the latest GitHub release
   completion  Print shell completion script (zsh, bash, fish)
   help        Show this help message
+
+Mail — read and compose from the terminal:
+${mailCommandRows(12)}
+
+  Shared options: --account NAME, and --json on list, read, search, mailboxes.
+  Run 'email-mcp <command> --help' for a command's full options.
 
 Examples:
   email-mcp                         # Start MCP server (stdio)
@@ -67,6 +75,13 @@ Examples:
   email-mcp scheduler install        # Install OS periodic check
   email-mcp notify test              # Send a test notification
   email-mcp notify status            # Check notification platform support
+  email-mcp list --unread            # Unread mail in INBOX
+  email-mcp list --json | jq '.[0]'  # Machine-readable listing
+  email-mcp read 1234 --mark-read    # Read one email and mark it seen
+  email-mcp search "invoice"         # Search the mailbox
+  email-mcp attach 1234 report.pdf ~/Downloads   # Save an attachment
+  email-mcp send --to a@b.c --subject Hi --body "Hello"
+  email-mcp logs --follow --level error          # Tail errors from the server log
   email-mcp update                   # Update the binary to the latest release
   email-mcp update --check           # Only check (exit code 1 = update available)
   email-mcp completion zsh           # Shell completion (source <(…) in ~/.zshrc)

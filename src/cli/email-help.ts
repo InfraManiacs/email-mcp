@@ -29,6 +29,21 @@ const DESCRIPTIONS: Record<string, string> = {
 };
 
 /**
+ * One `name  description` row per mail command, indented for a help listing.
+ *
+ * Shared with the top-level `email-mcp help` so these nine commands are
+ * described in exactly one place — they were once listed here and in shell
+ * completion but missing from the top-level help entirely.
+ *
+ * @param width column the description starts in, relative to the name
+ */
+export function mailCommandRows(width = 11): string {
+  return Object.keys(EMAIL_USAGE)
+    .map((c) => `  ${c.padEnd(width)}${DESCRIPTIONS[c]}`)
+    .join('\n');
+}
+
+/**
  * Usage for a single command, or the full overview when no command is given.
  * `--account` and `--json` are documented once as shared options.
  */
@@ -36,9 +51,7 @@ export function emailUsage(command?: string): string {
   if (command && EMAIL_USAGE[command]) {
     return `Usage: ${EMAIL_USAGE[command]}`;
   }
-  const rows = Object.keys(EMAIL_USAGE)
-    .map((c) => `  ${c.padEnd(10)} ${DESCRIPTIONS[c]}`)
-    .join('\n');
+  const rows = mailCommandRows();
   return [
     'Read and send email from the terminal.',
     '',
