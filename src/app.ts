@@ -9,6 +9,7 @@
 import type { McpServer, Server } from '@modelcontextprotocol/server';
 
 import BlobStore from './cache/blob-store.js';
+import { collectOrphans, enforceBudget } from './cache/maintenance.js';
 import CacheStore from './cache/store.js';
 import SyncEngine from './cache/sync-engine.js';
 import { loadConfig } from './config/loader.js';
@@ -182,6 +183,8 @@ export function startBackgroundServices(
     schedulerService,
     imapService,
     syncEngine,
+    cacheStore,
+    blobStore,
     verificationCatcher,
     config,
   } = services;
@@ -229,7 +232,12 @@ export function startBackgroundServices(
       // syncMailbox never throws and never blocks a tool call, so this can
       // stay fire-and-forget.
       if (syncEngine) {
-        const { mailboxes, syncInterval } = config.settings.cache;
+        const { mailboxes, syncInterval, maxSizeMb, windowDays } = config.settings.cache;
+        // Orphan reconciliation is cheap but not free (it walks the blob
+        // directory), so it rides every twelfth cycle rather than each one.
+        const GC_EVERY_CYCLES = 12;
+        let cycle = 0;
+
         const reconcile = async (): Promise<void> => {
           const work = services.connections.getAccountNames().flatMap((account) =>
             mailboxes.map(async (mailbox) => {
@@ -239,6 +247,25 @@ export function startBackgroundServices(
             }),
           );
           await Promise.allSettled(work);
+
+          // Maintenance after the sync burst: enforce the byte budget, hand
+          // freed pages back, and truncate the WAL while things are idle.
+          if (cacheStore && blobStore) {
+            cycle += 1;
+            try {
+              await enforceBudget(cacheStore, blobStore, maxSizeMb, { windowDays });
+              if (cycle % GC_EVERY_CYCLES === 1) {
+                await collectOrphans(cacheStore, blobStore);
+              }
+              cacheStore.checkpoint();
+            } catch (err) {
+              await mcpLog(
+                'warning',
+                'cache',
+                `Cache maintenance failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
         };
 
         await reconcile();

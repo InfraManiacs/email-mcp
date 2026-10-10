@@ -1053,6 +1053,119 @@ export default class CacheStore {
   }
 
   // -------------------------------------------------------------------------
+  // Eviction primitives
+  // -------------------------------------------------------------------------
+
+  /**
+   * Attachment rows in eviction order: never-read first, then oldest-read.
+   *
+   * `cached_at` breaks ties so the ordering is deterministic (and so a test
+   * is not at the mercy of insertion order).
+   */
+  listEvictableAttachments(limit: number): CachedAttachment[] {
+    return this.queryAll<AttachmentRow>(
+      `SELECT * FROM attachment
+       ORDER BY last_accessed_at IS NOT NULL, last_accessed_at ASC, cached_at ASC
+       LIMIT ?`,
+      limit,
+    ).map((row) => ({
+      account: row.account,
+      mailbox: row.mailbox,
+      uid: row.uid,
+      uidValidity: row.uid_validity,
+      partId: row.part_id,
+      filename: row.filename ?? '',
+      mimeType: row.mime_type ?? 'application/octet-stream',
+      size: row.size,
+      sha256: row.sha256,
+      cachedAt: row.cached_at,
+      lastAccessedAt: row.last_accessed_at ?? undefined,
+    }));
+  }
+
+  /** Remove one attachment index row. The blob is the caller's business. */
+  deleteAttachment(
+    account: string,
+    mailbox: string,
+    uid: number,
+    uidValidity: string,
+    partId: string,
+  ): void {
+    this.prep(`
+      DELETE FROM attachment
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ? AND part_id = ?
+    `).run(account, mailbox, uid, uidValidity, partId);
+  }
+
+  /** Messages holding a body, in eviction order (never-read first). */
+  listEvictableBodies(
+    limit: number,
+  ): { account: string; mailbox: string; uid: number; uidValidity: string; bytes: number }[] {
+    return this.queryAll<{
+      account: string;
+      mailbox: string;
+      uid: number;
+      uid_validity: string;
+      bytes: number;
+    }>(
+      `SELECT account, mailbox, uid, uid_validity, LENGTH(body_text) AS bytes
+       FROM message
+       WHERE body_text IS NOT NULL
+       ORDER BY last_accessed_at IS NOT NULL, last_accessed_at ASC, internal_date ASC
+       LIMIT ?`,
+      limit,
+    ).map((row) => ({
+      account: row.account,
+      mailbox: row.mailbox,
+      uid: row.uid,
+      uidValidity: row.uid_validity,
+      bytes: row.bytes,
+    }));
+  }
+
+  /**
+   * Drop a cached body, keeping the envelope.
+   *
+   * `body_fetched_at` is cleared too: an evicted body is a body that may be
+   * fetched again, unlike one that was attempted and found uncacheable. The
+   * UPDATE goes through the message row so the FTS triggers drop its terms.
+   */
+  clearBody(account: string, mailbox: string, uid: number, uidValidity: string): void {
+    this.prep(`
+      UPDATE message
+      SET body_text = NULL, body_subtype = NULL, headers_json = NULL, body_fetched_at = NULL
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ?
+    `).run(account, mailbox, uid, uidValidity);
+  }
+
+  /** Every digest the index references, for orphan reconciliation. */
+  listIndexedDigests(): string[] {
+    return this.queryAll<{ sha256: string }>('SELECT DISTINCT sha256 FROM attachment').map(
+      (r) => r.sha256,
+    );
+  }
+
+  /** Drop every index row pointing at content that is no longer held. */
+  deleteAttachmentsByDigest(sha256: string): void {
+    this.prep('DELETE FROM attachment WHERE sha256 = ?').run(sha256);
+  }
+
+  /**
+   * Delete envelopes older than a cutoff — the last resort, used only when
+   * dropping every body and blob still leaves the mirror over budget.
+   *
+   * @returns how many rows were removed.
+   */
+  deleteMessagesOlderThan(cutoffMs: number, limit: number): number {
+    const { changes } = this.prep(`
+      DELETE FROM message WHERE rowid IN (
+        SELECT rowid FROM message WHERE internal_date < ? ORDER BY internal_date ASC LIMIT ?
+      )
+    `).run(cutoffMs, limit);
+    return Number(changes);
+  }
+
+  // -------------------------------------------------------------------------
   // Mailbox state
   // -------------------------------------------------------------------------
 
