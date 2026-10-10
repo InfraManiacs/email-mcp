@@ -543,7 +543,7 @@ export function generateTemplate(): string {
 
 [settings]
 rate_limit = 10  # max emails per minute per account
-read_only = false  # set to true to disable all write operations
+read_only = false  # set to true to disable the mailbox-write tools
 
 # Scheduled sends. The queue keeps one JSON file per sent email under
 # $XDG_STATE_HOME/email-mcp/scheduled/sent/; retention bounds how far back

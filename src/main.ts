@@ -83,7 +83,7 @@ Examples:
   email-mcp notify test              # Send a test notification
   email-mcp notify status            # Check notification platform support
   email-mcp list --unread            # Unread mail in INBOX
-  email-mcp list --json | jq '.[0]'  # Machine-readable listing
+  email-mcp list --json | jq '.items[0]'  # Machine-readable listing
   email-mcp read 1234 --mark-read    # Read one email and mark it seen
   email-mcp search "invoice"         # Search the mailbox
   email-mcp attach 1234 report.pdf ~/Downloads   # Save an attachment

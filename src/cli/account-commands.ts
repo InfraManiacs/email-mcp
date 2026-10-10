@@ -515,7 +515,10 @@ async function addAccount(): Promise<void> {
           cache: {
             enabled: true,
             mailboxes: ['INBOX'],
-            window_days: 90,
+            // 0, matching the schema default: a bounded window leaves the
+            // mirror holding a slice, and a slice cannot answer "how many
+            // messages are in this mailbox", so every listing goes live.
+            window_days: 0,
             body_messages: 500,
             max_size_mb: 500,
             sync_interval: 300,

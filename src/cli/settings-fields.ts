@@ -103,7 +103,7 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
       },
       {
         key: 'read_only',
-        label: 'Read-only mode (disables all write tools)',
+        label: 'Read-only mode (disables the mailbox-write tools)',
         kind: 'boolean',
         schema: generalShape.read_only,
       },
