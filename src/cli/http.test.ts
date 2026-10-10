@@ -1,6 +1,14 @@
 import type { ServerConfig } from '../types/index.js';
 import { parseOptions } from './http.js';
 
+vi.mock('../app.js', () => ({
+  buildServices: vi.fn(() => {
+    throw new Error('buildServices must not run for --help');
+  }),
+  buildServer: vi.fn(),
+  startBackgroundServices: vi.fn(),
+}));
+
 const serverConfig: ServerConfig = {
   host: '10.0.0.5',
   port: 3299,
@@ -41,5 +49,19 @@ describe('parseOptions precedence', () => {
   it('treats an empty config token as no auth', () => {
     const opts = parseOptions([], {}, { ...serverConfig, token: '' });
     expect(opts.token).toBeUndefined();
+  });
+});
+
+describe('runHttp --help', () => {
+  it('prints usage and returns without booting services', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { default: runHttp } = await import('./http.js');
+
+    await expect(runHttp(['--help'])).resolves.toBeUndefined();
+    await expect(runHttp(['-h'])).resolves.toBeUndefined();
+
+    expect(log).toHaveBeenCalled();
+    expect(log.mock.calls[0]?.[0]).toContain('Usage: email-mcp http');
+    log.mockRestore();
   });
 });

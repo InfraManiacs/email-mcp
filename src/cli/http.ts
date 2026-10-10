@@ -116,7 +116,35 @@ function tokenMatches(header: string | undefined, token: string): boolean {
   return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
+function printHttpUsage(): void {
+  console.log(`Usage: email-mcp http [options]
+
+Serve the MCP server over Streamable HTTP (loopback by default).
+
+Options (precedence: flags > EMAIL_MCP_HTTP_* env > [settings.server] > defaults):
+  --host <addr>            Bind address (default: 127.0.0.1)
+  --port <n>               Port (default: 8080)
+  --path <path>            Endpoint path (default: /mcp)
+  --token <secret>         Require "Authorization: Bearer <secret>"
+  --allowed-hosts <a,b>    Host-header allowlist (default: loopback names)
+  --insecure               Allow non-loopback bind without a token
+  -h, --help               Show this help
+
+Examples:
+  email-mcp http --port 28080
+  email-mcp http --host 0.0.0.0 --port 8443 --token "$SECRET"`);
+}
+
 export default async function runHttp(argv: string[]): Promise<void> {
+  // Before anything with side effects: buildServices() starts background
+  // services and parseOptions() ignores unknown flags, so without this check
+  // `email-mcp http --help` used to boot the full server (and die with
+  // EADDRINUSE if the daemon was already running).
+  if (argv.includes('--help') || argv.includes('-h')) {
+    printHttpUsage();
+    return;
+  }
+
   const services = await buildServices();
   const opts = parseOptions(argv, process.env, services.config.settings.server);
 
