@@ -1,5 +1,42 @@
 /** Input validation and sanitization utilities. */
 
+/** Comfortably inside the 255-byte name limit common to ext4, APFS and NTFS. */
+const MAX_ATTACHMENT_NAME_CHARS = 200;
+
+/**
+ * Reduce a sender-supplied attachment name to one that is safe to write.
+ *
+ * The name arrives in the message's Content-Disposition header, so anyone who
+ * can email the user chooses it. Passed to `path.join` as-is, a name like
+ * `../../../../.zshrc` escapes the destination directory entirely and
+ * overwrites whatever sits there — and since the CLI defaults its destination
+ * to the working directory, even a plain leading dot is enough to drop a file
+ * that shell startup will read.
+ *
+ * The result is always a bare filename: no directory part, no control
+ * characters, no leading dot, and never empty.
+ */
+export function safeAttachmentFilename(name: string): string {
+  // Split on both separators whatever the platform: POSIX `basename` leaves
+  // `..\..\x` untouched, and that name traverses once it reaches Windows.
+  const lastSegment = name.split(/[/\\]/).pop() ?? '';
+
+  const cleaned = lastSegment
+    /* eslint-disable no-control-regex */
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: removing them is the point
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    /* eslint-enable no-control-regex */
+    // Windows discards these silently, so a name differing only by them would
+    // be two files here and one there.
+    .replace(/[. ]+$/, '')
+    // A leading dot hides the file and lets an attachment pose as a dotfile.
+    .replace(/^\.+/, '')
+    .trim();
+
+  if (cleaned.length === 0) return 'attachment';
+  return cleaned.slice(0, MAX_ATTACHMENT_NAME_CHARS);
+}
+
 /**
  * Validate and sanitize an IMAP mailbox name.
  * Rejects names containing IMAP wildcard characters (`*`, `%`) or empty strings.

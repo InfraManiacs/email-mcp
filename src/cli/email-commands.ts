@@ -24,6 +24,7 @@ import { confirm, isCancel } from '@clack/prompts';
 import { loadConfig } from '../config/loader.js';
 import ConnectionManager from '../connections/manager.js';
 import RateLimiter from '../safety/rate-limiter.js';
+import { safeAttachmentFilename } from '../safety/validation.js';
 import { prepareAttachments } from '../services/attachments.js';
 import ImapService from '../services/imap.service.js';
 import OAuthService from '../services/oauth.service.js';
@@ -239,9 +240,17 @@ async function cmdAttach(svc: CliServices, argv: string[]): Promise<void> {
     CLI_ATTACHMENT_MAX_BYTES,
   );
   const { writeFile, mkdir } = await import('node:fs/promises');
-  const { join } = await import('node:path');
+  const { resolve, sep } = await import('node:path');
   await mkdir(destDir, { recursive: true });
-  const out = join(destDir, dl.filename);
+  // The name is the sender's to choose, so it is reduced to a bare filename
+  // before it reaches the filesystem. The containment check below cannot fire
+  // given that guarantee; it is here so the invariant fails loudly rather than
+  // silently if it is ever weakened.
+  const base = resolve(destDir);
+  const out = resolve(base, safeAttachmentFilename(dl.filename));
+  if (out !== base && !out.startsWith(base + sep)) {
+    throw new Error(`Refusing to write "${dl.filename}" outside ${base}.`);
+  }
   await writeFile(out, Buffer.from(dl.contentBase64, 'base64'));
   console.log(`Saved ${dl.filename} (${formatSize(dl.size)}) → ${out}`);
 }

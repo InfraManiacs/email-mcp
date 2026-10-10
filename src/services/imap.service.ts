@@ -6,7 +6,11 @@
 
 import type { ImapFlow } from 'imapflow';
 import type { IConnectionManager } from '../connections/types.js';
-import { sanitizeMailboxName, sanitizeSearchQuery } from '../safety/validation.js';
+import {
+  safeAttachmentFilename,
+  sanitizeMailboxName,
+  sanitizeSearchQuery,
+} from '../safety/validation.js';
 import type {
   AttachmentMeta,
   BulkResult,
@@ -1514,7 +1518,7 @@ export default class ImapService {
           meta.partId !== undefined ? { partId: meta.partId } : meta.filename,
           maxSizeBytes,
         );
-        const safe = meta.filename.replace(/[/\\?%*:|"<>]/g, '_');
+        const safe = safeAttachmentFilename(meta.filename);
         const localPath = `${destDir}/${safe}`;
         const { writeFile } = await import('node:fs/promises');
         await writeFile(localPath, Buffer.from(downloaded.contentBase64, 'base64'));
