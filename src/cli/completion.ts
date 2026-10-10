@@ -111,6 +111,7 @@ export const COMMANDS: CommandSpec[] = [
       { flag: '--page', description: 'Page number', takesValue: true },
       { flag: '--unread', description: 'Only unread' },
       { flag: '--search', description: 'Filter by subject keyword', takesValue: true },
+      { flag: '--json', description: 'JSON output' },
     ],
   },
   {
@@ -121,6 +122,7 @@ export const COMMANDS: CommandSpec[] = [
       { flag: '--account', description: 'Account name', takesValue: true },
       { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
       { flag: '--mark-read', description: 'Mark as read after showing' },
+      { flag: '--json', description: 'JSON output' },
     ],
   },
   {
@@ -131,13 +133,17 @@ export const COMMANDS: CommandSpec[] = [
       { flag: '--account', description: 'Account name', takesValue: true },
       { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
       { flag: '--limit', description: 'Max results', takesValue: true },
+      { flag: '--json', description: 'JSON output' },
     ],
   },
   {
     name: 'mailboxes',
     description: 'List mailboxes/folders',
     arg: 'accounts',
-    flags: [{ flag: '--account', description: 'Account name', takesValue: true }],
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--json', description: 'JSON output' },
+    ],
   },
   {
     name: 'flag',

@@ -29,7 +29,10 @@ import ImapService from '../services/imap.service.js';
 import OAuthService from '../services/oauth.service.js';
 import SmtpService from '../services/smtp.service.js';
 import type { AppConfig } from '../types/index.js';
+import { emailUsage } from './email-help.js';
 import { formatEmailFull, formatEmailList, formatMailboxes, formatSize } from './presenters.js';
+
+const jsonOut = (data: unknown) => console.log(JSON.stringify(data, null, 2));
 
 interface CliServices {
   config: AppConfig;
@@ -87,6 +90,7 @@ async function cmdList(svc: CliServices, argv: string[]): Promise<void> {
       page: { type: 'string', default: '1' },
       unread: { type: 'boolean', default: false },
       search: { type: 'string' },
+      json: { type: 'boolean', default: false },
     },
     allowPositionals: false,
   });
@@ -98,6 +102,10 @@ async function cmdList(svc: CliServices, argv: string[]): Promise<void> {
     ...(values.unread ? { seen: false } : {}),
     ...(values.search ? { subject: values.search } : {}),
   });
+  if (values.json) {
+    jsonOut(result);
+    return;
+  }
   console.log(formatEmailList(result, values.mailbox as string, colorOpts()));
 }
 
@@ -108,17 +116,22 @@ async function cmdRead(svc: CliServices, argv: string[]): Promise<void> {
       account: { type: 'string' },
       mailbox: { type: 'string', default: 'INBOX' },
       'mark-read': { type: 'boolean', default: false },
+      json: { type: 'boolean', default: false },
     },
     allowPositionals: true,
   });
   const id = positionals[0];
-  if (!id) throw new Error('Usage: email-mcp read <id> [--mark-read] [--mailbox INBOX]');
+  if (!id) throw new Error(emailUsage('read'));
   const account = resolveAccount(svc.config, values.account);
   const email = await svc.imap.getEmail(account, id, values.mailbox);
-  console.log(formatEmailFull(email, colorOpts()));
+  if (values.json) {
+    jsonOut(email);
+  } else {
+    console.log(formatEmailFull(email, colorOpts()));
+  }
   if (values['mark-read']) {
     await svc.imap.setFlags(account, id, values.mailbox as string, 'read');
-    console.log(`\nMarked as read.`);
+    if (!values.json) console.log(`\nMarked as read.`);
   }
 }
 
@@ -129,23 +142,35 @@ async function cmdSearch(svc: CliServices, argv: string[]): Promise<void> {
       account: { type: 'string' },
       mailbox: { type: 'string', default: 'INBOX' },
       limit: { type: 'string', default: '20' },
+      json: { type: 'boolean', default: false },
     },
     allowPositionals: true,
   });
   const query = positionals.join(' ').trim();
-  if (!query) throw new Error('Usage: email-mcp search <query> [--mailbox INBOX] [--limit 20]');
+  if (!query) throw new Error(emailUsage('search'));
   const account = resolveAccount(svc.config, values.account);
   const result = await svc.imap.searchEmails(account, query, {
     mailbox: values.mailbox,
     pageSize: Number(values.limit),
   });
+  if (values.json) {
+    jsonOut(result);
+    return;
+  }
   console.log(formatEmailList(result, `${values.mailbox} · "${query}"`, colorOpts()));
 }
 
 async function cmdMailboxes(svc: CliServices, argv: string[]): Promise<void> {
-  const { values } = parseArgs({ args: argv, options: { account: { type: 'string' } } });
+  const { values } = parseArgs({
+    args: argv,
+    options: { account: { type: 'string' }, json: { type: 'boolean', default: false } },
+  });
   const account = resolveAccount(svc.config, values.account);
   const boxes = await svc.imap.listMailboxes(account);
+  if (values.json) {
+    jsonOut(boxes);
+    return;
+  }
   console.log(formatMailboxes(boxes, colorOpts()));
 }
 
@@ -203,7 +228,16 @@ async function cmdAttach(svc: CliServices, argv: string[]): Promise<void> {
     );
   }
   const account = resolveAccount(svc.config, values.account);
-  const dl = await svc.imap.downloadAttachment(account, id, values.mailbox as string, filename);
+  // The service defaults to a 5 MB cap (sized for returning base64 to an LLM);
+  // a terminal download to disk has no such constraint, so allow up to 50 MB.
+  const CLI_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
+  const dl = await svc.imap.downloadAttachment(
+    account,
+    id,
+    values.mailbox as string,
+    filename,
+    CLI_ATTACHMENT_MAX_BYTES,
+  );
   const { writeFile, mkdir } = await import('node:fs/promises');
   const { join } = await import('node:path');
   await mkdir(destDir, { recursive: true });
@@ -304,6 +338,12 @@ export default async function runEmailCommand(command: string, argv: string[]): 
   if (!handler) {
     console.error(`Unknown email command "${command}". One of: ${EMAIL_COMMANDS.join(', ')}.`);
     process.exitCode = 1;
+    return;
+  }
+  // Answer --help before touching the network: building services would connect
+  // to IMAP/SMTP, which is the opposite of what someone asking for help wants.
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(emailUsage(command));
     return;
   }
   const svc = await buildCliServices();

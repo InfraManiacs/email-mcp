@@ -563,6 +563,14 @@ email-mcp reply 42 --body "on it" --all
 email-mcp send --to a@b.c,d@e.f --subject "Hi" --body "..." --attach ./file.pdf
 ```
 
+Every command accepts `--help`; the read commands (`list`, `read`, `search`,
+`mailboxes`) accept `--json` for machine-readable output you can pipe to `jq`:
+
+```bash
+email-mcp list --json | jq '.items[] | {id, subject, from: .from.address}'
+email-mcp read 42 --json | jq .attachments
+```
+
 Attachment sizes on send/reply are checked against the configured limit before
 anything leaves your machine (see [Storing account secrets](#storing-account-secrets)
 for keeping credentials out of plaintext).
