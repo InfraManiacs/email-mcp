@@ -19,29 +19,63 @@ export function hasAttachments(bodyStructure: unknown): boolean {
   return false;
 }
 
-export function extractAttachments(bodyStructure: unknown): AttachmentMeta[] {
-  const attachments: AttachmentMeta[] = [];
-  if (!bodyStructure || typeof bodyStructure !== 'object') return attachments;
+function walkAttachments(bodyStructure: unknown, partPath: string): AttachmentMeta[] {
+  if (!bodyStructure || typeof bodyStructure !== 'object') return [];
 
   const bs = bodyStructure as Record<string, unknown>;
-  if (bs.disposition === 'attachment') {
-    const params = (bs.dispositionParameters ?? bs.parameters ?? {}) as Record<string, string>;
-    attachments.push({
-      filename: params.filename ?? params.name ?? 'unnamed',
+  const effectivePath = (bs.part as string | undefined) ?? partPath;
+  const { type } = splitMimeType(bs.type);
+  const params = (bs.dispositionParameters ?? bs.parameters ?? {}) as Record<string, string>;
+  const name = params.filename ?? params.name;
+  const rawId = typeof bs.id === 'string' ? bs.id : undefined;
+  const contentId = rawId?.replace(/^</, '').replace(/>$/, '');
+  const isContainer = Array.isArray(bs.childNodes);
+
+  const isAttachment = bs.disposition === 'attachment';
+  // Inline non-text parts are the cid images the HTML references — without a
+  // listing they are invisible and undownloadable. Text parts stay out: an
+  // inline text part is the body.
+  const isInline =
+    bs.disposition === 'inline' &&
+    !isContainer &&
+    type !== 'text' &&
+    (name !== undefined || contentId !== undefined);
+  // Older mailers ship attachments with no Content-Disposition at all, named
+  // only by Content-Type's name= parameter.
+  const isBareNamed =
+    bs.disposition === undefined &&
+    !isContainer &&
+    type !== 'text' &&
+    type !== 'multipart' &&
+    name !== undefined;
+
+  const found: AttachmentMeta[] = [];
+  if (isAttachment || isInline || isBareNamed) {
+    found.push({
+      filename: name ?? 'unnamed',
       // `bs.type` is already a complete Content-Type; there is no subtype
       // field to append.
       mimeType: typeof bs.type === 'string' ? bs.type.toLowerCase() : 'application/octet-stream',
       size: (bs.size as number) ?? 0,
+      partId: effectivePath || '1',
+      ...(typeof bs.encoding === 'string' ? { encoding: bs.encoding } : {}),
+      ...(contentId ? { contentId } : {}),
+      ...(isInline ? { inline: true } : {}),
     });
   }
 
-  if (Array.isArray(bs.childNodes)) {
-    (bs.childNodes as unknown[]).forEach((child) => {
-      attachments.push(...extractAttachments(child));
+  if (isContainer) {
+    (bs.childNodes as unknown[]).forEach((child, i) => {
+      const childPath = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
+      found.push(...walkAttachments(child, childPath));
     });
   }
 
-  return attachments;
+  return found;
+}
+
+export function extractAttachments(bodyStructure: unknown): AttachmentMeta[] {
+  return walkAttachments(bodyStructure, '');
 }
 
 /** Find the MIME part number for an attachment by filename. */

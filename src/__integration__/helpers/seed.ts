@@ -15,6 +15,8 @@ interface SeedEmailOptions {
     filename: string;
     content: string | Buffer;
     contentType?: string;
+    /** Content-ID for inline (cid:) parts — nodemailer sets disposition inline. */
+    cid?: string;
   }[];
 }
 

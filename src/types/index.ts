@@ -236,7 +236,18 @@ export interface EmailMeta {
 export interface AttachmentMeta {
   filename: string;
   mimeType: string;
+  /** BODYSTRUCTURE octet count — the ENCODED size, so ~33% above the real
+   *  bytes for base64 parts. Treat as approximate. */
   size: number;
+  /** IMAP part path ("2", "1.2") — the unambiguous way to download this part. */
+  partId?: string;
+  /** Content-Transfer-Encoding as reported by the server ("base64", …). */
+  encoding?: string;
+  /** Content-ID without angle brackets; what HTML `cid:` references point at. */
+  contentId?: string;
+  /** True for parts shipped as inline content (cid images) rather than as
+   *  classic attachments. */
+  inline?: boolean;
 }
 
 export interface Email extends EmailMeta {

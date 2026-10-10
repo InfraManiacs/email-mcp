@@ -123,6 +123,35 @@ describe('Email Read Operations', () => {
       expect(email.bodyHtml).toContain('<b>variant</b>');
     });
 
+    it('lists an inline cid image and downloads it by part id', async () => {
+      const png = Buffer.from('89504e470d0a1a0a', 'hex');
+      await seedEmail({
+        subject: 'InlineLogo',
+        text: 'logo attached inline',
+        html: '<p>Logo: <img src="cid:logo@x"></p>',
+        attachments: [
+          { filename: 'logo.png', content: png, contentType: 'image/png', cid: 'logo@x' },
+        ],
+      });
+      await waitForDelivery();
+
+      const email = await seededEmail('InlineLogo');
+      const inline = email.attachments.find((a) => a.contentId === 'logo@x');
+
+      expect(inline).toBeDefined();
+      expect(inline?.inline).toBe(true);
+
+      const dl = await services.imapService.downloadAttachment(
+        TEST_ACCOUNT_NAME,
+        email.id,
+        'INBOX',
+        {
+          partId: inline?.partId ?? '',
+        },
+      );
+      expect(Buffer.from(dl.contentBase64, 'base64').toString('hex')).toBe(png.toString('hex'));
+    });
+
     it('never uses an attached message as the body', async () => {
       const attachedEml = [
         'From: inner@localhost',

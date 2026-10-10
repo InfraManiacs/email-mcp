@@ -147,15 +147,19 @@ export default class SmtpService {
     const original = await this.imapService.getEmail(accountName, options.emailId, options.mailbox);
 
     // Carry the original's attachments unless explicitly declined -- a forward
-    // that silently strips them misrepresents the original message.
+    // that silently strips them misrepresents the original message. Inline
+    // parts (cid images referenced by the HTML) stay behind: the forward is
+    // composed as text, so re-attaching them would turn layout images into
+    // stray attachments.
     const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
-    if (options.includeAttachments !== false && original.attachments?.length) {
-      for (const meta of original.attachments) {
+    const forwardable = (original.attachments ?? []).filter((a) => !a.inline);
+    if (options.includeAttachments !== false && forwardable.length) {
+      for (const meta of forwardable) {
         const dl = await this.imapService.downloadAttachment(
           accountName,
           options.emailId,
           options.mailbox ?? 'INBOX',
-          meta.filename,
+          meta.partId !== undefined ? { partId: meta.partId } : meta.filename,
           FORWARD_ATTACHMENT_MAX_BYTES,
         );
         attachments.push({

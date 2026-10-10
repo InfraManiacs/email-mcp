@@ -63,7 +63,7 @@ describe('hasAttachments', () => {
 });
 
 describe('extractAttachments', () => {
-  it('extracts filename, lowercased mime type, and size', () => {
+  it('extracts filename, lowercased mime type, size, and part id', () => {
     const bs = {
       type: 'multipart/mixed',
       childNodes: [
@@ -73,18 +73,25 @@ describe('extractAttachments', () => {
           disposition: 'attachment',
           dispositionParameters: { filename: 'report.pdf' },
           size: 1234,
+          encoding: 'base64',
         },
       ],
     };
     expect(extractAttachments(bs)).toEqual([
-      { filename: 'report.pdf', mimeType: 'application/pdf', size: 1234 },
+      {
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+        size: 1234,
+        partId: '2',
+        encoding: 'base64',
+      },
     ]);
   });
 
   it('falls back to parameters.name, then "unnamed", and size 0', () => {
     const named = { type: 'image/png', disposition: 'attachment', parameters: { name: 'x.png' } };
     const bare = { type: 'image/png', disposition: 'attachment' };
-    expect(extractAttachments(named)[0]).toEqual({
+    expect(extractAttachments(named)[0]).toMatchObject({
       filename: 'x.png',
       mimeType: 'image/png',
       size: 0,
@@ -92,16 +99,60 @@ describe('extractAttachments', () => {
     expect(extractAttachments(bare)[0]?.filename).toBe('unnamed');
   });
 
-  it('ignores inline parts (disposition "inline" is not listed)', () => {
-    // Characterization: inline cid images are currently invisible.
+  it('lists an inline image with its content id', () => {
+    // Inline cid parts are real content shipped with the message; hiding them
+    // made <img src="cid:..."> references undownloadable.
     const bs = {
       type: 'multipart/related',
       childNodes: [
         textHtml(),
-        { type: 'image/png', disposition: 'inline', parameters: { name: 'logo.png' } },
+        {
+          type: 'image/png',
+          disposition: 'inline',
+          id: '<logo@x>',
+          parameters: { name: 'logo.png' },
+          size: 900,
+        },
       ],
     };
+    expect(extractAttachments(bs)).toEqual([
+      {
+        filename: 'logo.png',
+        mimeType: 'image/png',
+        size: 900,
+        partId: '2',
+        contentId: 'logo@x',
+        inline: true,
+      },
+    ]);
+  });
+
+  it('lists a non-text part named only via Content-Type name=', () => {
+    // Older mailers ship attachments with no Content-Disposition at all.
+    const bs = {
+      type: 'multipart/mixed',
+      childNodes: [textPlain(), { type: 'application/pdf', parameters: { name: 'x.pdf' } }],
+    };
+    expect(extractAttachments(bs).map((a) => a.filename)).toEqual(['x.pdf']);
+  });
+
+  it('does not list inline or undispositioned text parts (they are the body)', () => {
+    const bs = {
+      type: 'multipart/alternative',
+      childNodes: [textPlain(400, { disposition: 'inline' }), textHtml()],
+    };
     expect(extractAttachments(bs)).toEqual([]);
+  });
+
+  it('gives duplicate filenames distinct part ids', () => {
+    const invoice = {
+      type: 'application/pdf',
+      disposition: 'attachment',
+      dispositionParameters: { filename: 'invoice.pdf' },
+    };
+    const bs = { type: 'multipart/mixed', childNodes: [textPlain(), invoice, { ...invoice }] };
+    const ids = extractAttachments(bs).map((a) => a.partId);
+    expect(ids).toEqual(['2', '3']);
   });
 });
 

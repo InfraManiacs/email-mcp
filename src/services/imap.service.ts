@@ -1237,7 +1237,7 @@ export default class ImapService {
     accountName: string,
     emailId: string,
     mailbox: string,
-    filename: string,
+    selector: string | { filename?: string; partId?: string },
     maxSizeBytes = 5 * 1024 * 1024,
   ): Promise<{
     filename: string;
@@ -1262,23 +1262,46 @@ export default class ImapService {
       }
 
       const attachments = extractAttachments(msg.bodyStructure);
-      const attachment = attachments.find((a) => a.filename === filename);
-      if (!attachment) {
-        throw new Error(
-          `Attachment "${filename}" not found. Available: ${attachments.map((a) => a.filename).join(', ') || 'none'}`,
-        );
+      const sel = typeof selector === 'string' ? { filename: selector } : selector;
+
+      let attachment: AttachmentMeta | undefined;
+      if (sel.partId !== undefined) {
+        // The part id is unambiguous — duplicate filenames and unnamed parts
+        // are only reachable this way.
+        attachment = attachments.find((a) => a.partId === sel.partId);
+        if (!attachment) {
+          throw new Error(
+            `No attachment with part id "${sel.partId}". Available: ${
+              attachments.map((a) => `${a.partId} (${a.filename})`).join(', ') || 'none'
+            }`,
+          );
+        }
+      } else if (sel.filename !== undefined) {
+        attachment = attachments.find((a) => a.filename === sel.filename);
+        if (!attachment) {
+          throw new Error(
+            `Attachment "${sel.filename}" not found. Available: ${attachments.map((a) => a.filename).join(', ') || 'none'}`,
+          );
+        }
+      } else {
+        throw new Error('Either a filename or a partId is required');
       }
 
-      if (attachment.size > maxSizeBytes) {
+      // BODYSTRUCTURE reports encoded octets; base64 decodes ~25% smaller.
+      // The cap means "bytes you will receive", so compare the estimate.
+      const estimatedBytes =
+        attachment.encoding === 'base64' ? Math.floor((attachment.size * 3) / 4) : attachment.size;
+      if (estimatedBytes > maxSizeBytes) {
         throw new Error(
-          `Attachment "${filename}" is ${Math.round(attachment.size / 1024 / 1024)}MB, exceeds ${Math.round(maxSizeBytes / 1024 / 1024)}MB limit`,
+          `Attachment "${attachment.filename}" is ~${(estimatedBytes / 1024 / 1024).toFixed(1)}MB, exceeds ${Math.round(maxSizeBytes / 1024 / 1024)}MB limit`,
         );
       }
 
       // Find the MIME part number
-      const partNumber = findMimePartByFilename(msg.bodyStructure, filename);
+      const partNumber =
+        attachment.partId ?? findMimePartByFilename(msg.bodyStructure, attachment.filename);
       if (!partNumber) {
-        throw new Error(`Could not locate MIME part for "${filename}"`);
+        throw new Error(`Could not locate MIME part for "${attachment.filename}"`);
       }
 
       // Download the part
@@ -1287,7 +1310,7 @@ export default class ImapService {
       });
 
       if (!downloadResult?.content) {
-        throw new Error(`Failed to download attachment "${filename}"`);
+        throw new Error(`Failed to download attachment "${attachment.filename}"`);
       }
 
       const chunks: Buffer[] = [];
@@ -1295,7 +1318,17 @@ export default class ImapService {
       for await (const chunk of downloadResult.content) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
-      const content = Buffer.concat(chunks);
+      let content = Buffer.concat(chunks);
+
+      // Some servers (GreenMail among them) answer the n.MIME section of a
+      // nested part empty; ImapFlow then sees no transfer encoding and streams
+      // the raw base64 through undecoded. Its meta.encoding mirrors what it
+      // decoded with, so its absence next to a BODYSTRUCTURE-declared base64
+      // means the decode never ran — apply it here.
+      const downloadMeta = downloadResult.meta as Record<string, unknown> | undefined;
+      if (attachment.encoding === 'base64' && downloadMeta?.encoding === undefined) {
+        content = Buffer.from(content.toString('latin1'), 'base64');
+      }
 
       return {
         filename: attachment.filename,
@@ -1345,8 +1378,10 @@ export default class ImapService {
         { uid: true },
       );
       if (!msg) return [];
+      // Inline parts (signature logos, cid images) are not what a "save the
+      // attachments" caller wants on disk.
       // biome-ignore format: line too long; eslint implicit-arrow-linebreak prevents multi-line implicit return
-      attachmentMetas = extractAttachments(msg.bodyStructure).filter((a) => a.size <= maxSizeBytes && !a.mimeType.includes('calendar') && !a.filename.toLowerCase().endsWith('.ics'));
+      attachmentMetas = extractAttachments(msg.bodyStructure).filter((a) => !a.inline && a.size <= maxSizeBytes && !a.mimeType.includes('calendar') && !a.filename.toLowerCase().endsWith('.ics'));
     } finally {
       lock.release();
     }
@@ -1362,7 +1397,8 @@ export default class ImapService {
           accountName,
           emailId,
           mailbox,
-          meta.filename,
+          // The part id survives duplicate filenames; filename is the fallback.
+          meta.partId !== undefined ? { partId: meta.partId } : meta.filename,
           maxSizeBytes,
         );
         const safe = meta.filename.replace(/[/\\?%*:|"<>]/g, '_');

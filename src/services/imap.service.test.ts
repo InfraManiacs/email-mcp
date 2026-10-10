@@ -603,6 +603,131 @@ describe('ImapService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // downloadAttachment
+  // -----------------------------------------------------------------------
+
+  describe('downloadAttachment', () => {
+    it('downloads a specific duplicate-named attachment by part id', async () => {
+      const invoice = {
+        type: 'application/pdf',
+        disposition: 'attachment',
+        dispositionParameters: { filename: 'invoice.pdf' },
+        size: 100,
+      };
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [{ part: '1', type: 'text/plain', size: 50 }, invoice, { ...invoice }],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('second pdf'));
+
+      const result = await service.downloadAttachment('test', '42', 'INBOX', { partId: '3' });
+
+      expect(client.download).toHaveBeenCalledWith('42', '3', { uid: true });
+      expect(result.filename).toBe('invoice.pdf');
+    });
+
+    it('judges the size cap by estimated decoded size for base64 parts', async () => {
+      // BODYSTRUCTURE reports encoded octets: 6 MB of base64 decodes to
+      // ~4.5 MB, inside the 5 MB default cap — rejecting it would refuse a
+      // file the caller is allowed to receive.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 50 },
+            {
+              part: '2',
+              type: 'application/pdf',
+              disposition: 'attachment',
+              dispositionParameters: { filename: 'big.pdf' },
+              size: 6 * 1024 * 1024,
+              encoding: 'base64',
+            },
+          ],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('pdf bytes'));
+
+      await expect(
+        service.downloadAttachment('test', '42', 'INBOX', 'big.pdf'),
+      ).resolves.toBeDefined();
+    });
+
+    it('applies the declared base64 encoding when the server withholds MIME headers', async () => {
+      // GreenMail (and flaky real servers) answer the n.MIME section of a
+      // nested part empty; ImapFlow then has no transfer encoding to decode
+      // with and streams raw base64 through. BODYSTRUCTURE already declared
+      // the encoding, so the service applies it itself.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 50 },
+            {
+              part: '2',
+              type: 'image/png',
+              disposition: 'attachment',
+              dispositionParameters: { filename: 'logo.png' },
+              size: 12,
+              encoding: 'base64',
+            },
+          ],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('iVBORw0KGgo='));
+
+      const result = await service.downloadAttachment('test', '42', 'INBOX', { partId: '2' });
+
+      expect(Buffer.from(result.contentBase64, 'base64').toString('hex')).toBe('89504e470d0a1a0a');
+    });
+
+    it('does not decode again when ImapFlow already decoded the part', async () => {
+      const raw = Buffer.from('89504e470d0a1a0a', 'hex');
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'image/png',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'logo.png' },
+          size: 12,
+          encoding: 'base64',
+        },
+      });
+      client.download.mockResolvedValue({
+        meta: { encoding: 'base64' },
+        content: (async function* gen() {
+          yield raw;
+        })(),
+      });
+
+      const result = await service.downloadAttachment('test', '42', 'INBOX', 'logo.png');
+
+      expect(Buffer.from(result.contentBase64, 'base64').toString('hex')).toBe(raw.toString('hex'));
+    });
+
+    it('reports the blocking size precisely instead of rounding it away', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'application/pdf',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'huge.pdf' },
+          size: Math.round(5.4 * 1024 * 1024),
+        },
+      });
+
+      await expect(service.downloadAttachment('test', '42', 'INBOX', 'huge.pdf')).rejects.toThrow(
+        /5\.4MB/,
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // getCalendarParts
   // -----------------------------------------------------------------------
 
