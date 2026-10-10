@@ -183,14 +183,54 @@ function loadFromEnv(): RawAppConfig | null {
 // TOML file loader
 // ---------------------------------------------------------------------------
 
+/**
+ * Read and parse the TOML config.
+ *
+ * Returns null only when the file genuinely isn't there — that is the
+ * "not configured yet" signal callers turn into setup instructions. Every
+ * other failure throws: a syntax error or an unreadable file used to be
+ * swallowed into the same null, so a one-character typo was reported as
+ * "No configuration found" and sent the user to create a file they already
+ * had.
+ */
 async function loadFromFile(filePath: string = CONFIG_FILE): Promise<RawAppConfig | null> {
+  let content: string;
   try {
-    const content = await fs.readFile(filePath, 'utf-8');
-    const parsed = parseTOML(content);
-    return parsed as unknown as RawAppConfig;
-  } catch {
-    return null;
+    content = await fs.readFile(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Cannot read config file at ${filePath}: ${detail}`);
   }
+
+  try {
+    return parseTOML(content) as unknown as RawAppConfig;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `TOML syntax error in ${filePath}:\n  ${detail}\n\n` +
+        `Run 'email-mcp config validate' for the full report.`,
+    );
+  }
+}
+
+/**
+ * Validate a raw config, reporting field paths the way `config validate`
+ * does. A bare `.parse()` would surface a raw ZodError blob as the process's
+ * fatal error.
+ */
+function validateRawConfig(raw: unknown, source: string): RawAppConfig {
+  const result = AppConfigFileSchema.safeParse(raw);
+  if (result.success) return result.data;
+
+  const lines = result.error.issues.map((issue) => {
+    const where = issue.path.length > 0 ? issue.path.join('.') : '(root)';
+    return `  - ${where}: ${issue.message}`;
+  });
+  throw new Error(
+    `Invalid configuration in ${source}:\n${lines.join('\n')}\n\n` +
+      `Run 'email-mcp config validate' for the full report.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +388,7 @@ export async function loadRawConfig(configPath?: string): Promise<RawAppConfig> 
   if (!fileConfig) {
     throw new Error(`No config file found at: ${filePath}`);
   }
-  return AppConfigFileSchema.parse(fileConfig);
+  return validateRawConfig(fileConfig, filePath);
 }
 
 /**
@@ -385,7 +425,7 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
   // 1. Try environment variables first
   const envConfig = loadFromEnv();
   if (envConfig) {
-    const validated = AppConfigFileSchema.parse(envConfig);
+    const validated = validateRawConfig(envConfig, 'MCP_EMAIL_* environment variables');
     const normalized = normalizeConfig(validated);
     return { ...normalized, accounts: await resolveAccountSecrets(normalized.accounts) };
   }
@@ -393,7 +433,7 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
   // 2. Fall back to TOML config file
   const fileConfig = await loadFromFile(configPath);
   if (fileConfig) {
-    const validated = AppConfigFileSchema.parse(fileConfig);
+    const validated = validateRawConfig(fileConfig, configPath ?? CONFIG_FILE);
     const normalized = normalizeConfig(validated);
     return { ...normalized, accounts: await resolveAccountSecrets(normalized.accounts) };
   }
