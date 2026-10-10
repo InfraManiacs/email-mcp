@@ -115,6 +115,10 @@ export interface TextPart {
   /** Content subtype: "plain" | "html" | … (derived from the full MIME type) */
   subtype: string;
   size: number;
+  /** Content-Type carried `format=flowed`: soft line wraps need undoing. */
+  flowed?: boolean;
+  /** `format=flowed` with `DelSp=yes`: the space marking a wrap is not content. */
+  delSp?: boolean;
 }
 
 /**
@@ -163,6 +167,11 @@ function walkTextParts(
   }
 
   if (type === 'text' && !nodeExcluded) {
+    const params = (bs.parameters ?? {}) as Record<string, unknown>;
+    const flowed = typeof params.format === 'string' && params.format.toLowerCase() === 'flowed';
+    // DelSp is meaningless without format=flowed, so it only rides along.
+    const delSp =
+      flowed && typeof params.delsp === 'string' && params.delsp.toLowerCase() === 'yes';
     return [
       {
         // A single-part message has no `part` field at all — the body is
@@ -172,6 +181,8 @@ function walkTextParts(
         path: effectivePath || '1',
         subtype,
         size: typeof bs.size === 'number' ? bs.size : 0,
+        ...(flowed ? { flowed: true } : {}),
+        ...(delSp ? { delSp: true } : {}),
       },
     ];
   }
@@ -198,41 +209,78 @@ export function collectTextParts(bodyStructure: unknown, partPath = ''): TextPar
 }
 
 /**
+ * A plain part this small next to a much larger HTML sibling is the "This
+ * message requires an HTML-capable reader" placeholder, not the content.
+ */
+const STUB_PLAIN_MAX_BYTES = 200;
+const STUB_PLAIN_RATIO = 5;
+/**
+ * A chattier placeholder — one that appends an unsubscribe line — clears the
+ * floor above, so a second tier catches the ones their HTML sibling dwarfs.
+ * Suppressing a plain side is cheap when it happens to be real: the HTML
+ * carries the same content, and stripHtml renders it.
+ */
+const STUB_PLAIN_OUTLIER_MAX_BYTES = 2_000;
+const STUB_PLAIN_OUTLIER_RATIO = 20;
+
+function totalSize(parts: TextPart[]): number {
+  return parts.reduce((sum, part) => sum + part.size, 0);
+}
+
+/** Weighed across the whole group, since every part in it is downloaded. */
+function isStubPlain(plainBytes: number, htmlBytes: number): boolean {
+  return (
+    (plainBytes < STUB_PLAIN_MAX_BYTES && htmlBytes > plainBytes * STUB_PLAIN_RATIO) ||
+    (plainBytes < STUB_PLAIN_OUTLIER_MAX_BYTES && htmlBytes > plainBytes * STUB_PLAIN_OUTLIER_RATIO)
+  );
+}
+
+/**
  * Choose which text parts to download for an email's body.
  *
  * `parts` is in document order and excludes attachments. Both halves of a
  * multipart/alternative are returned so bodyText and bodyHtml can coexist —
- * magic-link extraction and calendar scanning each want a specific side.
+ * magic-link extraction and calendar scanning each want a specific side — and
+ * every sibling of one subtype comes back together, because multipart/mixed
+ * splits running text across several: Apple Mail puts a note either side of an
+ * inline photo, and a digest carries one part per message. Keeping only the
+ * first silently truncates the body.
  *
- * The exception is the stub plain part — a few dozen bytes of "This message
- * requires an HTML-capable reader" shipped next to the real content in HTML.
- * Taking it literally makes the model report the placeholder as the email, so
- * an implausibly small plain part is suppressed next to a much larger HTML
- * sibling rather than returned.
+ * `maxBytes` caps a group's combined size. Two rules can drop a side, and the
+ * order matters: transfer cost is settled first, because an over-cap stream is
+ * drained in full, so pulling 10 MB of HTML to keep 512 KB of it loses even to
+ * a plain part too small to hold the same content. Only among groups that both
+ * fit does the stub rule then suppress a placeholder plain side.
  */
-const STUB_PLAIN_MAX_BYTES = 200;
-const STUB_PLAIN_RATIO = 5;
+export function selectBodyParts(
+  parts: TextPart[],
+  maxBytes = Number.POSITIVE_INFINITY,
+): { plain: TextPart[]; html: TextPart[] } {
+  const plain = parts.filter((p) => p.subtype === 'plain');
+  const html = parts.filter((p) => p.subtype === 'html');
 
-export function selectBodyParts(parts: TextPart[]): { plain?: TextPart; html?: TextPart } {
-  const plain = parts.find((p) => p.subtype === 'plain');
-  const html = parts.find((p) => p.subtype === 'html');
-
-  if (!plain && !html) {
+  if (plain.length === 0 && html.length === 0) {
     // A lone text part of another subtype (text/enriched, text/x-amp-html…)
     // is still the closest thing to a readable body.
     const first = parts[0];
-    if (!first) return {};
-    return first.subtype === 'html' ? { html: first } : { plain: first };
+    if (!first) return { plain: [], html: [] };
+    return first.subtype === 'html' ? { plain: [], html: [first] } : { plain: [first], html: [] };
   }
-  if (
-    plain &&
-    html &&
-    plain.size < STUB_PLAIN_MAX_BYTES &&
-    html.size > plain.size * STUB_PLAIN_RATIO
-  ) {
-    return { html };
+
+  if (plain.length > 0 && html.length > 0) {
+    const plainBytes = totalSize(plain);
+    const htmlBytes = totalSize(html);
+
+    // Prefer plain when neither side fits: it is cheaper in context-window
+    // terms and already readable.
+    if (plainBytes > maxBytes) {
+      return htmlBytes <= maxBytes ? { plain: [], html } : { plain, html: [] };
+    }
+    if (htmlBytes > maxBytes) return { plain, html: [] };
+    if (isStubPlain(plainBytes, htmlBytes)) return { plain: [], html };
   }
-  return { ...(plain ? { plain } : {}), ...(html ? { html } : {}) };
+
+  return { plain, html };
 }
 
 /**

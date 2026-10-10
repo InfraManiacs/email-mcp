@@ -22,6 +22,7 @@ import type {
   QuotaInfo,
   SenderStat,
 } from '../types/index.js';
+import { unflowFormatFlowed } from '../utils/body-format.js';
 import { imapCommand } from '../utils/imap-error.js';
 import type { ReconnectEvent } from './event-bus.js';
 import eventBus from './event-bus.js';
@@ -119,9 +120,9 @@ function assertNoCrlf(value: string, field: string): void {
 }
 
 /**
- * Download one body part, transfer-decoded by ImapFlow, bounded by
- * BODY_PART_MAX_BYTES. Past the cap the stream is still drained to the end —
- * destroying an ImapFlow download stream mid-command corrupts the
+ * Download one body part, transfer-decoded by ImapFlow, bounded by `maxBytes`
+ * (BODY_PART_MAX_BYTES by default). Past the cap the stream is still drained to
+ * the end — destroying an ImapFlow download stream mid-command corrupts the
  * connection's command state — but only the first cap bytes are kept.
  */
 async function downloadBodyPart(
@@ -129,6 +130,7 @@ async function downloadBodyPart(
   uid: number,
   path: TextPart['path'],
   subtype?: string,
+  maxBytes: number = BODY_PART_MAX_BYTES,
 ): Promise<string | undefined> {
   try {
     const part = await client.download(String(uid), path, { uid: true });
@@ -140,7 +142,7 @@ async function downloadBodyPart(
     // eslint-disable-next-line no-restricted-syntax
     for await (const chunk of part.content) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      const room = BODY_PART_MAX_BYTES - kept;
+      const room = maxBytes - kept;
       if (room > 0) {
         chunks.push(buf.length > room ? buf.subarray(0, room) : buf);
         kept += Math.min(buf.length, room);
@@ -186,7 +188,9 @@ async function downloadBodyPart(
       decoded = raw.toString('utf-8');
     }
 
-    return truncated ? `${decoded}\n…[body truncated at 512 KB]` : decoded;
+    return truncated
+      ? `${decoded}\n…[body truncated at ${Math.round(maxBytes / 1024)} KB]`
+      : decoded;
   } catch (err) {
     // Part may not exist on this server — better an empty body than a throw,
     // but not a silent one. stderr is safe under the stdio transport.
@@ -197,6 +201,45 @@ async function downloadBodyPart(
     );
     return undefined;
   }
+}
+
+/**
+ * Download every part of one body group and join them into a single body.
+ *
+ * multipart/mixed splits running text across sibling parts, so a group can hold
+ * more than one; they are concatenated in document order with a blank line
+ * between, which is also what keeps the last word of one part off the first
+ * word of the next. BODY_PART_MAX_BYTES is a budget for the whole group rather
+ * than per part, so a message with many large parts cannot multiply past it.
+ */
+async function downloadBodyGroup(
+  client: ImapFlow,
+  uid: number,
+  parts: TextPart[],
+): Promise<string | undefined> {
+  const pieces: string[] = [];
+  let budget = BODY_PART_MAX_BYTES;
+
+  // eslint-disable-next-line no-restricted-syntax
+  for (const part of parts) {
+    if (budget <= 0) {
+      pieces.push('…[remaining body parts omitted at 512 KB]');
+      break;
+    }
+    // Sequential by necessity: ImapFlow serialises commands on one connection,
+    // so issuing these in parallel only queues them behind each other.
+    // eslint-disable-next-line no-await-in-loop
+    const text = await downloadBodyPart(client, uid, part.path, part.subtype, budget);
+    if (text !== undefined) {
+      // Unwrap here rather than at render time: the flag belongs to this part,
+      // and every later consumer — the cache, the tools, the CLI — then reads
+      // one already-readable body.
+      pieces.push(part.flowed ? unflowFormatFlowed(text, part.delSp) : text);
+      budget -= Buffer.byteLength(text, 'utf-8');
+    }
+  }
+
+  return pieces.length > 0 ? pieces.join('\n\n') : undefined;
 }
 
 async function messageToEmail(
@@ -219,21 +262,12 @@ async function messageToEmail(
   // is transfer-encoded (quoted-printable, base64) with soft line breaks, so
   // using it directly yields "=3D" for '=' and words split mid-token.
   // download() applies the decoding declared by Content-Transfer-Encoding.
-  let { plain, html } = selectBodyParts(collectTextParts(msg.bodyStructure));
+  // selectBodyParts settles both the over-cap and the stub-plain trade-offs,
+  // in that order, given the per-group transfer ceiling.
+  const { plain, html } = selectBodyParts(collectTextParts(msg.bodyStructure), BODY_PART_MAX_BYTES);
 
-  // An over-cap part loses to a within-cap sibling outright. When both are
-  // over the cap, fetch only one — transferring 1.6 MB to truncate both
-  // halves to 512 KB buys nothing — and prefer plain, which is both cheaper
-  // in context-window terms and already readable.
-  if (plain && html && plain.size > BODY_PART_MAX_BYTES) {
-    if (html.size <= BODY_PART_MAX_BYTES) plain = undefined;
-    else html = undefined;
-  } else if (plain && html && html.size > BODY_PART_MAX_BYTES) {
-    html = undefined;
-  }
-
-  if (plain) bodyText = await downloadBodyPart(client, uid, plain.path, plain.subtype);
-  if (html) bodyHtml = await downloadBodyPart(client, uid, html.path, html.subtype);
+  if (plain.length > 0) bodyText = await downloadBodyGroup(client, uid, plain);
+  if (html.length > 0) bodyHtml = await downloadBodyGroup(client, uid, html);
 
   if (bodyText === undefined && bodyHtml === undefined) {
     // No displayable part at all — S/MIME and PGP payloads land here. A

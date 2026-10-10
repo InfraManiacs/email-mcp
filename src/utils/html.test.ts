@@ -262,6 +262,33 @@ describe('stripHtml — structure', () => {
       '1. one\n• sub\n2. two',
     );
   });
+
+  // HTML5 lets <p>, <div>, <tr> and <td> omit their closing tag, and plenty of
+  // mail takes the option. Breaking only on the closing tag runs the text
+  // together into one unreadable line.
+  it('separates paragraphs that omit their closing tag', () => {
+    expect(stripHtml('<p>First<p>Second<p>Third')).toBe('First\n\nSecond\n\nThird');
+  });
+
+  it('separates divs that omit their closing tag', () => {
+    expect(stripHtml('<div>one<div>two<div>three')).toBe('one\ntwo\nthree');
+  });
+
+  it('separates table cells and rows that omit their closing tags', () => {
+    expect(stripHtml('<table><tr><td>A<td>B<tr><td>C<td>D</table>')).toBe('A | B\nC | D');
+  });
+
+  // Well-formed markup has the same gap: an opening block tag never separates
+  // its content from whatever preceded it.
+  it('separates a block element from the inline content before it', () => {
+    expect(stripHtml('<img src="https://cdn.example.com/h.png" alt="Hero"><p>Body.</p>')).toBe(
+      '[image: Hero]\n\nBody.',
+    );
+  });
+
+  it('keeps one line per div, as the div-per-line markup Apple Mail emits intends', () => {
+    expect(stripHtml('<div>one</div><div>two</div>')).toBe('one\ntwo');
+  });
 });
 
 describe('stripHtml', () => {

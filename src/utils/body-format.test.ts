@@ -1,4 +1,48 @@
-import { applyBodyFormat, DEFAULT_MULTI_BODY_MAX, DEFAULT_SINGLE_BODY_MAX } from './body-format.js';
+import {
+  applyBodyFormat,
+  DEFAULT_MULTI_BODY_MAX,
+  DEFAULT_SINGLE_BODY_MAX,
+  unflowFormatFlowed,
+} from './body-format.js';
+
+// RFC 3676: a line ending in a space continues on the next one, a line that
+// does not is a real break, one leading space is stuffing added on send, and
+// DelSp=yes means the trailing space existed only to mark the wrap.
+describe('unflowFormatFlowed', () => {
+  it('joins soft-wrapped lines into one paragraph, keeping the space', () => {
+    const flowed = 'this is a paragraph the sender wrapped \nat seventy-two columns.';
+    expect(unflowFormatFlowed(flowed)).toBe(
+      'this is a paragraph the sender wrapped at seventy-two columns.',
+    );
+  });
+
+  it('keeps a hard break between paragraphs', () => {
+    expect(unflowFormatFlowed('first para\n\nsecond para')).toBe('first para\n\nsecond para');
+  });
+
+  it('deletes the trailing space when DelSp is yes', () => {
+    expect(unflowFormatFlowed('unbrea \nkable', true)).toBe('unbreakable');
+  });
+
+  it('removes the one leading space that space-stuffing added', () => {
+    expect(unflowFormatFlowed(' From the desk of\n >not a quote')).toBe(
+      'From the desk of\n>not a quote',
+    );
+  });
+
+  it('joins only within one quote depth', () => {
+    const flowed = '> quoted and wrapped \n> onwards\n>> deeper\nunquoted';
+    expect(unflowFormatFlowed(flowed)).toBe('> quoted and wrapped onwards\n>> deeper\nunquoted');
+  });
+
+  it('treats the signature separator as a hard break despite its trailing space', () => {
+    expect(unflowFormatFlowed('Regards\n-- \nColin')).toBe('Regards\n-- \nColin');
+  });
+
+  it('leaves a body with no soft breaks untouched', () => {
+    expect(unflowFormatFlowed('one\ntwo\nthree')).toBe('one\ntwo\nthree');
+  });
+});
 
 describe('applyBodyFormat', () => {
   it('format=full prefers bodyText and falls back to raw HTML, then a placeholder', () => {

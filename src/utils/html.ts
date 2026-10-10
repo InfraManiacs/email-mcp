@@ -144,6 +144,16 @@ const JOINER_PADDING = /(?<![^\s])[\u200C\u200D]+(?=[\s\u200C\u200D]|$)|(?<=\s)[
 const QUOTE_OPEN = '\uE000';
 const QUOTE_CLOSE = '\uE001';
 
+// Table and block boundaries get the same marker treatment, for a different
+// reason: both the opening and the closing tag emit one, so content survives a
+// missing closing tag \u2014 which HTML5 permits for p, div, tr, td and th, and
+// which real mail duly omits. Well-formed markup therefore emits two markers in
+// a row, and collapseStructureMarks reduces each run to one separator.
+const CELL_MARK = '\uE002';
+const BREAK_MARK = '\uE003';
+/** Every marker this module plants, for stripping impostors out of the input. */
+const OWN_MARKS_RE = /[\uE000-\uE003]/g;
+
 /**
  * One run of tag attributes, quote-aware.
  *
@@ -169,6 +179,38 @@ const ANCHOR_RE = new RegExp(
 const IMG_RE = new RegExp(`<img\\b${ATTRS}>`, 'gi');
 /** Any complete tag, quote-aware; a tag name must follow "<". */
 const ANY_TAG_RE = /<[a-zA-Z!/?][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/g;
+
+/**
+ * Match the named tags, quote-aware, optionally including their closing form.
+ *
+ * `names` is a regex alternation ("div|tr"), and the trailing `\b` keeps a
+ * prefix from matching a longer name — "div" must not fire on `<divider>`.
+ */
+function blockTags(names: string, withClosing = true): RegExp {
+  return new RegExp(`<${withClosing ? '/?' : ''}(?:${names})\\b${ATTRS}>`, 'gi');
+}
+
+const HARD_BREAK_TAGS = blockTags('p|h[1-6]');
+const SOFT_BREAK_TAGS = blockTags('div|tr|table|thead|tbody|tfoot');
+const CELL_TAGS = blockTags('t[dh]');
+const BLOCKQUOTE_OPEN = blockTags('blockquote', false);
+const BLOCKQUOTE_CLOSE = /<\/blockquote\s*>/gi;
+const BR_TAGS = blockTags('br', false);
+const HR_TAGS = blockTags('hr', false);
+const LI_TAGS = blockTags('li', false);
+
+/** A run of adjacent structure markers, with the spaces around it. */
+const STRUCTURE_MARKS_RUN = new RegExp(`(?:[ \\t]*[${CELL_MARK}${BREAK_MARK}][ \\t]*)+`, 'g');
+
+/**
+ * Reduce each run of structure markers to a single separator.
+ *
+ * A run carrying a block or row break outranks a cell separator, so
+ * `</td></tr><tr><td>` starts a new line rather than opening another cell.
+ */
+function collapseStructureMarks(text: string): string {
+  return text.replace(STRUCTURE_MARKS_RUN, (run) => (run.includes(BREAK_MARK) ? '\n' : ' | '));
+}
 const ALT_ATTR = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 const SRC_ATTR = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 
@@ -296,12 +338,12 @@ function applyQuoteMarkers(text: string): string {
  * entity-encoded angle bracket can never be mistaken for markup.
  */
 export function stripHtml(html: string): string {
-  const withoutMarkup = convertLists(
+  const tagged = convertLists(
     convertImages(
       convertAnchors(
         html
-          // The quote markers are ours alone; drop impostors from the input.
-          .replace(/[\uE000\uE001]/g, '')
+          // The markers are ours alone; drop impostors from the input.
+          .replace(OWN_MARKS_RE, '')
           // Elements whose text is machinery, not content. Dropping the tags
           // alone would leave their values inline — Outlook-authored mail
           // otherwise opens with "96" from <o:PixelsPerInch>.
@@ -320,22 +362,22 @@ export function stripHtml(html: string): string {
       ),
     ),
   )
-    .replace(/<blockquote\b[^>]*>/gi, `\n${QUOTE_OPEN}\n`)
-    .replace(/<\/blockquote>/gi, `\n${QUOTE_CLOSE}\n`)
-    .replace(/<br\b[^>]*>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<\/?h[1-6]\b[^>]*>/gi, '\n\n')
-    .replace(/<hr\b[^>]*>/gi, '\n---\n')
-    .replace(/<\/t[dh]>/gi, ' | ')
-    .replace(/<\/tr>/gi, '\n')
-    .replace(/<\/table>/gi, '\n')
-    .replace(/<li\b[^>]*>/gi, '\n• ')
+    .replace(BLOCKQUOTE_OPEN, `\n${QUOTE_OPEN}\n`)
+    .replace(BLOCKQUOTE_CLOSE, `\n${QUOTE_CLOSE}\n`)
+    .replace(BR_TAGS, '\n')
+    // Opening and closing alike, so content survives an omitted closing tag.
+    .replace(HARD_BREAK_TAGS, '\n\n')
+    .replace(SOFT_BREAK_TAGS, BREAK_MARK)
+    .replace(CELL_TAGS, CELL_MARK)
+    .replace(HR_TAGS, '\n---\n')
+    .replace(LI_TAGS, '\n• ')
     // Quote-aware first so a ">" inside an attribute value cannot split a
     // tag, then the permissive sweep for malformed tags (an unterminated
     // quote) the first pass cannot parse.
     .replace(ANY_TAG_RE, '')
     .replace(/<[^>]+>/g, '');
+
+  const withoutMarkup = collapseStructureMarks(tagged);
 
   return (
     applyQuoteMarkers(

@@ -197,6 +197,20 @@ describe('collectTextParts', () => {
     ]);
   });
 
+  it('records format=flowed and DelSp so the body can be unwrapped', () => {
+    const parts = collectTextParts(
+      textPlain(100, { parameters: { charset: 'utf-8', format: 'Flowed', delsp: 'Yes' } }),
+    );
+    expect(parts[0]?.flowed).toBe(true);
+    expect(parts[0]?.delSp).toBe(true);
+  });
+
+  it('leaves a fixed-format part unflagged', () => {
+    const parts = collectTextParts(textPlain(100, { parameters: { charset: 'utf-8' } }));
+    expect(parts[0]?.flowed).toBeUndefined();
+    expect(parts[0]?.delSp).toBeUndefined();
+  });
+
   it('addresses a single-part message (no `part` field) as part "1"', () => {
     expect(collectTextParts(textHtml(42))).toEqual([{ path: '1', subtype: 'html', size: 42 }]);
   });
@@ -276,8 +290,31 @@ describe('selectBodyParts', () => {
       childNodes: [textPlain(), textHtml()],
     });
     const { plain, html } = selectBodyParts(parts);
-    expect(plain?.path).toBe('1');
-    expect(html?.path).toBe('2');
+    expect(plain.map((p) => p.path)).toEqual(['1']);
+    expect(html.map((p) => p.path)).toEqual(['2']);
+  });
+
+  // multipart/mixed splits running text across siblings: Apple Mail puts a
+  // note either side of an inline photo, and a digest carries one part per
+  // message. Representing the group by its first part drops the rest.
+  it('returns every sibling plain part, so text around an inline image survives', () => {
+    const parts = collectTextParts({
+      type: 'multipart/mixed',
+      childNodes: [
+        textPlain(40),
+        { type: 'image/jpeg', size: 90_000, disposition: 'inline', parameters: { name: 'p.jpg' } },
+        textPlain(120),
+      ],
+    });
+    expect(selectBodyParts(parts).plain.map((p) => p.path)).toEqual(['1', '3']);
+  });
+
+  it('returns every sibling html part', () => {
+    const parts = collectTextParts({
+      type: 'multipart/mixed',
+      childNodes: [textHtml(900), textHtml(1200)],
+    });
+    expect(selectBodyParts(parts).html.map((p) => p.path)).toEqual(['1', '2']);
   });
 
   it('suppresses a stub plain part (<200 bytes next to >5x HTML) instead of returning it', () => {
@@ -287,8 +324,21 @@ describe('selectBodyParts', () => {
         childNodes: [textPlain(80), textHtml(5000)],
       }),
     );
-    expect(plain).toBeUndefined();
-    expect(html?.subtype).toBe('html');
+    expect(plain).toEqual([]);
+    expect(html[0]?.subtype).toBe('html');
+  });
+
+  // A chattier placeholder — one that adds an unsubscribe line — clears the
+  // 200-byte floor, but a 200x HTML sibling cannot hold the same content.
+  it('suppresses an over-long stub that the HTML sibling dwarfs', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(250), textHtml(50_000)],
+      }),
+    );
+    expect(plain).toEqual([]);
+    expect(html[0]?.subtype).toBe('html');
   });
 
   it('keeps a small plain part when the HTML sibling is not 5x larger', () => {
@@ -298,18 +348,90 @@ describe('selectBodyParts', () => {
         childNodes: [textPlain(80), textHtml(300)],
       }),
     );
-    expect(plain?.subtype).toBe('plain');
-    expect(html?.subtype).toBe('html');
+    expect(plain[0]?.subtype).toBe('plain');
+    expect(html[0]?.subtype).toBe('html');
+  });
+
+  it('keeps a genuinely short note whose HTML twin is merely styled', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(500), textHtml(3000)],
+      }),
+    );
+    expect(plain[0]?.subtype).toBe('plain');
+    expect(html[0]?.subtype).toBe('html');
+  });
+
+  it('weighs the stub heuristic on the whole group, not the first part', () => {
+    const { plain } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/mixed',
+        childNodes: [textPlain(60), textPlain(900), textHtml(4000)],
+      }),
+    );
+    expect(plain.map((p) => p.size)).toEqual([60, 900]);
+  });
+
+  // Transfer cost outranks the stub rule: the over-cap stream is drained in
+  // full, so fetching 10 MB of HTML to keep 512 KB is the worse trade even
+  // against a plain part too small to hold the same content.
+  it('keeps a small plain part over an over-cap html sibling, outranking the stub rule', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(400), textHtml(10 * 1024 * 1024)],
+      }),
+      512 * 1024,
+    );
+    expect(plain.map((p) => p.size)).toEqual([400]);
+    expect(html).toEqual([]);
+  });
+
+  it('drops an over-cap plain group for a within-cap html sibling', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(2 * 1024 * 1024), textHtml(9000)],
+      }),
+      512 * 1024,
+    );
+    expect(plain).toEqual([]);
+    expect(html.map((p) => p.size)).toEqual([9000]);
+  });
+
+  it('prefers plain when both groups are over the cap', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/alternative',
+        childNodes: [textPlain(2 * 1024 * 1024), textHtml(8 * 1024 * 1024)],
+      }),
+      512 * 1024,
+    );
+    expect(plain.map((p) => p.size)).toEqual([2 * 1024 * 1024]);
+    expect(html).toEqual([]);
+  });
+
+  it('sums a group against the cap, since every part in it is downloaded', () => {
+    const { plain, html } = selectBodyParts(
+      collectTextParts({
+        type: 'multipart/mixed',
+        childNodes: [textPlain(400 * 1024), textPlain(400 * 1024), textHtml(9000)],
+      }),
+      512 * 1024,
+    );
+    expect(plain).toEqual([]);
+    expect(html.map((p) => p.size)).toEqual([9000]);
   });
 
   it('slots a lone non-plain/html text part as the plain body', () => {
     const { plain, html } = selectBodyParts([{ path: '1', subtype: 'enriched', size: 10 }]);
-    expect(plain?.subtype).toBe('enriched');
-    expect(html).toBeUndefined();
+    expect(plain[0]?.subtype).toBe('enriched');
+    expect(html).toEqual([]);
   });
 
   it('returns nothing for an empty part list', () => {
-    expect(selectBodyParts([])).toEqual({});
+    expect(selectBodyParts([])).toEqual({ plain: [], html: [] });
   });
 });
 

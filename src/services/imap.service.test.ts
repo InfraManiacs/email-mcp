@@ -469,6 +469,58 @@ describe('ImapService', () => {
       expect(email.bodyHtml).toBe('<p>html body</p>');
     });
 
+    it('unwraps a format=flowed plain body', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Flowed', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'text/plain',
+          size: 120,
+          parameters: { charset: 'utf-8', format: 'flowed' },
+        },
+        headers: Buffer.from('Subject: Flowed\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockResolvedValue(
+        downloadYielding('the sender wrapped this \nat the margin.\n\nNew paragraph.'),
+      );
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyText).toBe('the sender wrapped this at the margin.\n\nNew paragraph.');
+    });
+
+    it('concatenates sibling text parts so text after an inline image survives', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Photo', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 40 },
+            {
+              part: '2',
+              type: 'image/jpeg',
+              size: 90_000,
+              disposition: 'inline',
+              parameters: { name: 'p.jpg' },
+            },
+            { part: '3', type: 'text/plain', size: 120 },
+          ],
+        },
+        headers: Buffer.from('Subject: Photo\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockImplementation(async (_uid: string, path: string) =>
+        downloadYielding(path === '1' ? 'Here it is:' : 'Taken last week.'),
+      );
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyText).toBe('Here it is:\n\nTaken last week.');
+      expect(client.download).toHaveBeenCalledTimes(2);
+    });
+
     it('skips an oversized part when a sibling within the cap exists', async () => {
       client.fetchOne.mockResolvedValue({
         uid: 42,
