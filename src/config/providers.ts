@@ -50,6 +50,7 @@ export const PROVIDERS: ProviderConfig[] = [
       starttls: true,
       verifySsl: true,
     },
+    notes: 'Most Microsoft 365 tenants have disabled password (basic) auth — use OAuth2',
     oauth2: {
       authUrl: 'https://login.microsoftonline.com/common/oauth2/v2/authorize',
       tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',

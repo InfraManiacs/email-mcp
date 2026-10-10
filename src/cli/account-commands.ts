@@ -341,6 +341,7 @@ async function testConnections(account: AccountConfig): Promise<boolean> {
     );
   } else {
     spinner.stop(`IMAP ✗ ${imapResult.error}`);
+    if (imapResult.hint) log.warn(imapResult.hint);
   }
 
   spinner.start('Testing SMTP connection…');
@@ -349,6 +350,7 @@ async function testConnections(account: AccountConfig): Promise<boolean> {
     spinner.stop(`SMTP ✓ ${account.smtp.host}:${account.smtp.port} — authenticated`);
   } else {
     spinner.stop(`SMTP ✗ ${smtpResult.error}`);
+    if (smtpResult.hint) log.warn(smtpResult.hint);
   }
 
   if (!imapResult.success || !smtpResult.success) {
