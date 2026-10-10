@@ -4,7 +4,9 @@
  * No MCP dependency — fully unit-testable.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { ImapFlow } from 'imapflow';
+import libmime from 'libmime';
 import type { IConnectionManager } from '../connections/types.js';
 import { sanitizeMailboxName, sanitizeSearchQuery } from '../safety/validation.js';
 import type {
@@ -23,6 +25,7 @@ import type {
   SenderStat,
 } from '../types/index.js';
 import { unflowFormatFlowed } from '../utils/body-format.js';
+import { stripHtml } from '../utils/html.js';
 import { imapCommand } from '../utils/imap-error.js';
 import type { ReconnectEvent } from './event-bus.js';
 import eventBus from './event-bus.js';
@@ -120,6 +123,32 @@ function assertNoCrlf(value: string, field: string): void {
   if (/[\r\n]/.test(value)) {
     throw new Error(`${field} must not contain a line break`);
   }
+}
+
+/**
+ * Base64-encode a body, wrapped at the 76 columns RFC 2045 allows.
+ *
+ * Drafts are appended as hand-built messages, and a header block declaring
+ * `charset=utf-8` with no Content-Transfer-Encoding means 7bit — so an umlaut
+ * in the body made the message claim one thing and carry another. Base64
+ * sidesteps the question for every byte a composer can produce.
+ */
+function base64Body(text: string): string {
+  const encoded = Buffer.from(text, 'utf-8').toString('base64');
+  return (encoded.match(/.{1,76}/g) ?? []).join('\r\n');
+}
+
+/**
+ * Format a From header, encoding a non-ASCII display name.
+ *
+ * An RFC 2047 encoded word may not appear inside a quoted string, so a name
+ * that needed encoding is emitted bare and an ASCII one keeps its quotes —
+ * which is what makes a comma inside the name safe.
+ */
+function formatFromHeader(fullName: string | undefined, email: string): string {
+  if (!fullName) return email;
+  const encoded = libmime.encodeWords(fullName);
+  return encoded === fullName ? `"${fullName}" <${email}>` : `${encoded} <${email}>`;
 }
 
 /**
@@ -1312,11 +1341,13 @@ export default class ImapService {
     const drafts = mailboxes.find((mb) => mb.specialUse === '\\Drafts');
     const draftsPath = drafts?.path ?? 'Drafts';
 
-    // Construct RFC 822 message
+    // Construct RFC 822 message. A header carries 7-bit ASCII only, so any
+    // non-ASCII in the subject or display name becomes an RFC 2047 encoded
+    // word; encodeWords leaves a pure-ASCII value untouched.
     const headers = [
-      `From: ${account.fullName ? `"${account.fullName}" <${account.email}>` : account.email}`,
+      `From: ${formatFromHeader(account.fullName, account.email)}`,
       `To: ${options.to.join(', ')}`,
-      `Subject: ${options.subject}`,
+      `Subject: ${libmime.encodeWords(options.subject)}`,
       `Date: ${new Date().toUTCString()}`,
       `MIME-Version: 1.0`,
     ];
@@ -1330,10 +1361,33 @@ export default class ImapService {
       headers.push(`References: ${options.references.join('\r\n ')}`);
     }
 
-    const contentType = options.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8';
-    headers.push(`Content-Type: ${contentType}`);
+    let body: string;
+    if (options.html) {
+      // Mirrors what send_email puts on the wire: an HTML-only draft reads as
+      // raw markup in any client that opens the Drafts folder, and sendDraft
+      // would have to regenerate the alternative at send time anyway.
+      const boundary = `----email-mcp-${randomUUID()}`;
+      headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+      body = [
+        `--${boundary}`,
+        'Content-Type: text/plain; charset=utf-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        base64Body(stripHtml(options.body)),
+        `--${boundary}`,
+        'Content-Type: text/html; charset=utf-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        base64Body(options.body),
+        `--${boundary}--`,
+      ].join('\r\n');
+    } else {
+      headers.push('Content-Type: text/plain; charset=utf-8');
+      headers.push('Content-Transfer-Encoding: base64');
+      body = base64Body(options.body);
+    }
 
-    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${options.body}`;
+    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${body}`;
 
     const appendResult = await imapCommand(`Saving draft to "${draftsPath}"`, () =>
       client.append(draftsPath, Buffer.from(rawMessage), ['\\Draft', '\\Seen']),
