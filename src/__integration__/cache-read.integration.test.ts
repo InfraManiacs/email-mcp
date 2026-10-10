@@ -28,7 +28,7 @@ describe('Cached read path (MailReadService + SyncEngine)', () => {
   beforeAll(async () => {
     services = createTestServices(buildTestAccount());
     store = new CacheStore(':memory:');
-    engine = new SyncEngine(services.connections, store);
+    engine = new SyncEngine(services.connections, store, { bodyMessages: 100 });
     engine.start();
     // debounceMs 0: every read revalidates, so the assertions below test the
     // protocol rather than the debounce shortcut.
@@ -60,6 +60,43 @@ describe('Cached read path (MailReadService + SyncEngine)', () => {
 
     expect(result.cache?.source).toBe('cache');
     expect(result.items.some((m) => m.subject === 'Arrived later')).toBe(true);
+  });
+
+  it('serves a repeat get_email from the mirror without re-downloading the body', async () => {
+    const listing = await mailRead.listEmails(TEST_ACCOUNT_NAME, { mailbox: 'INBOX' });
+    const target = listing.items.find((m) => m.subject === 'Cached one');
+    if (!target) throw new Error('seeded message not found in cached listing');
+
+    const first = await mailRead.getEmail(TEST_ACCOUNT_NAME, target.id, 'INBOX');
+    expect(first.bodyText ?? first.bodyHtml).toBeTruthy();
+
+    const client = await services.connections.getImapClient(TEST_ACCOUNT_NAME);
+    const download = vi.spyOn(client, 'download');
+    const fetchOne = vi.spyOn(client, 'fetchOne');
+
+    const second = await mailRead.getEmail(TEST_ACCOUNT_NAME, target.id, 'INBOX');
+
+    expect(download).not.toHaveBeenCalled();
+    expect(fetchOne).not.toHaveBeenCalled();
+    expect(second.bodyText).toBe(first.bodyText);
+    expect(second.headers).toEqual(first.headers);
+    expect(second.messageId).toBe(first.messageId);
+    download.mockRestore();
+    fetchOne.mockRestore();
+  });
+
+  it('backfills bodies into the mirror so search gains full-text coverage', async () => {
+    await seedEmail({ subject: 'Backfill target', text: 'Das Geheimwort ist Nebelkraehe.' });
+    await waitForDelivery();
+    await engine.syncMailbox(TEST_ACCOUNT_NAME, 'INBOX');
+
+    const stored = await engine.backfillBodies(TEST_ACCOUNT_NAME, 'INBOX');
+    expect(stored).toBeGreaterThan(0);
+
+    const state = store.getMailboxState(TEST_ACCOUNT_NAME, 'INBOX');
+    if (!state) throw new Error('mailbox state missing after sync');
+    const hits = store.searchMessages(TEST_ACCOUNT_NAME, 'INBOX', state.uidValidity, 'Nebelkraehe');
+    expect(hits.length).toBeGreaterThan(0);
   });
 
   it('reflects a local flag write immediately on a server without CONDSTORE', async () => {

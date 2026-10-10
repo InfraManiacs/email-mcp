@@ -22,10 +22,12 @@
 
 import type CacheStore from '../cache/store.js';
 import type { CachedMessage, MessageFilters } from '../cache/store.js';
+import { MAX_CACHED_BODY_BYTES } from '../cache/store.js';
 import type SyncEngine from '../cache/sync-engine.js';
-import type { EmailMeta, PaginatedResult } from '../types/index.js';
+import type { Email, EmailMeta, PaginatedResult } from '../types/index.js';
+import { stripHtml } from '../utils/html.js';
 import type ImapService from './imap.service.js';
-import { messageToEmailMeta } from './imap.service.js';
+import { extractAttachments, messageToEmailMeta, parseAddresses } from './imap.service.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -98,6 +100,31 @@ function toEmailMeta(msg: CachedMessage): EmailMeta {
   // Rows synced without a bodyStructure still know they carry attachments.
   if (msg.hasAttachments) meta.hasAttachments = true;
   return meta;
+}
+
+/**
+ * Assemble the full live `Email` shape from a mirrored row.
+ *
+ * Only callable for rows that hold a body and headers — the hit condition in
+ * `getEmail` — since both are part of the public response shape.
+ */
+function toEmail(msg: CachedMessage): Email {
+  const meta = toEmailMeta(msg);
+  const envelope = (msg.envelope ?? {}) as Record<string, unknown>;
+  const headers = msg.headers ?? {};
+
+  return {
+    ...meta,
+    cc: parseAddresses(envelope.cc as { name?: string; address?: string }[] | undefined),
+    bcc: parseAddresses(envelope.bcc as { name?: string; address?: string }[] | undefined),
+    bodyText: msg.bodySubtype === 'html' ? undefined : msg.bodyText,
+    bodyHtml: msg.bodySubtype === 'html' ? msg.bodyText : undefined,
+    messageId: (envelope.messageId as string) ?? '',
+    inReplyTo: (envelope.inReplyTo as string) ?? undefined,
+    references: headers.references?.split(/\s+/).filter(Boolean),
+    attachments: extractAttachments(msg.bodyStructure),
+    headers,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -332,16 +359,90 @@ export default class MailReadService {
   }
 
   // -------------------------------------------------------------------------
-  // Pass-throughs (cached in later phases)
+  // Single message (body tier)
   // -------------------------------------------------------------------------
 
-  getEmail(
+  /** In-flight single-message loads, so concurrent get_emails coalesce. */
+  private inFlightEmails = new Map<string, Promise<Email>>();
+
+  async getEmail(account: string, emailId: string, mailbox = 'INBOX'): Promise<Email> {
+    const uid = Number.parseInt(emailId, 10);
+    if (!this.store || Number.isNaN(uid)) {
+      return this.imapService.getEmail(account, emailId, mailbox);
+    }
+
+    const key = `${account} ${mailbox} ${uid}`;
+    const pending = this.inFlightEmails.get(key);
+    if (pending) return pending;
+
+    const load = this.loadEmail(account, emailId, mailbox, uid).finally(() => {
+      this.inFlightEmails.delete(key);
+    });
+    this.inFlightEmails.set(key, load);
+    return load;
+  }
+
+  private async loadEmail(
     account: string,
     emailId: string,
-    mailbox?: string,
-  ): ReturnType<ImapService['getEmail']> {
-    return this.imapService.getEmail(account, emailId, mailbox);
+    mailbox: string,
+    uid: number,
+  ): Promise<Email> {
+    const store = this.store as CacheStore;
+
+    const reval = await this.revalidate(account, mailbox);
+    if (reval.kind === 'cache') {
+      try {
+        const msg = store.getMessage(account, mailbox, uid, reval.uidValidity);
+        // Content is immutable per (uidValidity, uid): a stored body never
+        // needs revalidation. Flags on the row were just revalidated above.
+        if (msg && msg.bodyText !== undefined && msg.headers !== undefined) {
+          store.touchAccess(account, mailbox, reval.uidValidity, [uid]);
+          return toEmail(msg);
+        }
+      } catch {
+        // A broken mirror must never break the tool — answer live.
+      }
+    }
+
+    this.metrics.liveFallbacks += 1;
+    const email = await this.imapService.getEmail(account, emailId, mailbox);
+    this.persistBody(account, mailbox, uid, email);
+    return email;
   }
+
+  /** Best-effort write-back of a live-fetched body. Never throws. */
+  private persistBody(account: string, mailbox: string, uid: number, email: Email): void {
+    const store = this.store;
+    if (!store) return;
+
+    try {
+      const state = store.getMailboxState(account, mailbox);
+      if (!state) return;
+
+      const isHtml = email.bodyText === undefined && email.bodyHtml !== undefined;
+      const text = email.bodyText ?? email.bodyHtml;
+      if (text === undefined || Buffer.byteLength(text, 'utf-8') > MAX_CACHED_BODY_BYTES) {
+        // Nothing cacheable — record the attempt so backfill skips it too.
+        store.markBodyAttempted(account, mailbox, uid, state.uidValidity);
+        return;
+      }
+
+      const previewSource = isHtml ? stripHtml(text) : text;
+      store.putBody(account, mailbox, uid, state.uidValidity, {
+        text,
+        subtype: isHtml ? 'html' : 'plain',
+        headers: email.headers,
+        preview: previewSource.replace(/\s+/g, ' ').trim().slice(0, 200),
+      });
+    } catch {
+      // Cache failures never break the read path.
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Pass-throughs (cached in later phases)
+  // -------------------------------------------------------------------------
 
   searchEmails(
     account: string,

@@ -36,8 +36,11 @@ import type {
   ReconnectEvent,
 } from '../services/event-bus.js';
 import eventBus from '../services/event-bus.js';
+import { collectTextParts, parseHeaders, selectBodyPart } from '../services/imap.service.js';
+import { stripHtml } from '../utils/html.js';
 import type CacheStore from './store.js';
 import type { CachedMessageInput, SyncTier } from './store.js';
+import { MAX_CACHED_BODY_BYTES } from './store.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +87,11 @@ export interface SyncEngineOptions {
    * watermark, so the window only bounds the initial transfer.
    */
   windowDays?: number;
+  /**
+   * How many message bodies the backfill keeps per mailbox (0 = no body
+   * backfill). Bodies fetched on demand by get_email are stored regardless.
+   */
+  bodyMessages?: number;
 }
 
 /** Mailbox metadata exposed by ImapFlow after SELECT. */
@@ -501,6 +509,116 @@ export default class SyncEngine {
 
     this.store.putMessages(messages);
     return messages.length;
+  }
+
+  // -------------------------------------------------------------------------
+  // Body backfill
+  // -------------------------------------------------------------------------
+
+  /**
+   * Download bodies for recently-mirrored messages, newest first.
+   *
+   * Runs inside the reconcile loop after each sync: up to `batchLimit` per
+   * cycle, bounded overall by `bodyMessages` per mailbox. Never throws — a
+   * failed backfill leaves the mirror exactly as it was, and every attempted
+   * message is marked so failures are not retried every cycle.
+   *
+   * @returns how many bodies were stored.
+   */
+  async backfillBodies(account: string, mailbox: string, batchLimit = 25): Promise<number> {
+    const budget = this.options.bodyMessages ?? 0;
+    if (budget <= 0) return 0;
+
+    try {
+      const state = this.store.getMailboxState(account, mailbox);
+      if (!state || state.lastSyncedAt === undefined) return 0;
+
+      const already = this.store.countBodies(account, mailbox, state.uidValidity);
+      const take = Math.min(batchLimit, budget - already);
+      if (take <= 0) return 0;
+
+      const uids = this.store.listMissingBodies(account, mailbox, state.uidValidity, take);
+      if (uids.length === 0) return 0;
+
+      const client = await this.connections.getImapClient(account);
+      const lock = await client.getMailboxLock(mailbox);
+      let stored = 0;
+      try {
+        // Sequential on purpose: ImapFlow runs one command at a time per
+        // connection, and backfill must never starve foreground tool calls.
+        for (const uid of uids) {
+          const ok = await this.fetchBody(client, account, mailbox, state.uidValidity, uid);
+          if (ok) stored += 1;
+        }
+      } finally {
+        lock.release();
+      }
+      return stored;
+    } catch (err) {
+      await mcpLog(
+        'warning',
+        'cache',
+        `Body backfill failed for ${account}/${mailbox}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return 0;
+    }
+  }
+
+  /** Download and store one body; mark the row attempted on any dead end. */
+  private async fetchBody(
+    client: ImapFlow,
+    account: string,
+    mailbox: string,
+    uidValidity: string,
+    uid: number,
+  ): Promise<boolean> {
+    const row = this.store.getMessage(account, mailbox, uid, uidValidity);
+    if (!row || row.bodyText !== undefined || row.bodyFetchedAt !== undefined) return false;
+
+    const giveUp = (): false => {
+      this.store.markBodyAttempted(account, mailbox, uid, uidValidity);
+      return false;
+    };
+
+    const chosen = selectBodyPart(collectTextParts(row.bodyStructure));
+    if (!chosen || chosen.size > MAX_CACHED_BODY_BYTES) return giveUp();
+
+    try {
+      // Headers ride along so a cached row can serve the full get_email
+      // shape (Email.headers is part of the public response).
+      const withHeaders = (await client.fetchOne(
+        String(uid),
+        { uid: true, headers: true },
+        { uid: true },
+      )) as { headers?: Buffer } | null;
+      const headers = withHeaders?.headers ? parseHeaders(withHeaders.headers) : undefined;
+
+      const part = await client.download(String(uid), chosen.path, { uid: true });
+      if (!part?.content) return giveUp();
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of part.content) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const decoded = Buffer.concat(chunks).toString('utf-8');
+      if (Buffer.byteLength(decoded, 'utf-8') > MAX_CACHED_BODY_BYTES) return giveUp();
+
+      const subtype = chosen.subtype === 'html' ? 'html' : 'plain';
+      const previewSource = subtype === 'html' ? stripHtml(decoded) : decoded;
+      const preview = previewSource.replace(/\s+/g, ' ').trim().slice(0, 200);
+
+      this.store.putBody(account, mailbox, uid, uidValidity, {
+        text: decoded,
+        subtype,
+        headers,
+        preview,
+      });
+      return true;
+    } catch {
+      return giveUp();
+    }
   }
 
   /**

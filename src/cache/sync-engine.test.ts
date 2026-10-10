@@ -40,6 +40,7 @@ function createMockClient(options: { capabilities?: string[] } = {}) {
     mailboxOpen: vi.fn(),
     search: vi.fn().mockResolvedValue([]),
     fetch: vi.fn().mockImplementation(() => (async function* none() {})()),
+    fetchOne: vi.fn().mockResolvedValue(null),
     status: vi.fn().mockResolvedValue({}),
     _release: release,
   };
@@ -614,5 +615,95 @@ describe('SyncEngine', () => {
 
       expect(client._release).toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Body backfill
+// ---------------------------------------------------------------------------
+
+describe('body backfill', () => {
+  let store: CacheStore;
+  let client: ReturnType<typeof createMockClient>;
+  let engine: SyncEngine;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    engine?.stop();
+    store.close();
+    eventBus.removeAllListeners();
+  });
+
+  function download(text: string) {
+    return {
+      content: (async function* gen() {
+        yield Buffer.from(text, 'utf-8');
+      })(),
+    };
+  }
+
+  async function seedSynced(bodyStructure: unknown): Promise<void> {
+    client = createMockClient();
+    client.fetch.mockImplementation(messagesFrom({ uid: 1, bodyStructure }));
+    client.search.mockResolvedValue([1]);
+    client.mailbox.exists = 1;
+    engine = new SyncEngine(createConnections(client), store, { bodyMessages: 100 });
+    await engine.syncMailbox('work', 'INBOX');
+  }
+
+  it('downloads missing bodies into the mirror and feeds the search index', async () => {
+    await seedSynced({ type: 'text/plain', size: 30 });
+    (client as unknown as { download: ReturnType<typeof vi.fn> }).download = vi
+      .fn()
+      .mockResolvedValue(download('Der Bericht ist fertig.'));
+
+    const stored = await engine.backfillBodies('work', 'INBOX');
+
+    expect(stored).toBe(1);
+    const msg = store.getMessage('work', 'INBOX', 1, '100');
+    expect(msg?.bodyText).toBe('Der Bericht ist fertig.');
+    expect(msg?.bodySubtype).toBe('plain');
+    expect(msg?.preview).toContain('Der Bericht');
+    expect(store.searchMessages('work', 'INBOX', '100', 'Bericht').map((m) => m.uid)).toEqual([1]);
+  });
+
+  it('marks a message attempted when it has no text part, instead of retrying forever', async () => {
+    await seedSynced({
+      type: 'application/pdf',
+      disposition: 'attachment',
+      dispositionParameters: { filename: 'x.pdf' },
+    });
+    (client as unknown as { download: ReturnType<typeof vi.fn> }).download = vi.fn();
+
+    const stored = await engine.backfillBodies('work', 'INBOX');
+
+    expect(stored).toBe(0);
+    expect(store.listMissingBodies('work', 'INBOX', '100', 10)).toEqual([]);
+  });
+
+  it('respects the per-mailbox body budget', async () => {
+    client = createMockClient();
+    client.fetch.mockImplementation(messagesFrom({ uid: 1 }, { uid: 2 }, { uid: 3 }));
+    client.search.mockResolvedValue([1, 2, 3]);
+    client.mailbox.exists = 3;
+    engine = new SyncEngine(createConnections(client), store, { bodyMessages: 1 });
+    await engine.syncMailbox('work', 'INBOX');
+    (client as unknown as { download: ReturnType<typeof vi.fn> }).download = vi
+      .fn()
+      .mockResolvedValue(download('body'));
+
+    const stored = await engine.backfillBodies('work', 'INBOX');
+
+    expect(stored).toBe(1);
+  });
+
+  it('does nothing when the mailbox was never synced', async () => {
+    client = createMockClient();
+    engine = new SyncEngine(createConnections(client), store, { bodyMessages: 100 });
+
+    expect(await engine.backfillBodies('work', 'Archive')).toBe(0);
   });
 });

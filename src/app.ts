@@ -77,6 +77,7 @@ export async function buildServices(): Promise<AppServices> {
       cacheStore = new CacheStore(CACHE_DB);
       syncEngine = new SyncEngine(connections, cacheStore, {
         windowDays: config.settings.cache.windowDays,
+        bodyMessages: config.settings.cache.bodyMessages,
       });
       imapService.setCacheStore(cacheStore);
     } catch (err) {
@@ -224,11 +225,13 @@ export function startBackgroundServices(
       if (syncEngine) {
         const { mailboxes, syncInterval } = config.settings.cache;
         const reconcile = async (): Promise<void> => {
-          const work = services.connections
-            .getAccountNames()
-            .flatMap((account) =>
-              mailboxes.map((mailbox) => syncEngine.syncMailbox(account, mailbox)),
-            );
+          const work = services.connections.getAccountNames().flatMap((account) =>
+            mailboxes.map(async (mailbox) => {
+              await syncEngine.syncMailbox(account, mailbox);
+              // Body backfill rides the same cycle; neither call ever throws.
+              await syncEngine.backfillBodies(account, mailbox);
+            }),
+          );
           await Promise.allSettled(work);
         };
 

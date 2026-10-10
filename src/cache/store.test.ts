@@ -461,3 +461,32 @@ describe('schema migration', () => {
     reopened.close();
   });
 });
+
+describe('schema v3: body backfill bookkeeping', () => {
+  let store: CacheStore;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+    store.putMessages([makeMessage({ uid: 1 }), makeMessage({ uid: 2 })]);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('stops offering a message once a body fetch was attempted', () => {
+    store.markBodyAttempted('work', 'INBOX', 1, '100');
+
+    expect(store.listMissingBodies('work', 'INBOX', '100', 10)).toEqual([2]);
+    // The attempt marker must not fabricate a body.
+    expect(store.getMessage('work', 'INBOX', 1, '100')?.bodyText).toBeUndefined();
+  });
+
+  it('counts cached bodies per mailbox generation', () => {
+    expect(store.countBodies('work', 'INBOX', '100')).toBe(0);
+
+    store.putBody('work', 'INBOX', 1, '100', { text: 'hello' });
+
+    expect(store.countBodies('work', 'INBOX', '100')).toBe(1);
+  });
+});

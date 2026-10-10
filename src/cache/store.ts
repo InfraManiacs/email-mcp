@@ -21,6 +21,13 @@ import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js';
 
 export type SyncTier = 'qresync' | 'condstore' | 'baseline';
 
+/**
+ * Largest decoded body the mirror persists. Matches the ballpark mature
+ * clients ship (K-9 ~32 KB autodownload, FairEmail 256 KiB metered cap) while
+ * comfortably holding any real correspondence; anything larger is served live.
+ */
+export const MAX_CACHED_BODY_BYTES = 256 * 1024;
+
 export type BodySubtype = 'plain' | 'html';
 
 /** A message as handed to the store for persistence. */
@@ -752,7 +759,11 @@ export default class CacheStore {
     ).map((r) => r.uid);
   }
 
-  /** UIDs of cached messages that still lack a body, newest first. */
+  /**
+   * UIDs of cached messages whose body was never fetched NOR attempted,
+   * newest first. Attempted-but-bodyless messages (no text part, oversized,
+   * download failure) are excluded so backfill never spins on them.
+   */
   listMissingBodies(
     account: string,
     mailbox: string,
@@ -761,7 +772,8 @@ export default class CacheStore {
   ): number[] {
     return this.queryAll<{ uid: number }>(
       `SELECT uid FROM message
-       WHERE account = ? AND mailbox = ? AND uid_validity = ? AND body_text IS NULL
+       WHERE account = ? AND mailbox = ? AND uid_validity = ?
+         AND body_text IS NULL AND body_fetched_at IS NULL
        ORDER BY internal_date DESC, uid DESC
        LIMIT ?`,
       account,
@@ -769,6 +781,27 @@ export default class CacheStore {
       uidValidity,
       limit,
     ).map((r) => r.uid);
+  }
+
+  /** Record that a body fetch was attempted and yielded nothing cacheable. */
+  markBodyAttempted(account: string, mailbox: string, uid: number, uidValidity: string): void {
+    this.prep(`
+      UPDATE message SET body_fetched_at = ?
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ? AND body_text IS NULL
+    `).run(Date.now(), account, mailbox, uid, uidValidity);
+  }
+
+  /** How many bodies one mailbox generation holds, for the backfill budget. */
+  countBodies(account: string, mailbox: string, uidValidity: string): number {
+    return (
+      this.queryOne<{ total: number }>(
+        `SELECT COUNT(*) AS total FROM message
+         WHERE account = ? AND mailbox = ? AND uid_validity = ? AND body_text IS NOT NULL`,
+        account,
+        mailbox,
+        uidValidity,
+      )?.total ?? 0
+    );
   }
 
   countMessages(account: string, mailbox: string): number {

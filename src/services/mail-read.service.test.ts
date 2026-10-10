@@ -117,6 +117,7 @@ function seedMessages(store: CacheStore) {
         subject: 'Invoice',
         date: '2026-08-01T10:00:00.000Z',
         from: [{ name: 'Ada', address: 'ada@example.com' }],
+        messageId: '<m1@example.com>',
       },
       flags: ['\\Seen', 'Work'],
       messageId: '<m1@example.com>',
@@ -134,6 +135,7 @@ function seedMessages(store: CacheStore) {
         subject: 'Lunch',
         date: '2026-08-02T10:00:00.000Z',
         from: [{ address: 'bob@example.com' }],
+        messageId: '<m2@example.com>',
       },
       flags: [],
       messageId: '<m2@example.com>',
@@ -354,5 +356,116 @@ describe('MailReadService (cached reads)', () => {
     await service.getEmailFlags('work', '999', 'INBOX');
 
     expect(imap.getEmailFlags).toHaveBeenCalledExactlyOnceWith('work', '999', 'INBOX');
+  });
+});
+
+describe('MailReadService (cached bodies)', () => {
+  function fullLiveEmail(body: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: '1',
+      subject: 'Invoice',
+      from: { name: 'Ada', address: 'ada@example.com' },
+      to: [],
+      date: '2026-08-01T10:00:00.000Z',
+      seen: true,
+      flagged: false,
+      answered: false,
+      hasAttachments: false,
+      labels: ['Work'],
+      cc: [],
+      bcc: [],
+      bodyText: 'fresh body',
+      messageId: '<m1@example.com>',
+      attachments: [],
+      headers: { subject: 'Invoice' },
+      ...body,
+    };
+  }
+
+  it('serves a fully cached message without touching the network', async () => {
+    const { store, imap, service } = createCachedSetup();
+    store.putBody('work', 'INBOX', 1, '100', {
+      text: 'Anbei die Rechnung.',
+      subtype: 'plain',
+      headers: { subject: 'Invoice', references: '<r1@x> <r2@x>' },
+      preview: 'Anbei die Rechnung.',
+    });
+
+    const email = await service.getEmail('work', '1', 'INBOX');
+
+    expect(imap.getEmail).not.toHaveBeenCalled();
+    expect(email).toMatchObject({
+      id: '1',
+      subject: 'Invoice',
+      from: { name: 'Ada', address: 'ada@example.com' },
+      seen: true,
+      labels: ['Work'],
+      bodyText: 'Anbei die Rechnung.',
+      messageId: '<m1@example.com>',
+      references: ['<r1@x>', '<r2@x>'],
+      headers: { subject: 'Invoice', references: '<r1@x> <r2@x>' },
+    });
+    expect(email.bodyHtml).toBeUndefined();
+    expect(email.attachments).toEqual([]);
+    expect(store.getMessage('work', 'INBOX', 1, '100')?.lastAccessedAt).toBeDefined();
+  });
+
+  it('maps a cached html body to bodyHtml', async () => {
+    const { store, service } = createCachedSetup();
+    store.putBody('work', 'INBOX', 2, '100', {
+      text: '<p>Hi</p>',
+      subtype: 'html',
+      headers: {},
+    });
+
+    const email = await service.getEmail('work', '2', 'INBOX');
+
+    expect(email.bodyHtml).toBe('<p>Hi</p>');
+    expect(email.bodyText).toBeUndefined();
+  });
+
+  it('fetches live on a body miss and persists the result for the next read', async () => {
+    const { store, imap, service } = createCachedSetup();
+    imap.getEmail.mockResolvedValue(fullLiveEmail());
+
+    const first = await service.getEmail('work', '1', 'INBOX');
+    expect(first.bodyText).toBe('fresh body');
+    expect(imap.getEmail).toHaveBeenCalledTimes(1);
+
+    const row = store.getMessage('work', 'INBOX', 1, '100');
+    expect(row?.bodyText).toBe('fresh body');
+    expect(row?.headers).toEqual({ subject: 'Invoice' });
+    expect(row?.preview).toBe('fresh body');
+
+    const second = await service.getEmail('work', '1', 'INBOX');
+    expect(imap.getEmail).toHaveBeenCalledTimes(1);
+    expect(second.bodyText).toBe('fresh body');
+  });
+
+  it('does not persist an oversized body and does not retry it in backfill', async () => {
+    const { store, imap, service } = createCachedSetup();
+    imap.getEmail.mockResolvedValue(fullLiveEmail({ bodyText: 'x'.repeat(300 * 1024) }));
+
+    await service.getEmail('work', '1', 'INBOX');
+
+    const row = store.getMessage('work', 'INBOX', 1, '100');
+    expect(row?.bodyText).toBeUndefined();
+    expect(store.listMissingBodies('work', 'INBOX', '100', 10)).not.toContain(1);
+  });
+
+  it('coalesces concurrent fetches of the same message', async () => {
+    const { imap, service } = createCachedSetup();
+    imap.getEmail.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(fullLiveEmail()), 5)),
+    );
+
+    const [a, b] = await Promise.all([
+      service.getEmail('work', '1', 'INBOX'),
+      service.getEmail('work', '1', 'INBOX'),
+    ]);
+
+    expect(imap.getEmail).toHaveBeenCalledTimes(1);
+    expect(a.bodyText).toBe('fresh body');
+    expect(b.bodyText).toBe('fresh body');
   });
 });

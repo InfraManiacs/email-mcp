@@ -39,7 +39,9 @@ function parseAddress(addr: { name?: string; address?: string } | undefined): Em
   };
 }
 
-function parseAddresses(addrs: { name?: string; address?: string }[] | undefined): EmailAddress[] {
+export function parseAddresses(
+  addrs: { name?: string; address?: string }[] | undefined,
+): EmailAddress[] {
   if (!addrs) return [];
   return addrs.map(parseAddress);
 }
@@ -54,7 +56,7 @@ function hasAttachments(bodyStructure: unknown): boolean {
   return false;
 }
 
-function extractAttachments(bodyStructure: unknown): AttachmentMeta[] {
+export function extractAttachments(bodyStructure: unknown): AttachmentMeta[] {
   const attachments: AttachmentMeta[] = [];
   if (!bodyStructure || typeof bodyStructure !== 'object') return attachments;
 
@@ -165,7 +167,7 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
 }
 
 /** A displayable (non-attachment) text part discovered in the MIME tree. */
-interface TextPart {
+export interface TextPart {
   /** IMAP part path, e.g. "1.1" */
   path: string;
   /** Content subtype: "plain" | "html" | … (derived from the full MIME type) */
@@ -193,7 +195,7 @@ function splitMimeType(type: unknown): { type: string; subtype: string } {
  * `bs.part` when the server supplies one, otherwise from the 1-based child
  * index chain.
  */
-function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
+export function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
   if (!bodyStructure || typeof bodyStructure !== 'object') return [];
 
   const bs = bodyStructure as Record<string, unknown>;
@@ -242,7 +244,7 @@ function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
 const STUB_PLAIN_MAX_BYTES = 200;
 const STUB_PLAIN_RATIO = 5;
 
-function selectBodyPart(parts: TextPart[]): TextPart | undefined {
+export function selectBodyPart(parts: TextPart[]): TextPart | undefined {
   const plain = parts.find((p) => p.subtype === 'plain');
   const html = parts.find((p) => p.subtype === 'html');
 
@@ -259,7 +261,7 @@ function selectBodyPart(parts: TextPart[]): TextPart | undefined {
  * Continuation lines (leading space or tab) are unfolded onto the preceding
  * header, so a long References or Subject split across lines survives intact.
  */
-function parseHeaders(raw: unknown): Record<string, string> {
+export function parseHeaders(raw: unknown): Record<string, string> {
   const headers: Record<string, string> = {};
   if (!Buffer.isBuffer(raw)) return headers;
 
