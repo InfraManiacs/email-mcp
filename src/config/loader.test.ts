@@ -470,6 +470,17 @@ describe('send settings mapping', () => {
     expect(custom.settings.send.maxAttachmentMb).toBe(10);
   });
 
+  it('maps a per-account max_attachment_mb to camelCase', async () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    await fs.writeFile(
+      configPath,
+      MINIMAL_TOML.replace('[accounts.imap]', 'max_attachment_mb = 40\n[accounts.imap]'),
+      'utf-8',
+    );
+    const config = await loadConfig(configPath);
+    expect(config.accounts[0].maxAttachmentMb).toBe(40);
+  });
+
   it('reads MCP_EMAIL_SEND_MAX_ATTACHMENT_MB in env mode', async () => {
     process.env.MCP_EMAIL_ADDRESS = 'env@example.com';
     process.env.MCP_EMAIL_PASSWORD = 'env-pass';

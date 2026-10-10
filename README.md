@@ -537,11 +537,15 @@ Located at `$XDG_CONFIG_HOME/email-mcp/config.toml` (default: `~/.config/email-m
 [settings]
 rate_limit = 10  # max emails per minute per account
 
+[settings.send]
+max_attachment_mb = 25  # global cap on the base64-encoded attachment total
+
 [[accounts]]
 name = "personal"
 email = "you@gmail.com"
 full_name = "Your Name"
 password = "keychain:personal"  # or "env:VAR", or a plaintext app password
+# max_attachment_mb = 25  # optional per-account override (beats global + provider limits)
 
 [accounts.imap]
 host = "imap.gmail.com"
@@ -1117,6 +1121,10 @@ locks in the size-awareness contract: every send reports each file's size and
 the raw≈base64 total, the cap is enforced on the **encoded** total (what the
 wire carries), an over-cap send fails closed (nothing is delivered), and
 forwards carry the original attachments unless `includeAttachments: false`.
+The effective cap is resolved per account: an explicit per-account
+`max_attachment_mb` wins outright; otherwise the stricter of the global
+`[settings.send]` cap and the provider's documented limit applies (Gmail,
+Yahoo, and Proton 25 MB; Outlook.com, iCloud, and GMX 20 MB; Fastmail 50 MB).
 
 `pnpm smoke` drives all tools over stdio the way a client does, which reaches
 what GreenMail cannot: provider quirks, real-world MIME, and the macOS

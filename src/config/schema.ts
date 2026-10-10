@@ -52,6 +52,12 @@ export const AccountConfigSchema = z
     oauth2: OAuth2ConfigSchema.optional(),
     imap: ImapConfigSchema,
     smtp: SmtpConfigSchema,
+    /**
+     * Optional per-account attachment cap (MB, base64-encoded total).
+     * Overrides both the global `[settings.send]` cap and the provider's
+     * documented limit for this account.
+     */
+    max_attachment_mb: z.number().int().min(1).optional(),
   })
   .refine((data) => data.password ?? data.oauth2, {
     message: 'Either password or oauth2 config is required',

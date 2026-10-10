@@ -221,6 +221,26 @@ describe('send settings', () => {
     expect(result.settings.send.max_attachment_mb).toBe(10);
   });
 
+  it('accepts an optional per-account max_attachment_mb', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount({ max_attachment_mb: 40 })],
+    });
+    expect(result.accounts[0].max_attachment_mb).toBe(40);
+  });
+
+  it('leaves the per-account max_attachment_mb unset by default', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.accounts[0].max_attachment_mb).toBeUndefined();
+  });
+
+  it('rejects a non-positive per-account max_attachment_mb', () => {
+    expect(() =>
+      AppConfigFileSchema.parse({
+        accounts: [validAccount({ max_attachment_mb: 0 })],
+      }),
+    ).toThrow();
+  });
+
   it('rejects a non-positive max_attachment_mb', () => {
     expect(() =>
       AppConfigFileSchema.parse({

@@ -6,6 +6,7 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/server';
+import { resolveSendLimitMb } from '../config/send-limit.js';
 import type ConnectionManager from '../connections/manager.js';
 import type CalendarService from '../services/calendar.service.js';
 import type ClipboardService from '../services/clipboard.service.js';
@@ -90,7 +91,14 @@ export default function registerAllTools(
 
   // Write tools — skipped in read-only mode
   if (!readOnly) {
-    registerSendTools(server, smtpService, config.settings.send.maxAttachmentMb);
+    const globalMb = config.settings.send.maxAttachmentMb;
+    registerSendTools(server, smtpService, {
+      globalMb,
+      forAccount: (name) => {
+        const account = config.accounts.find((a) => a.name === name);
+        return account ? resolveSendLimitMb(account, globalMb) : globalMb;
+      },
+    });
     registerManageTools(server, imapService);
     registerLabelTools(server, imapService);
     registerBulkTools(server, imapService);

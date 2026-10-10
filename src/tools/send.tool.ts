@@ -17,10 +17,18 @@ function attachmentReport(prepared: Awaited<ReturnType<typeof prepareAttachments
   return `\n📎 Attachments (${prepared.attachments.length}, ${formatSize(prepared.totalBytes)} raw ≈ ${formatSize(prepared.totalEncodedBytes)} encoded):\n${lines.join('\n')}`;
 }
 
+/** Attachment caps the send tools enforce (resolved per account at call time). */
+export interface SendLimit {
+  /** Global `[settings.send]` cap, used in tool descriptions. */
+  globalMb: number;
+  /** Effective cap for one account (per-account override / provider limit / global). */
+  forAccount: (account: string) => number;
+}
+
 export default function registerSendTools(
   server: McpServer,
   smtpService: SmtpService,
-  maxAttachmentMb: number,
+  sendLimit: SendLimit,
 ): void {
   // ---------------------------------------------------------------------------
   // send_email
@@ -42,7 +50,7 @@ export default function registerSendTools(
           .array(z.string())
           .optional()
           .describe(
-            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the configured limit (currently ${maxAttachmentMb} MB).`,
+            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
           ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -52,7 +60,7 @@ export default function registerSendTools(
         validateInputLength(params.subject, 998, 'Subject');
         validateInputLength(params.body, 5_000_000, 'Body');
         const prepared = params.attachments?.length
-          ? await prepareAttachments(params.attachments, maxAttachmentMb)
+          ? await prepareAttachments(params.attachments, sendLimit.forAccount(params.account))
           : null;
         const result = await smtpService.sendEmail(params.account, {
           ...params,
@@ -114,7 +122,7 @@ export default function registerSendTools(
           .array(z.string())
           .optional()
           .describe(
-            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the configured limit (currently ${maxAttachmentMb} MB).`,
+            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the account's effective limit (global cap ${sendLimit.globalMb} MB; known provider or per-account limits may be stricter).`,
           ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -122,7 +130,7 @@ export default function registerSendTools(
     async (params) => {
       try {
         const prepared = params.attachments?.length
-          ? await prepareAttachments(params.attachments, maxAttachmentMb)
+          ? await prepareAttachments(params.attachments, sendLimit.forAccount(params.account))
           : null;
         const result = await smtpService.replyToEmail(params.account, {
           ...params,

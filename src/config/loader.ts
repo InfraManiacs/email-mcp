@@ -214,6 +214,7 @@ function normalizeAccount(raw: RawAccountConfig): AccountConfig {
     username: raw.username ?? raw.email,
     password: raw.password,
     oauth2: raw.oauth2 ? normalizeOAuth2(raw.oauth2) : undefined,
+    maxAttachmentMb: raw.max_attachment_mb,
     imap: {
       host: raw.imap.host,
       port: raw.imap.port,
@@ -495,7 +496,9 @@ read_only = false  # set to true to disable all write operations
 
 # Outbound sends. Caps the base64-encoded total of all attachments on one
 # message; oversized sends fail locally with a per-file listing instead of a
-# provider-side 552.
+# provider-side 552. Known providers (Gmail, Outlook, Proton, …) are capped
+# at their documented limit when it is stricter; set max_attachment_mb on an
+# individual [[accounts]] entry to override both for that account.
 # [settings.send]
 # max_attachment_mb = 25
 
@@ -555,6 +558,9 @@ full_name = "Your Name"
 # username defaults to email if omitted
 # username = "you@example.com"
 password = "your-app-password"
+# Per-account attachment cap (MB, base64-encoded total). Overrides the global
+# [settings.send] cap and the provider's documented limit for this account.
+# max_attachment_mb = 25
 
 [accounts.imap]
 host = "imap.example.com"
