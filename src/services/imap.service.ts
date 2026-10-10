@@ -354,11 +354,18 @@ export default class ImapService {
     if (pending) return pending;
 
     const promise = (async () => {
-      const client = await this.connections.getImapClient(accountName);
-      const strategy = await detectLabelStrategy(client);
-      this.labelStrategies.set(accountName, strategy);
-      this.labelStrategyPending.delete(accountName);
-      return strategy;
+      try {
+        const client = await this.connections.getImapClient(accountName);
+        const strategy = await detectLabelStrategy(client);
+        this.labelStrategies.set(accountName, strategy);
+        return strategy;
+      } finally {
+        // Cleared on settle, not on success. A rejected promise left in the
+        // map is handed to every later caller, so one transient IMAP failure
+        // during detection would break every label operation for the account
+        // until the process restarts.
+        this.labelStrategyPending.delete(accountName);
+      }
     })();
 
     this.labelStrategyPending.set(accountName, promise);
