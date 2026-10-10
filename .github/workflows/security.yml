@@ -47,7 +47,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@0.36.0
+        # Tagged with the leading "v" — only 0.35.0 was ever published both
+        # ways, so an unprefixed pin resolves for that one version and fails
+        # for every other.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scanners: vuln,secret,misconfig
