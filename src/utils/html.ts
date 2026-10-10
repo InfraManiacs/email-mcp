@@ -97,6 +97,13 @@ export function decodeEntities(text: string): string {
       if (!Number.isFinite(code) || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
         return match;
       }
+      // Private-use characters carry no meaning in mail text, and stripHtml
+      // uses two of them as internal blockquote markers. Decoding them would
+      // let a sender inject a marker — "&#xE000;" — and have everything after
+      // it treated as quoted material, which format="stripped" then deletes.
+      if (code >= 0xe000 && code <= 0xf8ff) {
+        return '';
+      }
       return String.fromCodePoint(code);
     }
     return NAMED_ENTITIES[name] ?? match;
@@ -130,41 +137,224 @@ const INVISIBLE_PADDING = /\u200B|\u00AD|\u034F|\u2060|\uFEFF/g; // ZWSP, soft h
  */
 const JOINER_PADDING = /(?<![^\s])[\u200C\u200D]+(?=[\s\u200C\u200D]|$)|(?<=\s)[\u200C\u200D]+/g;
 
+// Blockquote boundaries survive the tag strip as private-use markers; a line
+// walk afterwards turns nesting depth into "> " prefixes. Markers instead of
+// in-place prefixing because at tag-removal time the content has no line
+// breaks yet to prefix.
+const QUOTE_OPEN = '\uE000';
+const QUOTE_CLOSE = '\uE001';
+
+/**
+ * One run of tag attributes, quote-aware.
+ *
+ * A ">" needs no escaping inside a quoted attribute value, so `title="a > b"`
+ * is valid mail; a matcher that stops at the first ">" cuts mid-tag and spills
+ * the remaining attribute text — URL and quote characters included — into what
+ * the model reads. Written as an unrolled loop (each alternative starts with a
+ * distinct character class) so it cannot backtrack catastrophically.
+ */
+const ATTRS = '(?:[^>"\']|"[^"]*"|\'[^\']*\')*';
+const ATTRS_LAZY = `${ATTRS.slice(0, -1)}*?`;
+
+// The inner capture refuses to cross another anchor tag. A plain lazy
+// `[\s\S]*?` rescans the whole remaining document for every unclosed <a>,
+// which is quadratic: 50k unclosed anchors inside the 512 KB body cap blocked
+// the event loop — the one that also serves IMAP IDLE, the watcher, and the
+// scheduler — for over four seconds.
+const ANCHOR_RE = new RegExp(
+  `<a\\b${ATTRS_LAZY}\\bhref\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))${ATTRS}>` +
+    `((?:(?!<\\/?a\\b)[\\s\\S])*?)<\\/a>`,
+  'gi',
+);
+const IMG_RE = new RegExp(`<img\\b${ATTRS}>`, 'gi');
+/** Any complete tag, quote-aware; a tag name must follow "<". */
+const ANY_TAG_RE = /<[a-zA-Z!/?][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/g;
+const ALT_ATTR = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+const SRC_ATTR = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+
+/** Scheme, www. and a trailing slash are display noise, not a different link. */
+function normalizeUrlForCompare(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/$/, '');
+}
+
+function imgAlt(tag: string): string {
+  const m = ALT_ATTR.exec(tag);
+  return (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim();
+}
+
+function imgSrc(tag: string): string {
+  const m = SRC_ATTR.exec(tag);
+  return (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim();
+}
+
+/**
+ * Replace anchors with markdown links before any tag is stripped — once tags
+ * are gone the href is unrecoverable (the same reason extractMagicLink parses
+ * anchors first). Entities stay encoded here; the pipeline's single
+ * decodeEntities pass at the end decodes link text and href together.
+ */
+function convertAnchors(html: string): string {
+  return html.replace(ANCHOR_RE, (_m, dq: string, sq: string, bare: string, inner: string) => {
+    const href = (dq ?? sq ?? bare ?? '').trim();
+    // Inside an anchor an image is standing in for the link text.
+    const text = inner
+      .replace(IMG_RE, (img) => imgAlt(img))
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!href || href.startsWith('#') || /^javascript:/i.test(href)) return text;
+    if (/^mailto:/i.test(href)) {
+      const address = href.slice('mailto:'.length).trim();
+      if (!text || text.toLowerCase() === address.toLowerCase()) return address;
+      return `[${text}](${href})`;
+    }
+    if (!text || normalizeUrlForCompare(text) === normalizeUrlForCompare(href)) return href;
+    return `[${text}](${href})`;
+  });
+}
+
+/**
+ * Replace images with placeholders. A cid: image is real content shipped with
+ * the message, so its existence is worth a token even without alt text; a
+ * remote image without alt text is overwhelmingly a tracking pixel or spacer.
+ */
+function convertImages(html: string): string {
+  return html.replace(IMG_RE, (img) => {
+    const alt = imgAlt(img);
+    if (alt) return `[image: ${alt}]`;
+    if (imgSrc(img).toLowerCase().startsWith('cid:')) return '[image]';
+    return '';
+  });
+}
+
+/**
+ * Number ordered-list items and bullet unordered ones, innermost list first so
+ * a nested <ul> inside an <ol> keeps its bullets. Bounded: real mail does not
+ * nest lists 20 deep, and pathological input must not loop forever.
+ */
+function convertLists(html: string): string {
+  let out = html;
+  for (let pass = 0; pass < 20; pass += 1) {
+    const next = out.replace(
+      /<(ol|ul)\b[^>]*>((?:(?!<[ou]l\b)[\s\S])*?)<\/\1\s*>/gi,
+      (_m, tag: string, inner: string) => {
+        let n = 0;
+        const items = inner.replace(/<li\b[^>]*>/gi, () => {
+          if (tag.toLowerCase() === 'ol') {
+            n += 1;
+            return `\n${n}. `;
+          }
+          return '\n• ';
+        });
+        return `\n${items}\n`;
+      },
+    );
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/** Turn quote markers into "> " line prefixes, nesting into "> > ". */
+function applyQuoteMarkers(text: string): string {
+  if (!text.includes(QUOTE_OPEN) && !text.includes(QUOTE_CLOSE)) return text;
+  let depth = 0;
+  const out: string[] = [];
+  text.split('\n').forEach((line) => {
+    if (line.includes(QUOTE_OPEN) || line.includes(QUOTE_CLOSE)) {
+      let residual = '';
+      [...line].forEach((ch) => {
+        if (ch === QUOTE_OPEN) depth += 1;
+        else if (ch === QUOTE_CLOSE) depth = Math.max(0, depth - 1);
+        else residual += ch;
+      });
+      if (residual.trim()) out.push('> '.repeat(depth) + residual.trim());
+      return;
+    }
+    if (depth > 0 && line.trim()) {
+      out.push('> '.repeat(depth) + line);
+      return;
+    }
+    out.push(line);
+  });
+  return out.join('\n');
+}
+
 /**
  * Convert an HTML body to readable plain text.
  *
- * Block-level elements become line breaks so paragraph structure survives;
- * everything else is dropped. Entities are decoded before padding is removed,
- * since the padding usually arrives entity-encoded — and after tags are gone,
- * so an entity-encoded angle bracket can never be mistaken for markup.
+ * Structure survives as text conventions — markdown links, "> " quote
+ * prefixes, numbered lists, pipe-separated table cells — and everything else
+ * is dropped. Entities are decoded before padding is removed, since the
+ * padding usually arrives entity-encoded — and after tags are gone, so an
+ * entity-encoded angle bracket can never be mistaken for markup.
  */
 export function stripHtml(html: string): string {
-  const withoutMarkup = html
-    // Elements whose text is machinery, not content. Dropping the tags alone
-    // would leave their values inline — Outlook-authored mail otherwise opens
-    // with "96" from <o:PixelsPerInch>.
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<xml[^>]*>[\s\S]*?<\/xml>/gi, '')
-    .replace(/<title[^>]*>[\s\S]*?<\/title>/gi, '')
-    // Conditional comments carry a whole alternate layout for Outlook.
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<br\s*\/?>/gi, '\n')
+  const withoutMarkup = convertLists(
+    convertImages(
+      convertAnchors(
+        html
+          // The quote markers are ours alone; drop impostors from the input.
+          .replace(/[\uE000\uE001]/g, '')
+          // Elements whose text is machinery, not content. Dropping the tags
+          // alone would leave their values inline — Outlook-authored mail
+          // otherwise opens with "96" from <o:PixelsPerInch>.
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<xml[^>]*>[\s\S]*?<\/xml>/gi, '')
+          .replace(/<title[^>]*>[\s\S]*?<\/title>/gi, '')
+          // Conditional comments carry a whole alternate layout for Outlook.
+          .replace(/<!--[\s\S]*?-->/g, '')
+          // Unterminated machinery: everything from the opener to the end of
+          // the input. The body cap truncates oversized newsletters mid-markup,
+          // which routinely produces exactly this, and without the sweep the
+          // raw CSS or script source becomes the tail of the message.
+          .replace(/<(?:style|script|xml|title)\b[^>]*>[\s\S]*$/i, '')
+          .replace(/<!--[\s\S]*$/, ''),
+      ),
+    ),
+  )
+    .replace(/<blockquote\b[^>]*>/gi, `\n${QUOTE_OPEN}\n`)
+    .replace(/<\/blockquote>/gi, `\n${QUOTE_CLOSE}\n`)
+    .replace(/<br\b[^>]*>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
     .replace(/<\/div>/gi, '\n')
+    .replace(/<\/?h[1-6]\b[^>]*>/gi, '\n\n')
+    .replace(/<hr\b[^>]*>/gi, '\n---\n')
+    .replace(/<\/t[dh]>/gi, ' | ')
+    .replace(/<\/tr>/gi, '\n')
+    .replace(/<\/table>/gi, '\n')
     .replace(/<li\b[^>]*>/gi, '\n• ')
+    // Quote-aware first so a ">" inside an attribute value cannot split a
+    // tag, then the permissive sweep for malformed tags (an unterminated
+    // quote) the first pass cannot parse.
+    .replace(ANY_TAG_RE, '')
     .replace(/<[^>]+>/g, '');
 
   return (
-    decodeEntities(withoutMarkup)
-      .replace(INVISIBLE_PADDING, '')
-      .replace(JOINER_PADDING, '')
-      // U+00A0 is the correct decoding of &nbsp;, but layout tables emit rows
-      // of them. Treat it as ordinary whitespace here so those lines collapse;
-      // one sitting inside a sentence ("10 CHF") is left as a single space.
-      .replace(/ /g, ' ')
+    applyQuoteMarkers(
+      decodeEntities(withoutMarkup)
+        .replace(INVISIBLE_PADDING, '')
+        .replace(JOINER_PADDING, '')
+        // U+00A0 is the correct decoding of &nbsp;, but layout tables emit rows
+        // of them. Treat it as ordinary whitespace here so those lines collapse;
+        // one sitting inside a sentence ("10 CHF") is left as a single space.
+        .replace(/ /g, ' ')
+        // Cell separators against a line boundary are table framing, not
+        // content — a one-column layout table reads as plain lines without them.
+        .replace(/[ \t]*(?:\|[ \t]*)+$/gm, '')
+        .replace(/^[ \t]*(?:\|[ \t]*)+/gm, ''),
+    )
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
+      // A list reads as one block; padding newlines between items are framing.
+      .replace(/\n{2,}(?=(?:\d+\. |• ))/g, '\n')
       .trim()
   );
 }

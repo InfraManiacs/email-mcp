@@ -24,6 +24,20 @@ describe('prepareAttachments', () => {
     expect(result.totalBytes).toBe(1234);
   });
 
+  it('accepts object entries with cid, contentType, and a filename override', async () => {
+    const p = join(dir, 'logo.png');
+    writeFileSync(p, Buffer.alloc(10));
+
+    const result = await prepareAttachments(
+      [{ path: p, cid: 'logo@x', contentType: 'image/png', filename: 'brand.png' }],
+      25,
+    );
+
+    expect(result.attachments).toEqual([
+      { filename: 'brand.png', path: p, size: 10, cid: 'logo@x', contentType: 'image/png' },
+    ]);
+  });
+
   it('rejects a missing file with a clear error naming the path', async () => {
     const missing = join(dir, 'nope.txt');
     await expect(prepareAttachments([missing], 25)).rejects.toThrow(missing);

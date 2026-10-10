@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { IConnectionManager } from '../connections/types.js';
 import eventBus from './event-bus.js';
 import ImapService from './imap.service.js';
@@ -147,6 +151,21 @@ describe('ImapService', () => {
       const result = await service.listEmails('test', { mailbox: 'INBOX' });
 
       expect(result.items[0].id).toBe('77');
+    });
+
+    it('does not fetch message source for listings', async () => {
+      // The 256-byte source window never reached past real header blocks, so
+      // the preview it fed was always undefined — pure bandwidth waste on
+      // every list and search.
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({ uid: 77, envelope: { subject: 'Hi' }, flags: [] }),
+      );
+
+      await service.listEmails('test', { mailbox: 'INBOX' });
+
+      const [, query] = client.fetch.mock.calls[0];
+      expect(query.source).toBeUndefined();
     });
 
     it('rejects a message with no UID rather than falling back to its sequence number', async () => {
@@ -400,6 +419,155 @@ describe('ImapService', () => {
       expect(client.download).toHaveBeenCalledWith('42', '1', { uid: true });
     });
 
+    it('downloads both the plain and html parts of multipart/alternative', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Alt', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/alternative',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 4000 },
+            { part: '2', type: 'text/html', size: 9000 },
+          ],
+        },
+        headers: Buffer.from('Subject: Alt\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockImplementation(async (_uid: string, path: string) =>
+        downloadYielding(path === '1' ? 'plain body' : '<p>html body</p>'),
+      );
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      // Both halves populate so format="full", magic-link extraction, and
+      // calendar scanning can use whichever side they need.
+      expect(email.bodyText).toBe('plain body');
+      expect(email.bodyHtml).toBe('<p>html body</p>');
+    });
+
+    it('skips an oversized part when a sibling within the cap exists', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Big', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/alternative',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 400 },
+            { part: '2', type: 'text/html', size: 10 * 1024 * 1024 },
+          ],
+        },
+        headers: Buffer.from('Subject: Big\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockResolvedValue(downloadYielding('small plain'));
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyText).toBe('small plain');
+      expect(email.bodyHtml).toBeUndefined();
+      expect(client.download).toHaveBeenCalledTimes(1);
+      expect(client.download).toHaveBeenCalledWith('42', '1', { uid: true });
+    });
+
+    it('truncates a sole over-cap body instead of returning it whole', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Huge', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: { type: 'text/html', size: 10 * 1024 * 1024 },
+        headers: Buffer.from('Subject: Huge\r\n\r\n', 'utf-8'),
+      });
+      const big = 'a'.repeat(600 * 1024);
+      client.download.mockResolvedValue(downloadYielding(big));
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      // The stream is drained but only the first 512 KB is kept; destroying
+      // an ImapFlow download stream mid-command corrupts connection state.
+      expect(email.bodyHtml?.length).toBeLessThan(big.length);
+      expect(email.bodyHtml).toContain('truncated');
+    });
+
+    it('keeps the human-readable part of an HTML bounce alongside the status', async () => {
+      // Appending the status into bodyText when the explanation is HTML makes
+      // applyBodyFormat prefer the status block and never show the reason.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Undelivered', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/report',
+          childNodes: [
+            { part: '1', type: 'text/html', size: 300 },
+            { part: '2', type: 'message/delivery-status', size: 200 },
+          ],
+        },
+        headers: Buffer.from('Subject: Undelivered\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockImplementation(async (_uid: string, path: string) =>
+        downloadYielding(
+          path === '2' ? 'Action: failed\nStatus: 5.1.1' : '<p>Your message bounced.</p>',
+        ),
+      );
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyHtml).toContain('Your message bounced.');
+      expect(email.bodyText).toBeUndefined();
+      expect(email.deliveryStatus).toContain('Status: 5.1.1');
+    });
+
+    it('labels an S/MIME message instead of returning no content', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Signed', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'application/pkcs7-mime',
+          size: 5000,
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'smime.p7m' },
+        },
+        headers: Buffer.from('Subject: Signed\r\n\r\n', 'utf-8'),
+      });
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyText).toMatch(/S\/MIME/);
+      expect(client.download).not.toHaveBeenCalled();
+    });
+
+    it('appends the delivery status of a bounce report to the body', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Undelivered', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/report',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 300 },
+            { part: '2', type: 'message/delivery-status', size: 200 },
+          ],
+        },
+        headers: Buffer.from('Subject: Undelivered\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockImplementation(async (_uid: string, path: string) =>
+        downloadYielding(
+          path === '2' ? 'Action: failed\nStatus: 5.1.1' : 'Delivery failed message',
+        ),
+      );
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      // The machine-readable part is where the actual status code lives; a
+      // bounce without it reads like an ordinary email. It rides in its own
+      // field so it can never displace the human-readable explanation.
+      expect(email.bodyText).toContain('Delivery failed message');
+      expect(email.bodyText).not.toContain('Status: 5.1.1');
+      expect(email.deliveryStatus).toContain('Action: failed');
+      expect(email.deliveryStatus).toContain('Status: 5.1.1');
+    });
+
     it('reports a well-formed attachment mimeType', async () => {
       client.download.mockResolvedValue(downloadYielding('body'));
 
@@ -419,13 +587,17 @@ describe('ImapService', () => {
         headers: Buffer.from('Subject: Simple\r\nContent-Type: text/plain\r\n\r\n', 'utf-8'),
       });
       client.download.mockRejectedValue(new Error('NO such part'));
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
       const email = await service.getEmail('test', '42', 'INBOX');
 
       // Headers and metadata are still useful even when the server refuses
-      // the body part, so this degrades rather than failing the whole call.
+      // the body part, so this degrades rather than failing the whole call —
+      // but no longer silently: the failure is noted on stderr.
       expect(email.subject).toBe('Simple');
       expect(email.bodyText).toBeUndefined();
+      expect(stderr).toHaveBeenCalled();
+      stderr.mockRestore();
     });
 
     it('unfolds headers split across continuation lines', async () => {
@@ -481,6 +653,216 @@ describe('ImapService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // saveEmailAttachments
+  // -----------------------------------------------------------------------
+
+  describe('saveEmailAttachments', () => {
+    it('saves an inline file that carries a filename', async () => {
+      // Apple Mail sends user-inserted photos as `inline; filename=...`;
+      // skipping every inline part wrote nothing to disk for such a message.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/related',
+          childNodes: [
+            { part: '1', type: 'text/html', size: 100 },
+            {
+              part: '2',
+              type: 'image/jpeg',
+              disposition: 'inline',
+              id: '<photo@mail>',
+              dispositionParameters: { filename: 'IMG_1234.jpg' },
+              size: 9,
+            },
+          ],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('jpegbytes'));
+      const dir = mkdtempSync(join(tmpdir(), 'att-save-'));
+
+      const saved = await service.saveEmailAttachments('test', '42', 'INBOX', dir);
+
+      expect(saved.map((s) => s.filename)).toEqual(['IMG_1234.jpg']);
+      rmSync(dir, { recursive: true, force: true });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // saveDraft
+  // -----------------------------------------------------------------------
+
+  describe('saveDraft', () => {
+    it('writes In-Reply-To and a folded References header', async () => {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+
+      await service.saveDraft('test', {
+        to: ['a@b.c'],
+        subject: 'Re: hi',
+        body: 'draft body',
+        inReplyTo: '<orig@x>',
+        references: ['<root@x>', '<orig@x>'],
+      });
+
+      const [, raw] = client.append.mock.calls[0];
+      const message = (raw as Buffer).toString('utf-8');
+      expect(message).toContain('In-Reply-To: <orig@x>');
+      // Folded onto continuation lines — valid RFC 5322 and never overlong.
+      expect(message).toContain('References: <root@x>\r\n <orig@x>');
+    });
+
+    it('refuses header values carrying a line break', async () => {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+
+      // These land verbatim in a hand-assembled RFC 822 message, so a CRLF
+      // would inject headers or end the header block early.
+      await expect(
+        service.saveDraft('test', {
+          to: ['a@b.c'],
+          subject: 'Hi',
+          body: 'b',
+          inReplyTo: '<x@y>\r\nBcc: attacker@evil.test',
+        }),
+      ).rejects.toThrow(/line break/i);
+
+      await expect(
+        service.saveDraft('test', {
+          to: ['a@b.c'],
+          subject: 'Hi',
+          body: 'b',
+          references: ['<ok@y>', '<x@y>\nX-Evil: 1'],
+        }),
+      ).rejects.toThrow(/line break/i);
+
+      expect(client.append).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // downloadAttachment
+  // -----------------------------------------------------------------------
+
+  describe('downloadAttachment', () => {
+    it('downloads a specific duplicate-named attachment by part id', async () => {
+      const invoice = {
+        type: 'application/pdf',
+        disposition: 'attachment',
+        dispositionParameters: { filename: 'invoice.pdf' },
+        size: 100,
+      };
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [{ part: '1', type: 'text/plain', size: 50 }, invoice, { ...invoice }],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('second pdf'));
+
+      const result = await service.downloadAttachment('test', '42', 'INBOX', { partId: '3' });
+
+      expect(client.download).toHaveBeenCalledWith('42', '3', { uid: true });
+      expect(result.filename).toBe('invoice.pdf');
+    });
+
+    it('judges the size cap by estimated decoded size for base64 parts', async () => {
+      // BODYSTRUCTURE reports encoded octets: 6 MB of base64 decodes to
+      // ~4.5 MB, inside the 5 MB default cap — rejecting it would refuse a
+      // file the caller is allowed to receive.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 50 },
+            {
+              part: '2',
+              type: 'application/pdf',
+              disposition: 'attachment',
+              dispositionParameters: { filename: 'big.pdf' },
+              size: 6 * 1024 * 1024,
+              encoding: 'base64',
+            },
+          ],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('pdf bytes'));
+
+      await expect(
+        service.downloadAttachment('test', '42', 'INBOX', 'big.pdf'),
+      ).resolves.toBeDefined();
+    });
+
+    it('applies the declared base64 encoding when the server withholds MIME headers', async () => {
+      // GreenMail (and flaky real servers) answer the n.MIME section of a
+      // nested part empty; ImapFlow then has no transfer encoding to decode
+      // with and streams raw base64 through. BODYSTRUCTURE already declared
+      // the encoding, so the service applies it itself.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/mixed',
+          childNodes: [
+            { part: '1', type: 'text/plain', size: 50 },
+            {
+              part: '2',
+              type: 'image/png',
+              disposition: 'attachment',
+              dispositionParameters: { filename: 'logo.png' },
+              size: 12,
+              encoding: 'base64',
+            },
+          ],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('iVBORw0KGgo='));
+
+      const result = await service.downloadAttachment('test', '42', 'INBOX', { partId: '2' });
+
+      expect(Buffer.from(result.contentBase64, 'base64').toString('hex')).toBe('89504e470d0a1a0a');
+    });
+
+    it('does not decode again when ImapFlow already decoded the part', async () => {
+      const raw = Buffer.from('89504e470d0a1a0a', 'hex');
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'image/png',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'logo.png' },
+          size: 12,
+          encoding: 'base64',
+        },
+      });
+      client.download.mockResolvedValue({
+        meta: { encoding: 'base64' },
+        content: (async function* gen() {
+          yield raw;
+        })(),
+      });
+
+      const result = await service.downloadAttachment('test', '42', 'INBOX', 'logo.png');
+
+      expect(Buffer.from(result.contentBase64, 'base64').toString('hex')).toBe(raw.toString('hex'));
+    });
+
+    it('reports the blocking size precisely instead of rounding it away', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'application/pdf',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'huge.pdf' },
+          size: Math.round(5.4 * 1024 * 1024),
+        },
+      });
+
+      await expect(service.downloadAttachment('test', '42', 'INBOX', 'huge.pdf')).rejects.toThrow(
+        /5\.4MB/,
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // getCalendarParts
   // -----------------------------------------------------------------------
 
@@ -525,6 +907,36 @@ describe('ImapService', () => {
       await service.getCalendarParts('test', 'INBOX', '7');
 
       expect(outerDrained).toBe(true);
+    });
+
+    it('converts a non-UTF-8 calendar part using its declared charset', async () => {
+      client.fetch.mockImplementationOnce(() =>
+        (async function* structure() {
+          yield {
+            uid: 7,
+            bodyStructure: {
+              type: 'multipart/mixed',
+              childNodes: [
+                { part: '1', type: 'text/plain', size: 50 },
+                { part: '2', type: 'text/calendar', size: 200 },
+              ],
+            },
+          };
+        })(),
+      );
+      // ImapFlow transfer-decodes calendar parts but does NOT charset-convert
+      // them (its isTextNode list is text/plain|html only), so the raw
+      // Latin-1 bytes arrive here along with the declared charset in meta.
+      client.download.mockResolvedValue({
+        meta: { charset: 'iso-8859-1' },
+        content: (async function* gen() {
+          yield Buffer.from('SUMMARY:Grüße\r\n', 'latin1');
+        })(),
+      });
+
+      const parts = await service.getCalendarParts('test', 'INBOX', '7');
+
+      expect(parts[0]).toContain('SUMMARY:Grüße');
     });
 
     it('returns decoded ICS text for a base64 calendar part', async () => {

@@ -6,12 +6,35 @@
 
 import type { IConnectionManager } from '../connections/types.js';
 import type RateLimiter from '../safety/rate-limiter.js';
+import { sanitizeTemplateVariable } from '../safety/validation.js';
 import type { SendResult } from '../types/index.js';
+import { stripHtml } from '../utils/html.js';
 import type { PreparedAttachment } from './attachments.js';
 import type ImapService from './imap.service.js';
 
 /** Per-file ceiling when re-fetching originals for a forward. */
 const FORWARD_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Narrow a prepared attachment to what nodemailer needs. A cid moves the file
+ * into multipart/related beside the HTML part, so it must ship as inline —
+ * as a classic attachment it would show up as a stray file instead of
+ * rendering where the <img src="cid:..."> points.
+ */
+function toTransportAttachment({ filename, path, cid, contentType }: PreparedAttachment): {
+  filename: string;
+  path: string;
+  cid?: string;
+  contentDisposition?: 'inline';
+  contentType?: string;
+} {
+  return {
+    filename,
+    path,
+    ...(cid ? { cid, contentDisposition: 'inline' as const } : {}),
+    ...(contentType ? { contentType } : {}),
+  };
+}
 
 export default class SmtpService {
   constructor(
@@ -34,6 +57,9 @@ export default class SmtpService {
       bcc?: string[];
       html?: boolean;
       attachments?: PreparedAttachment[];
+      /** Threading headers — a scheduled reply keeps its place in the thread. */
+      inReplyTo?: string;
+      references?: string[];
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -47,9 +73,15 @@ export default class SmtpService {
       cc: options.cc?.join(', '),
       bcc: options.bcc?.join(', '),
       subject: options.subject,
-      ...(options.html ? { html: options.body } : { text: options.body }),
+      ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
+      ...(options.references?.length ? { references: options.references.join(' ') } : {}),
+      // nodemailer 10 removed text:'auto' — generate the plain alternative
+      // here so HTML mail goes out as multipart/alternative, not single-part.
+      ...(options.html
+        ? { html: options.body, text: stripHtml(options.body) }
+        : { text: options.body }),
       ...(options.attachments?.length
-        ? { attachments: options.attachments.map(({ filename, path }) => ({ filename, path })) }
+        ? { attachments: options.attachments.map(toTransportAttachment) }
         : {}),
     });
 
@@ -114,9 +146,11 @@ export default class SmtpService {
       subject,
       inReplyTo: original.messageId,
       references: references.join(' '),
-      ...(options.html ? { html: options.body } : { text: options.body }),
+      ...(options.html
+        ? { html: options.body, text: stripHtml(options.body) }
+        : { text: options.body }),
       ...(options.attachments?.length
-        ? { attachments: options.attachments.map(({ filename, path }) => ({ filename, path })) }
+        ? { attachments: options.attachments.map(toTransportAttachment) }
         : {}),
     });
 
@@ -139,6 +173,7 @@ export default class SmtpService {
       body?: string;
       cc?: string[];
       includeAttachments?: boolean;
+      html?: boolean;
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -148,41 +183,91 @@ export default class SmtpService {
 
     // Carry the original's attachments unless explicitly declined -- a forward
     // that silently strips them misrepresents the original message.
-    const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
-    if (options.includeAttachments !== false && original.attachments?.length) {
-      for (const meta of original.attachments) {
+    //
+    // What "inline" means here depends on whether the original HTML actually
+    // embeds the part. A part its <img src="cid:..."> points at is layout: it
+    // travels along, still inline, when the HTML does (otherwise the images
+    // break), and is dropped when the forward is plain text because nothing
+    // references it. An inline part nothing embeds is a real file the sender
+    // attached — Apple Mail ships user-inserted photos as `inline; filename=`
+    // — so it forwards like any other attachment.
+    const embedded = (contentId: string | undefined): boolean =>
+      contentId !== undefined && (original.bodyHtml?.includes(`cid:${contentId}`) ?? false);
+
+    const attachments: {
+      filename: string;
+      content: Buffer;
+      contentType: string;
+      cid?: string;
+      contentDisposition?: 'inline';
+    }[] = [];
+    const forwardable = (original.attachments ?? []).filter(
+      (a) => !embedded(a.contentId) || options.html === true,
+    );
+    if (options.includeAttachments !== false && forwardable.length) {
+      for (const meta of forwardable) {
         const dl = await this.imapService.downloadAttachment(
           accountName,
           options.emailId,
           options.mailbox ?? 'INBOX',
-          meta.filename,
+          meta.partId !== undefined ? { partId: meta.partId } : meta.filename,
           FORWARD_ATTACHMENT_MAX_BYTES,
         );
+        const keepsEmbedding = embedded(meta.contentId);
         attachments.push({
           filename: dl.filename,
           content: Buffer.from(dl.contentBase64, 'base64'),
           contentType: dl.mimeType,
+          ...(keepsEmbedding && meta.contentId
+            ? { cid: meta.contentId, contentDisposition: 'inline' as const }
+            : {}),
         });
       }
     }
 
+    // Envelope fields arrive RFC 2047-decoded with no newline stripping, and
+    // the forward header block below is NOT "> "-quoted — so a crafted
+    // subject or display name could forge a "From:" line a reader would take
+    // as genuine. Collapse any line break before interpolating.
+    const oneLine = (value: string): string => value.replace(/[\r\n]+/g, ' ').trim();
+
     const subject = original.subject.startsWith('Fwd:')
-      ? original.subject
-      : `Fwd: ${original.subject}`;
+      ? oneLine(original.subject)
+      : `Fwd: ${oneLine(original.subject)}`;
 
     // Build forwarded message body
     const forwardHeader = [
       '',
       '---------- Forwarded message ----------',
-      `From: ${original.from.name ? `${original.from.name} <${original.from.address}>` : original.from.address}`,
-      `Date: ${original.date}`,
-      `Subject: ${original.subject}`,
-      `To: ${original.to.map((a) => a.address).join(', ')}`,
+      `From: ${original.from.name ? `${oneLine(original.from.name)} <${oneLine(original.from.address)}>` : oneLine(original.from.address)}`,
+      `Date: ${oneLine(original.date)}`,
+      `Subject: ${oneLine(original.subject)}`,
+      `To: ${original.to.map((a) => oneLine(a.address)).join(', ')}`,
       '',
     ].join('\n');
 
-    const originalBody = original.bodyText ?? original.bodyHtml ?? '';
-    const fullBody = (options.body ?? '') + forwardHeader + originalBody;
+    // The common case is an HTML-only original — raw markup in a text/plain
+    // part is unreadable, so the original is converted and "> "-quoted. The
+    // forward header stays unquoted: it is this message's text, not theirs.
+    const originalText =
+      original.bodyText ?? (original.bodyHtml ? stripHtml(original.bodyHtml) : '');
+    const quotedOriginal = originalText
+      .split('\n')
+      .map((line) => (line.trim() ? `> ${line}` : '>'))
+      .join('\n');
+    const textBody = (options.body ?? '') + forwardHeader + quotedOriginal;
+
+    let htmlBody: string | undefined;
+    if (options.html) {
+      const esc = (s: string) => sanitizeTemplateVariable(s, true);
+      const note = options.body ? `<p>${esc(options.body).replace(/\n/g, '<br>')}</p>` : '';
+      const headerHtml = forwardHeader.trim().split('\n').map(esc).join('<br>');
+      const originalHtml =
+        original.bodyHtml ?? (originalText ? `<pre>${esc(originalText)}</pre>` : '');
+      htmlBody =
+        `${note}<div>${headerHtml}</div>` +
+        `<blockquote style="border-left:2px solid #ccc;margin:0 0 0 8px;padding-left:8px">${originalHtml}</blockquote>`;
+    }
 
     const transport = await this.connections.getSmtpTransport(accountName);
 
@@ -191,7 +276,8 @@ export default class SmtpService {
       to: options.to.join(', '),
       cc: options.cc?.join(', '),
       subject,
-      text: fullBody,
+      text: textBody,
+      ...(htmlBody ? { html: htmlBody } : {}),
       ...(attachments.length ? { attachments } : {}),
     });
 
@@ -241,7 +327,9 @@ export default class SmtpService {
       subject: draft.subject,
       inReplyTo: draft.inReplyTo,
       references: draft.references?.join(' '),
-      ...(draft.bodyHtml ? { html: draft.bodyHtml } : { text: draft.bodyText ?? '' }),
+      ...(draft.bodyHtml
+        ? { html: draft.bodyHtml, text: draft.bodyText ?? stripHtml(draft.bodyHtml) }
+        : { text: draft.bodyText ?? '' }),
     });
 
     // Delete the draft after successful send

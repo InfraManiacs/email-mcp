@@ -36,6 +36,13 @@ export default function registerSchedulerTools(
         bcc: z.array(z.string()).optional().describe('BCC recipients'),
         html: z.boolean().default(false).describe('Send as HTML (default: false)'),
         in_reply_to: z.string().optional().describe('Message-ID to reply to'),
+        references: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Full References chain (the original References plus its Message-ID). Most clients ' +
+              'thread on this, so pass it whenever scheduling a reply.',
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -49,6 +56,7 @@ export default function registerSchedulerTools(
         bcc: params.bcc,
         html: params.html,
         inReplyTo: params.in_reply_to,
+        references: params.references,
       });
 
       const result = {
