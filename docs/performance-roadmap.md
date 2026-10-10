@@ -1,7 +1,8 @@
 # Performance Improvements Roadmap
 
-> **Status**: Planning  
-> **Last Updated**: 2026-02-18
+> **Status**: Partially delivered — the caching and pagination items below are
+> implemented; see the "Local Cache" section of `README.md` for what shipped.  
+> **Last Updated**: 2026-10-10
 
 Performance for an Email MCP server operates across **three distinct layers**, each with different bottlenecks and optimization strategies. This roadmap identifies concrete improvements against the current implementation, ordered by impact.
 
@@ -40,11 +41,13 @@ Performance for an Email MCP server operates across **three distinct layers**, e
 | Gap | Current Behavior | Impact |
 |-----|-----------------|--------|
 | Conservative SMTP pool defaults | Pooling defaults to `max_connections=1`, `max_messages=100` | Low — tune for high-throughput workloads |
-| No ENVELOPE/BODYSTRUCTURE cache | Fresh SEARCH + FETCH every request | High — repeat listings pay full IMAP cost |
-| Client-side pagination | Fetches ALL matching UIDs, slices in memory | High — 10K-mailbox fetches all UIDs just to show page 1 |
+| ~~No ENVELOPE/BODYSTRUCTURE cache~~ | **Done** — SQLite mirror serves listings, search, threads, bodies and attachments; freshness via one STATUS probe | High — repeat listings no longer pay IMAP cost |
+| ~~Client-side pagination~~ | **Done for cached mailboxes** — SQL `LIMIT`/`OFFSET`; the live fallback path still slices in memory | High — page 50 costs the same as page 1 |
 | No IMAP command pipelining control | Relies on ImapFlow auto-pipelining (good) but fetches extra data | Low — ImapFlow handles this well already |
-| No inbox preview line | `EmailMeta.preview` is never populated | Low — would need RFC 8970 `PREVIEW` support; the old 256-byte source window could not reach the body and was removed |
-| Two body downloads per message | `getEmail()` fetches both the plain and HTML parts | Low-Medium — one extra round trip buys a usable `format="full"` and better link extraction |
+| ~~No selective MIME part fetching~~ | **Done** — `selectBodyParts` picks the text parts to download; cached bodies need no fetch at all | Medium |
+| No signature/quote stripping | `format="stripped"` removes quoted replies and signatures | Medium — wastes tokens on repeated content |
+| No inbox preview line | `EmailMeta.preview` is populated only for messages whose body is cached; the old 256-byte source window could not reach the body and was removed | Low — would need RFC 8970 `PREVIEW` support |
+| Two body downloads per message | `getEmail()` fetches both the plain and HTML parts on a cache miss | Low-Medium — one extra round trip buys a usable `format="full"` and better link extraction |
 | No IMAP IDLE for push | Only poll-based; no real-time arrival notifications | Low — not critical for MCP request/response model |
 | No connection keepalive (NOOP) | Connections may timeout during idle periods | Low-Medium — ImapFlow may handle internally |
 | No batch flag operations | One-at-a-time for mark/move/delete | Low — current usage patterns are single-message |

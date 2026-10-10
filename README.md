@@ -508,6 +508,9 @@ Commands:
   scheduler install         Install OS-level scheduler (launchd/crontab)
   scheduler uninstall       Remove OS-level scheduler
   scheduler status          Show scheduler installation status
+  cache status [--json]     Show cache size, contents, coverage and freshness
+  cache clear [--account N] Delete cached mail/attachments and free the disk space
+  cache verify              Check the cache for corruption and reclaim orphaned files
   update [--check|--yes]    Self-update the binary to the latest GitHub release
   help                      Show help
 ```
@@ -660,6 +663,86 @@ For single-account setups (overrides config file):
 | `MCP_EMAIL_SMTP_POOL_MAX_CONNECTIONS` | `1` | Max pooled SMTP connections |
 | `MCP_EMAIL_SMTP_POOL_MAX_MESSAGES` | `100` | Max messages per pooled connection |
 | `MCP_EMAIL_RATE_LIMIT` | `10` | Max sends per minute |
+
+### Local Cache
+
+Reads are served from a local SQLite mirror of your mail (plus a
+content-addressed store for attachments) under
+`${XDG_CACHE_HOME:-~/.cache}/email-mcp/`. It makes listing, searching, and
+re-reading mail fast, and it keeps mail readable when the mail server is
+unreachable. It is on by default.
+
+**The cache is never authoritative.** Every row can be re-fetched from IMAP, so
+deleting it costs a resync and never loses mail — you can remove the directory
+at any time, as the XDG cache convention allows.
+
+#### Seeing and reclaiming what it holds
+
+```bash
+email-mcp cache status          # size vs budget, per-mailbox coverage, last sync
+email-mcp cache status --json   # same, for scripts
+email-mcp cache clear           # free the space (asks first; mail is re-fetched)
+email-mcp cache clear --account work --yes
+email-mcp cache verify          # integrity check + reclaim orphaned files
+```
+
+`cache status` reports the index size and attachment bytes separately, how many
+messages have full text cached, and how long ago each mailbox was reconciled.
+`check_health` exposes the same numbers to an AI client, plus the read hit ratio.
+
+#### How freshness is decided
+
+Correctness comes first: a stale answer to "any new mail?" is a wrong answer.
+Before serving a mailbox from the cache, the server either trusts a reconcile
+from the last 10 seconds, or spends one `STATUS` round trip comparing the
+server's `UIDVALIDITY`/`UIDNEXT`/`HIGHESTMODSEQ`/`MESSAGES` against what the
+mirror recorded — the IMAP equivalent of a conditional request. If anything
+moved, it resynchronises before answering (bounded; past the bound you get the
+cached answer marked `stale`). If the server is unreachable you get the cached
+answer marked `offline`.
+
+Message bodies and attachments are immutable for a given `UIDVALIDITY`/UID, so
+once stored they are served with no revalidation at all. Writes made through
+this server (flagging, moving, deleting) resynchronise the affected mailboxes
+immediately, which matters on servers without `CONDSTORE` where a flag change
+is otherwise invisible.
+
+#### Settings
+
+| Setting | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | `false` reads live from IMAP every time |
+| `mailboxes` | `["INBOX"]` | Synced in the background. Others mirror lazily once read |
+| `window_days` | `0` (all) | How far back the first sync of a mailbox reaches |
+| `body_messages` | `500` | Bodies kept per mailbox. `0` keeps the cache metadata-only |
+| `max_size_mb` | `500` | Budget for index + attachments combined |
+| `sync_interval` | `300` | Seconds between background reconciles |
+
+Past the budget, eviction runs cheapest-to-rebuild-first: attachment files
+(least recently read first), then message bodies, then envelopes older than
+`window_days`. Envelopes are kept as long as possible, because they are what
+listings and search need.
+
+**Coverage, not just freshness.** The cache only answers a listing when it
+holds every message the server reports for that mailbox. Set `window_days` to
+something other than `0` and the mirror becomes a slice — it then cannot report
+a truthful `total` or know whether more pages exist, so reads fall back to the
+live path until it catches up. That is also why envelope eviction clears the
+mailbox's sync watermarks: the next sync rebuilds coverage instead of leaving a
+permanent, invisible hole.
+
+#### Data at rest
+
+Cached mail — including message bodies and attachment content — is stored
+**unencrypted**, in a directory and files readable only by your user
+(`0700`/`0600`). This matches what desktop mail clients do; the recommended
+protection is full-disk encryption (FileVault, LUKS). If you would rather not
+have bodies and attachments on disk at all, set `body_messages = 0`, which
+keeps the cache metadata-only.
+
+Gmail note: do not add `[Gmail]/All Mail` to `mailboxes`. Gmail presents the
+same message in every label folder, so mirroring All Mail alongside INBOX
+stores the same mail twice.
 
 ### Email Scheduling
 

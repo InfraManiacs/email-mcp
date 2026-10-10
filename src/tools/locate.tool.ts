@@ -9,9 +9,12 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-import type ImapService from '../services/imap.service.js';
+import type MailReadService from '../services/mail-read.service.js';
 
-export default function registerLocateTools(server: McpServer, imapService: ImapService): void {
+export default function registerLocateTools(
+  server: McpServer,
+  mailReadService: MailReadService,
+): void {
   server.registerTool(
     'find_email_folder',
     {
@@ -32,7 +35,7 @@ export default function registerLocateTools(server: McpServer, imapService: Imap
     },
     async ({ account, emailId, sourceMailbox }) => {
       try {
-        const { folders, messageId } = await imapService.findEmailFolder(
+        const { folders, messageId } = await mailReadService.findEmailFolder(
           account,
           emailId,
           sourceMailbox,

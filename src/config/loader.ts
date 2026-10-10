@@ -98,7 +98,7 @@ function loadFromEnv(): RawAppConfig | null {
           .split(',')
           .map((m) => m.trim())
           .filter(Boolean),
-        window_days: parseInt(process.env.MCP_EMAIL_CACHE_WINDOW_DAYS ?? '90', 10),
+        window_days: parseInt(process.env.MCP_EMAIL_CACHE_WINDOW_DAYS ?? '0', 10),
         body_messages: parseInt(process.env.MCP_EMAIL_CACHE_BODY_MESSAGES ?? '500', 10),
         max_size_mb: parseInt(process.env.MCP_EMAIL_CACHE_MAX_SIZE_MB ?? '500', 10),
         sync_interval: parseInt(process.env.MCP_EMAIL_CACHE_SYNC_INTERVAL ?? '300', 10),
@@ -521,14 +521,15 @@ rate_limit = 10  # max emails per minute per account
 read_only = false  # set to true to disable all write operations
 
 # Local mirror — keeps a SQLite copy of mail under $XDG_CACHE_HOME/email-mcp
-# so reads are fast and still work while briefly offline. On by default; the
-# mirror is regenerable, so deleting it is always safe.
+# so reads are fast and still work while offline. On by default; the mirror is
+# regenerable, so deleting it is always safe.
+# Inspect or reclaim it with: email-mcp cache status / email-mcp cache clear
 # [settings.cache]
 # enabled = true          # set false to always read live from IMAP
-# mailboxes = ["INBOX"]   # synced in the background; others cache on read
-# window_days = 90        # how far back to mirror (0 = no limit)
-# body_messages = 500     # newest N messages to prefetch bodies for
-# max_size_mb = 500       # backstop on mirror size
+# mailboxes = ["INBOX"]   # synced in the background; others mirror lazily once read
+# window_days = 0         # how far back the first sync reaches (0 = everything)
+# body_messages = 500     # bodies kept per mailbox (0 = metadata only)
+# max_size_mb = 500       # budget for index + attachments; oldest evicted first
 # sync_interval = 300     # seconds between background reconciles
 
 # Streamable HTTP server ('email-mcp http' / 'email-mcp server start').

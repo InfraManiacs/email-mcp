@@ -132,16 +132,43 @@ export const HooksConfigSchema = z.object({
  * Defaults are deliberately conservative: mirroring INBOX only, 90 days back.
  * Measured against a real 170-message mailbox this costs well under a
  * megabyte, so `max_size_mb` is a backstop rather than an expected limit.
+ *
+ * Inspect and reclaim what this holds with `email-mcp cache status|clear`.
  */
 export const CacheConfigSchema = z.object({
   enabled: z.boolean().default(true),
-  /** Mailboxes synced proactively. Others are still cached when read. */
+  /**
+   * Mailboxes synced in the background. A mailbox read but not listed here is
+   * mirrored lazily from that point on — the first read is served live.
+   */
   mailboxes: z.array(z.string()).default(() => ['INBOX']),
-  /** How far back to mirror. 0 means no limit. */
-  window_days: z.number().int().min(0).default(90),
-  /** Newest N messages to prefetch bodies for; the rest cache on read. */
+  /**
+   * How far back the FIRST sync of a mailbox reaches. 0 (the default) means no
+   * limit. Later syncs are incremental, so this only bounds the initial
+   * transfer; it also marks which envelopes may be dropped if the size budget
+   * is ever exhausted.
+   *
+   * Defaulting to 0 is deliberate: a bounded window leaves the mirror holding
+   * a slice, and a slice cannot answer "how many messages are in this
+   * mailbox", so every listing has to go live — the cache would cost disk and
+   * buy nothing. Envelopes are about a kilobyte each, so a complete mirror of
+   * a 9,000-message mailbox is roughly 9 MB of the 500 MB budget. Set a window
+   * only for mailboxes too large to mirror; reads then stay correct by falling
+   * back to the live path.
+   */
+  window_days: z.number().int().min(0).default(0),
+  /**
+   * How many message bodies to keep per mailbox. The newest are prefetched in
+   * the background; anything read beyond this is cached on demand. 0 keeps
+   * the mirror metadata-only — the privacy-conscious setting, since bodies
+   * are stored unencrypted (owner-only) on disk.
+   */
   body_messages: z.number().int().min(0).default(500),
-  /** Backstop on mirror size. */
+  /**
+   * Budget across the whole cache — index plus attachment files. Past it,
+   * attachments are evicted first, then message bodies, then (only if still
+   * over) envelopes older than `window_days`.
+   */
   max_size_mb: z.number().int().min(1).default(500),
   /** Seconds between background reconciles. */
   sync_interval: z.number().int().min(30).default(300),
@@ -253,7 +280,7 @@ export const SettingsSchema = z.object({
       ({
         enabled: true,
         mailboxes: ['INBOX'],
-        window_days: 90,
+        window_days: 0,
         body_messages: 500,
         max_size_mb: 500,
         sync_interval: 300,
@@ -322,7 +349,7 @@ export const AppConfigFileSchema = z.object({
         cache: {
           enabled: true,
           mailboxes: ['INBOX'],
-          window_days: 90,
+          window_days: 0,
           body_messages: 500,
           max_size_mb: 500,
           sync_interval: 300,

@@ -265,3 +265,15 @@ describe('attachments settings', () => {
     ).toThrow();
   });
 });
+
+describe('cache window default', () => {
+  it('mirrors the whole mailbox by default so cached listings are complete', () => {
+    const parsed = SettingsSchema.parse({});
+
+    // A bounded window makes the mirror a slice, and a slice cannot answer
+    // "how many messages are there" — the read path then has to go live for
+    // every listing, which defeats the cache. Envelopes are ~1 KB, so a full
+    // envelope mirror of a 9k-message mailbox costs ~9 MB of a 500 MB budget.
+    expect(parsed.cache.window_days).toBe(0);
+  });
+});

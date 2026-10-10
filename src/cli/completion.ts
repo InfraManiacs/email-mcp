@@ -142,6 +142,20 @@ export const COMMANDS: CommandSpec[] = [
     ],
   },
   {
+    name: 'cache',
+    description: 'Local mail cache: status, clear, verify',
+    subcommands: [
+      { name: 'status', description: 'Show cache size, contents and freshness' },
+      { name: 'clear', description: 'Delete cached mail and attachments' },
+      { name: 'verify', description: 'Check for corruption and reclaim orphaned files' },
+    ],
+    flags: [
+      { flag: '--account', description: 'Limit clear to one account' },
+      { flag: '--json', description: 'Machine-readable output' },
+      { flag: '--yes', description: 'Skip the confirmation prompt' },
+    ],
+  },
+  {
     name: 'notify',
     description: 'Desktop notification diagnostics',
     subcommands: [

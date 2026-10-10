@@ -40,6 +40,7 @@ function createMockClient(options: { capabilities?: string[] } = {}) {
     mailboxOpen: vi.fn(),
     search: vi.fn().mockResolvedValue([]),
     fetch: vi.fn().mockImplementation(() => (async function* none() {})()),
+    fetchOne: vi.fn().mockResolvedValue(null),
     status: vi.fn().mockResolvedValue({}),
     _release: release,
   };
@@ -284,6 +285,49 @@ describe('SyncEngine', () => {
     });
   });
 
+  describe('baseline flag sweep', () => {
+    it('picks up a flag change made by another client on a server without CONDSTORE', async () => {
+      engine = build();
+      client.fetch.mockImplementation(messagesFrom({ uid: 1, flags: new Set(['\\Seen']) }));
+      client.search.mockResolvedValue([1]);
+      client.mailbox.exists = 1;
+      await engine.syncMailbox('work', 'INBOX');
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.flags).toEqual(['\\Seen']);
+
+      // Another client flags uid 1. No modseq exists to reveal it; only the
+      // RFC 4549-style FLAGS sweep below the watermark can.
+      client.fetch.mockImplementation((_range: string, query: Record<string, unknown>) =>
+        (async function* gen() {
+          if (query.envelope) return; // new-mail fetch: nothing above watermark
+          yield { uid: 1, flags: new Set(['\\Seen', '\\Flagged']) };
+        })(),
+      );
+      await engine.syncMailbox('work', 'INBOX');
+
+      const msg = store.getMessage('work', 'INBOX', 1, '100');
+      expect(msg?.flags).toEqual(['\\Seen', '\\Flagged']);
+      expect(msg?.flagged).toBe(true);
+    });
+
+    it('sweeps only from the lowest mirrored UID upwards', async () => {
+      engine = build();
+      client.fetch.mockImplementation(messagesFrom({ uid: 40 }, { uid: 41 }));
+      client.search.mockResolvedValue([40, 41]);
+      client.mailbox.exists = 2;
+      await engine.syncMailbox('work', 'INBOX');
+
+      client.fetch.mockClear();
+      client.fetch.mockImplementation(messagesFrom());
+      await engine.syncMailbox('work', 'INBOX');
+
+      // Second call is the sweep; it must not refetch below the mirror.
+      const sweepCall = client.fetch.mock.calls.find(
+        (call) => !(call[1] as Record<string, unknown>).envelope,
+      );
+      expect(sweepCall?.[0]).toBe('40:*');
+    });
+  });
+
   // -------------------------------------------------------------------------
   // CONDSTORE tier
   // -------------------------------------------------------------------------
@@ -382,6 +426,160 @@ describe('SyncEngine', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Fetched field mapping
+  // -------------------------------------------------------------------------
+
+  describe('fetched field mapping', () => {
+    it('parses the References header chain into the mirror', async () => {
+      engine = build();
+      client.fetch.mockImplementation(() =>
+        (async function* gen() {
+          yield {
+            uid: 1,
+            envelope: { subject: 'Re: hi', date: new Date('2026-08-01') },
+            flags: new Set(['\\Seen']),
+            internalDate: new Date('2026-08-01'),
+            headers: Buffer.from(
+              'References: <a@example.com>\r\n <b@example.com>\r\nSubject: x\r\n',
+            ),
+          };
+        })(),
+      );
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.references).toEqual([
+        '<a@example.com>',
+        '<b@example.com>',
+      ]);
+    });
+
+    it('stores the stable email id when the server provides one', async () => {
+      engine = build();
+      client.fetch.mockImplementation(() =>
+        (async function* gen() {
+          yield {
+            uid: 1,
+            envelope: { subject: 'hi', date: new Date('2026-08-01') },
+            flags: new Set<string>(),
+            internalDate: new Date('2026-08-01'),
+            emailId: 'em-424242',
+          };
+        })(),
+      );
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(store.getMessage('work', 'INBOX', 1, '100')?.emailId).toBe('em-424242');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Initial sync window
+  // -------------------------------------------------------------------------
+
+  describe('initial sync window', () => {
+    it('limits the first sync to the configured window', async () => {
+      client = createMockClient();
+      // The window probe resolves UIDs within the date window; the deletion
+      // reconcile afterwards sees the same mailbox.
+      client.search.mockImplementation((criteria: Record<string, unknown>) =>
+        Promise.resolve(criteria.since ? [7, 9] : [7, 9]),
+      );
+      client.fetch.mockImplementation(messagesFrom({ uid: 7 }, { uid: 9 }));
+      client.mailbox.exists = 2;
+      engine = new SyncEngine(createConnections(client), store, { windowDays: 30 });
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      const [range] = client.fetch.mock.calls[0];
+      expect(range).toBe('7:*');
+    });
+
+    it('stores nothing when no message falls inside the window', async () => {
+      client = createMockClient();
+      client.search.mockImplementation((criteria: Record<string, unknown>) =>
+        Promise.resolve(criteria.since ? [] : []),
+      );
+      client.mailbox.exists = 0;
+      engine = new SyncEngine(createConnections(client), store, { windowDays: 30 });
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(client.fetch).not.toHaveBeenCalled();
+      expect(store.countMessages('work', 'INBOX')).toBe(0);
+      // The watermark is still recorded so the next sync is incremental.
+      expect(store.getMailboxState('work', 'INBOX')?.uidValidity).toBe('100');
+    });
+
+    it('fetches the whole mailbox on first sync when no window is configured', async () => {
+      engine = build();
+      client.fetch.mockImplementation(messagesFrom({ uid: 1 }));
+      client.search.mockResolvedValue([1]);
+
+      await engine.syncMailbox('work', 'INBOX');
+
+      const [range] = client.fetch.mock.calls[0];
+      expect(range).toBe('1:*');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Dirty tracking
+  // -------------------------------------------------------------------------
+
+  describe('dirty tracking', () => {
+    it('reports a mailbox dirty after a local change event', () => {
+      engine = build();
+      engine.start();
+
+      eventBus.emit('email:changed', { account: 'work', mailbox: 'INBOX' });
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(true);
+      expect(engine.isDirty('work', 'Archive')).toBe(false);
+    });
+
+    it('clears the dirty mark once a sync completes successfully', async () => {
+      engine = build();
+      engine.start();
+      client.search.mockResolvedValue([]);
+      client.mailbox.exists = 0;
+
+      eventBus.emit('email:changed', { account: 'work', mailbox: 'INBOX' });
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(false);
+    });
+
+    it('keeps the dirty mark when the sync fails', async () => {
+      engine = build();
+      engine.start();
+      client.getMailboxLock.mockRejectedValue(new Error('ECONNRESET'));
+
+      engine.markDirty('work', 'INBOX');
+      await engine.syncMailbox('work', 'INBOX');
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(true);
+    });
+
+    it('marks dirty on watcher events too', () => {
+      engine = build();
+      engine.start();
+
+      eventBus.emit('email:flags', {
+        account: 'work',
+        mailbox: 'INBOX',
+        seq: 1,
+        flags: ['\\Seen'],
+      });
+
+      expect(engine.isDirty('work', 'INBOX')).toBe(true);
+    });
+  });
+
   describe('resilience', () => {
     it('leaves existing rows in place when a sync fails', async () => {
       engine = build();
@@ -417,5 +615,174 @@ describe('SyncEngine', () => {
 
       expect(client._release).toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Body backfill
+// ---------------------------------------------------------------------------
+
+describe('body backfill', () => {
+  let store: CacheStore;
+  let client: ReturnType<typeof createMockClient>;
+  let engine: SyncEngine;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    engine?.stop();
+    store.close();
+    eventBus.removeAllListeners();
+  });
+
+  function download(text: string) {
+    return {
+      content: (async function* gen() {
+        yield Buffer.from(text, 'utf-8');
+      })(),
+    };
+  }
+
+  async function seedSynced(bodyStructure: unknown): Promise<void> {
+    client = createMockClient();
+    client.fetch.mockImplementation(messagesFrom({ uid: 1, bodyStructure }));
+    client.search.mockResolvedValue([1]);
+    client.mailbox.exists = 1;
+    engine = new SyncEngine(createConnections(client), store, { bodyMessages: 100 });
+    await engine.syncMailbox('work', 'INBOX');
+  }
+
+  it('downloads missing bodies into the mirror and feeds the search index', async () => {
+    await seedSynced({ type: 'text/plain', size: 30 });
+    (client as unknown as { download: ReturnType<typeof vi.fn> }).download = vi
+      .fn()
+      .mockResolvedValue(download('Der Bericht ist fertig.'));
+
+    const stored = await engine.backfillBodies('work', 'INBOX');
+
+    expect(stored).toBe(1);
+    const msg = store.getMessage('work', 'INBOX', 1, '100');
+    expect(msg?.bodyText).toBe('Der Bericht ist fertig.');
+    expect(msg?.bodySubtype).toBe('plain');
+    expect(msg?.preview).toContain('Der Bericht');
+    expect(store.searchMessages('work', 'INBOX', '100', 'Bericht').map((m) => m.uid)).toEqual([1]);
+  });
+
+  it('marks a message attempted when it has no text part, instead of retrying forever', async () => {
+    await seedSynced({
+      type: 'application/pdf',
+      disposition: 'attachment',
+      dispositionParameters: { filename: 'x.pdf' },
+    });
+    (client as unknown as { download: ReturnType<typeof vi.fn> }).download = vi.fn();
+
+    const stored = await engine.backfillBodies('work', 'INBOX');
+
+    expect(stored).toBe(0);
+    expect(store.listMissingBodies('work', 'INBOX', '100', 10)).toEqual([]);
+  });
+
+  it('respects the per-mailbox body budget', async () => {
+    client = createMockClient();
+    client.fetch.mockImplementation(messagesFrom({ uid: 1 }, { uid: 2 }, { uid: 3 }));
+    client.search.mockResolvedValue([1, 2, 3]);
+    client.mailbox.exists = 3;
+    engine = new SyncEngine(createConnections(client), store, { bodyMessages: 1 });
+    await engine.syncMailbox('work', 'INBOX');
+    (client as unknown as { download: ReturnType<typeof vi.fn> }).download = vi
+      .fn()
+      .mockResolvedValue(download('body'));
+
+    const stored = await engine.backfillBodies('work', 'INBOX');
+
+    expect(stored).toBe(1);
+  });
+
+  it('does nothing when the mailbox was never synced', async () => {
+    client = createMockClient();
+    engine = new SyncEngine(createConnections(client), store, { bodyMessages: 100 });
+
+    expect(await engine.backfillBodies('work', 'Archive')).toBe(0);
+  });
+});
+
+describe('review fixes: sync engine', () => {
+  let store: CacheStore;
+  let client: ReturnType<typeof createMockClient>;
+  let engine: SyncEngine;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    engine?.stop();
+    store.close();
+    eventBus.removeAllListeners();
+  });
+
+  it('sweeps flags on a mailbox far larger than the argument-spread limit', async () => {
+    client = createMockClient();
+    const many = Array.from({ length: 150_000 }, (_, i) => i + 1);
+    client.fetch.mockImplementation(() => (async function* none() {})());
+    client.search.mockResolvedValue(many);
+    client.mailbox.exists = many.length;
+    engine = new SyncEngine(createConnections(client), store);
+    // Seed enough rows that the sweep has to compute a lower bound over them.
+    store.putMessages(
+      many.slice(0, 130_000).map((uid) => ({
+        account: 'work',
+        mailbox: 'INBOX',
+        uid,
+        uidValidity: '100',
+        envelope: {},
+        flags: [],
+        internalDate: 1_000 + uid,
+        hasAttachments: false,
+      })),
+    );
+    store.putMailboxState({
+      account: 'work',
+      mailbox: 'INBOX',
+      uidValidity: '100',
+      uidNext: 130_001,
+      syncTier: 'baseline',
+      lastSyncedAt: Date.now(),
+    });
+
+    const result = await engine.syncMailbox('work', 'INBOX');
+
+    // Spreading 130k UIDs into Math.min throws RangeError, which runSync
+    // swallows — leaving a large mailbox permanently unable to sync.
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+  }, 60_000);
+});
+
+describe('composite keys cannot collide', () => {
+  let store: CacheStore;
+  let engine: SyncEngine;
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+  });
+
+  afterEach(() => {
+    engine?.stop();
+    store.close();
+    eventBus.removeAllListeners();
+  });
+
+  it('keeps dirty state separate for names that differ only in where a space falls', () => {
+    engine = new SyncEngine(createConnections(createMockClient()), store);
+
+    // Mailbox paths routinely contain spaces ("Deleted Items"), so a
+    // space-joined key makes ("a", "b c") and ("a b", "c") the same entry.
+    engine.markDirty('a', 'b c');
+
+    expect(engine.isDirty('a', 'b c')).toBe(true);
+    expect(engine.isDirty('a b', 'c')).toBe(false);
   });
 });

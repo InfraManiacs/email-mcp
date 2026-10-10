@@ -8,10 +8,12 @@
 
 import type { McpServer, Server } from '@modelcontextprotocol/server';
 
+import BlobStore from './cache/blob-store.js';
+import { collectOrphans, enforceBudget } from './cache/maintenance.js';
 import CacheStore from './cache/store.js';
 import SyncEngine from './cache/sync-engine.js';
 import { loadConfig } from './config/loader.js';
-import { CACHE_DB } from './config/xdg.js';
+import { CACHE_BLOBS_DIR, CACHE_DB } from './config/xdg.js';
 import ConnectionManager from './connections/manager.js';
 import { mcpLog } from './logging.js';
 import registerAllPrompts from './prompts/register.js';
@@ -24,6 +26,7 @@ import DialogService from './services/dialog.service.js';
 import HooksService from './services/hooks.service.js';
 import ImapService from './services/imap.service.js';
 import LocalCalendarService from './services/local-calendar.service.js';
+import MailReadService from './services/mail-read.service.js';
 import OAuthService from './services/oauth.service.js';
 import RemindersService from './services/reminders.service.js';
 import SchedulerService from './services/scheduler.service.js';
@@ -39,6 +42,8 @@ export interface AppServices {
   config: AppConfig;
   connections: ConnectionManager;
   imapService: ImapService;
+  /** Read-model facade — every read tool goes through this, never ImapService. */
+  mailReadService: MailReadService;
   smtpService: SmtpService;
   templateService: TemplateService;
   calendarService: CalendarService;
@@ -53,6 +58,7 @@ export interface AppServices {
   /** Absent when the local mirror is disabled in config. */
   cacheStore?: CacheStore;
   syncEngine?: SyncEngine;
+  blobStore?: BlobStore;
 }
 
 /** Construct the full service graph from persisted configuration. */
@@ -63,6 +69,38 @@ export async function buildServices(): Promise<AppServices> {
   const connections = new ConnectionManager(config.accounts, oauthService);
   const rateLimiter = new RateLimiter(config.settings.rateLimit);
   const imapService = new ImapService(connections);
+
+  // The mirror is optional and must never block startup: if SQLite cannot be
+  // opened (read-only volume, corrupt file, unwritable XDG dir) the server
+  // still serves every tool live.
+  let cacheStore: CacheStore | undefined;
+  let syncEngine: SyncEngine | undefined;
+  let blobStore: BlobStore | undefined;
+  if (config.settings.cache.enabled) {
+    try {
+      cacheStore = new CacheStore(CACHE_DB);
+      syncEngine = new SyncEngine(connections, cacheStore, {
+        windowDays: config.settings.cache.windowDays,
+        bodyMessages: config.settings.cache.bodyMessages,
+        maxSizeMb: config.settings.cache.maxSizeMb,
+      });
+      imapService.setCacheStore(cacheStore);
+      blobStore = new BlobStore(CACHE_BLOBS_DIR);
+    } catch (err) {
+      cacheStore = undefined;
+      syncEngine = undefined;
+      blobStore = undefined;
+      await mcpLog(
+        'warning',
+        'cache',
+        `Local mirror disabled — could not open ${CACHE_DB}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  const mailReadService = new MailReadService(imapService, cacheStore, syncEngine, {}, blobStore);
   const smtpService = new SmtpService(connections, rateLimiter, imapService);
   const templateService = new TemplateService();
   const calendarService = new CalendarService();
@@ -85,33 +123,11 @@ export async function buildServices(): Promise<AppServices> {
     dialogService,
   );
 
-  // The mirror is optional and must never block startup: if SQLite cannot be
-  // opened (read-only volume, corrupt file, unwritable XDG dir) the server
-  // still serves every tool live.
-  let cacheStore: CacheStore | undefined;
-  let syncEngine: SyncEngine | undefined;
-  if (config.settings.cache.enabled) {
-    try {
-      cacheStore = new CacheStore(CACHE_DB);
-      syncEngine = new SyncEngine(connections, cacheStore);
-      imapService.setCacheStore(cacheStore);
-    } catch (err) {
-      cacheStore = undefined;
-      syncEngine = undefined;
-      await mcpLog(
-        'warning',
-        'cache',
-        `Local mirror disabled — could not open ${CACHE_DB}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }
-
   return {
     config,
     connections,
     imapService,
+    mailReadService,
     smtpService,
     templateService,
     calendarService,
@@ -125,6 +141,7 @@ export async function buildServices(): Promise<AppServices> {
     verificationCatcher,
     cacheStore,
     syncEngine,
+    blobStore,
   };
 }
 
@@ -137,29 +154,8 @@ export async function buildServices(): Promise<AppServices> {
 export function buildServer(services: AppServices): McpServer {
   const server = createServer();
 
-  registerAllTools(
-    server,
-    services.connections,
-    services.imapService,
-    services.smtpService,
-    services.config,
-    services.templateService,
-    services.calendarService,
-    services.localCalendarService,
-    services.remindersService,
-    services.schedulerService,
-    services.watcherService,
-    services.hooksService,
-    services.clipboardService,
-    services.verificationCatcher,
-  );
-  registerAllResources(
-    server,
-    services.connections,
-    services.imapService,
-    services.templateService,
-    services.schedulerService,
-  );
+  registerAllTools(server, services);
+  registerAllResources(server, services);
   registerAllPrompts(server);
 
   return server;
@@ -188,6 +184,8 @@ export function startBackgroundServices(
     schedulerService,
     imapService,
     syncEngine,
+    cacheStore,
+    blobStore,
     verificationCatcher,
     config,
   } = services;
@@ -235,14 +233,40 @@ export function startBackgroundServices(
       // syncMailbox never throws and never blocks a tool call, so this can
       // stay fire-and-forget.
       if (syncEngine) {
-        const { mailboxes, syncInterval } = config.settings.cache;
+        const { mailboxes, syncInterval, maxSizeMb, windowDays } = config.settings.cache;
+        // Orphan reconciliation is cheap but not free (it walks the blob
+        // directory), so it rides every twelfth cycle rather than each one.
+        const GC_EVERY_CYCLES = 12;
+        let cycle = 0;
+
         const reconcile = async (): Promise<void> => {
-          const work = services.connections
-            .getAccountNames()
-            .flatMap((account) =>
-              mailboxes.map((mailbox) => syncEngine.syncMailbox(account, mailbox)),
-            );
+          const work = services.connections.getAccountNames().flatMap((account) =>
+            mailboxes.map(async (mailbox) => {
+              await syncEngine.syncMailbox(account, mailbox);
+              // Body backfill rides the same cycle; neither call ever throws.
+              await syncEngine.backfillBodies(account, mailbox);
+            }),
+          );
           await Promise.allSettled(work);
+
+          // Maintenance after the sync burst: enforce the byte budget, hand
+          // freed pages back, and truncate the WAL while things are idle.
+          if (cacheStore && blobStore) {
+            cycle += 1;
+            try {
+              await enforceBudget(cacheStore, blobStore, maxSizeMb, { windowDays });
+              if (cycle % GC_EVERY_CYCLES === 1) {
+                await collectOrphans(cacheStore, blobStore);
+              }
+              cacheStore.checkpoint();
+            } catch (err) {
+              await mcpLog(
+                'warning',
+                'cache',
+                `Cache maintenance failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
         };
 
         await reconcile();
