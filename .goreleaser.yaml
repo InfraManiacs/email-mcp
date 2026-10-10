@@ -137,10 +137,38 @@ homebrew_casks:
 
     hooks:
       post:
+        # The Bun binaries are unsigned, so macOS quarantines the staged file
+        # and Gatekeeper refuses to run it. Guard on the OS, not on probing for
+        # xattr(1): the cask DSL's system_command is `run!`, which raises on a
+        # non-zero exit, so the old `xattr -h` probe did not degrade on Linux —
+        # it exited 127 and failed the whole install on the platform this cask
+        # advertises support for. `-dr` is a no-op (exit 0) when the attribute
+        # is absent, so it needs no probe of its own.
         install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/email-mcp"]
-          end
+          next unless OS.mac?
+
+          system_command "/usr/bin/xattr",
+                         args: ["-dr", "com.apple.quarantine", "#{staged_path}/email-mcp"]
+
+    # `brew uninstall --zap` only. Everything here is user data the tool wrote
+    # itself: the config (which may hold an app password), the scheduler queue
+    # and daemon/dedupe state, the local mirror, and saved calendar
+    # attachments — plus the two launch agents `server install` and the
+    # scheduler can register. Trashed rather than deleted so a mistaken zap
+    # stays recoverable.
+    # Both lists are alphabetical because `brew style` enforces it
+    # (Cask/ArrayAlphabetization) and the generated file is what the tap ships.
+    zap:
+      launchctl:
+        - com.email-mcp.scheduler
+        - com.email-mcp.server
+      trash:
+        - ~/.cache/email-mcp
+        - ~/.config/email-mcp
+        - ~/.local/share/email-mcp
+        - ~/.local/state/email-mcp
+        - ~/Library/LaunchAgents/com.email-mcp.scheduler.plist
+        - ~/Library/LaunchAgents/com.email-mcp.server.plist
 
     caveats: |
       email-mcp reads its configuration from ~/.config/email-mcp/.
