@@ -70,20 +70,6 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
   // Extract non-system flags as labels (IMAP keywords)
   const labels = [...flags].filter((f) => !f.startsWith('\\'));
 
-  // Extract preview from source buffer
-  let preview: string | undefined;
-  if (msg.source && Buffer.isBuffer(msg.source)) {
-    const rawText = msg.source.toString('utf-8');
-    // Try to extract body text after the header blank line
-    const bodyStart = rawText.indexOf('\r\n\r\n');
-    if (bodyStart >= 0) {
-      preview = rawText
-        .slice(bodyStart + 4, bodyStart + 204)
-        .replace(/\s+/g, ' ')
-        .trim();
-    }
-  }
-
   // Every fetch in this service passes `{ uid: true }`, so a missing UID means
   // the server broke protocol. Falling back to `msg.seq` would mint an id that
   // looks like a UID but addresses a different message on every subsequent
@@ -107,7 +93,9 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
     answered: flags.has('\\Answered'),
     hasAttachments: hasAttachments(msg.bodyStructure),
     labels,
-    preview,
+    // `preview` stays optional in EmailMeta for a future RFC 8970 PREVIEW
+    // implementation; the old 256-byte source window never reached past real
+    // header blocks, so it was always undefined anyway.
   };
 }
 
@@ -455,7 +443,6 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          source: { start: 0, maxLength: 256 },
         },
         { uid: true },
       )) {
@@ -710,7 +697,6 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          source: { start: 0, maxLength: 256 },
         },
         { uid: true },
       )) {

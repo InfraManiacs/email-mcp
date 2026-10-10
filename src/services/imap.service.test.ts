@@ -149,6 +149,21 @@ describe('ImapService', () => {
       expect(result.items[0].id).toBe('77');
     });
 
+    it('does not fetch message source for listings', async () => {
+      // The 256-byte source window never reached past real header blocks, so
+      // the preview it fed was always undefined — pure bandwidth waste on
+      // every list and search.
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({ uid: 77, envelope: { subject: 'Hi' }, flags: [] }),
+      );
+
+      await service.listEmails('test', { mailbox: 'INBOX' });
+
+      const [, query] = client.fetch.mock.calls[0];
+      expect(query.source).toBeUndefined();
+    });
+
     it('rejects a message with no UID rather than falling back to its sequence number', async () => {
       client.search.mockResolvedValue([5]);
       // A server that answers a UID FETCH without a UID is violating the
