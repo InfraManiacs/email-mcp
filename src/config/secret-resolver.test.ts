@@ -80,3 +80,33 @@ describe('resolveSecret', () => {
     expect(seen.flat()).not.toContain('top-secret');
   });
 });
+
+describe('resolveSecret cross-platform keychain dispatch', () => {
+  it('uses the macOS `security` command on darwin', async () => {
+    let seen: { cmd: string; args: string[] } | undefined;
+    const runner: SecretRunner = async (cmd, args) => {
+      seen = { cmd, args };
+      return 'mac-secret';
+    };
+    const out = await resolveSecret('keychain:acct', { runner, platform: 'darwin' });
+    expect(out).toBe('mac-secret');
+    expect(seen?.cmd).toBe('security');
+    expect(seen?.args).toEqual(['find-generic-password', '-s', 'email-mcp', '-a', 'acct', '-w']);
+  });
+
+  it('uses `secret-tool` (libsecret) on linux', async () => {
+    let seen: { cmd: string; args: string[] } | undefined;
+    const runner: SecretRunner = async (cmd, args) => {
+      seen = { cmd, args };
+      return 'linux-secret\n';
+    };
+    const out = await resolveSecret('keychain:myservice/acct', { runner, platform: 'linux' });
+    expect(out).toBe('linux-secret');
+    expect(seen?.cmd).toBe('secret-tool');
+    expect(seen?.args).toEqual(['lookup', 'service', 'myservice', 'account', 'acct']);
+  });
+
+  it('refuses a keychain ref on an unsupported platform, pointing at env:', async () => {
+    await expect(resolveSecret('keychain:acct', { platform: 'win32' })).rejects.toThrow(/env:/);
+  });
+});

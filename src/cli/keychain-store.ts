@@ -43,3 +43,57 @@ export function runKeychainStore(account: string, service = KEYCHAIN_SERVICE): P
     });
   });
 }
+
+/**
+ * Store a secret non-interactively (used by `migrate-secret`, where the value
+ * comes from the existing config rather than a human).
+ *
+ *   • Linux: `secret-tool store` reads the secret from stdin — argv-clean.
+ *   • macOS: the `security` CLI has no stdin path and its interactive prompt
+ *     cannot be driven reliably, so the value goes on argv for the brief life
+ *     of the child process. This is a one-time migration that REMOVES a
+ *     permanent plaintext-at-rest copy, so it is a net improvement; new
+ *     secrets should use `set-secret`, whose prompt never touches argv.
+ */
+export function storeSecretNonInteractive(
+  account: string,
+  secret: string,
+  service = KEYCHAIN_SERVICE,
+  osPlatform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (osPlatform === 'linux') {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        'secret-tool',
+        ['store', '--label', `email-mcp ${account}`, 'service', service, 'account', account],
+        { stdio: ['pipe', 'inherit', 'inherit'] },
+      );
+      child.on('error', reject);
+      child.on('close', (code) =>
+        code === 0 ? resolve() : reject(new Error(`secret-tool exited with code ${code}`)),
+      );
+      child.stdin.write(secret);
+      child.stdin.end();
+    });
+  }
+
+  if (osPlatform === 'darwin') {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        'security',
+        ['add-generic-password', '-U', '-s', service, '-a', account, '-w', secret],
+        { stdio: 'ignore' },
+      );
+      child.on('error', reject);
+      child.on('close', (code) =>
+        code === 0 ? resolve() : reject(new Error(`security exited with code ${code}`)),
+      );
+    });
+  }
+
+  return Promise.reject(
+    new Error(
+      `Keychain storage is supported on macOS and Linux, not "${osPlatform}". Use an "env:<VAR>" reference instead.`,
+    ),
+  );
+}

@@ -28,6 +28,7 @@ import type { AccountConfig } from '../types/index.js';
 import ensureInteractive, { assertNotCancel, CancelledError } from './guard.js';
 import { KEYCHAIN_SERVICE, keychainRefFor, runKeychainStore } from './keychain-store.js';
 import { detectProvider } from './providers.js';
+import { migrateAccountSecret } from './secret-migrate.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -845,7 +846,8 @@ Subcommands:
   add               Add a new email account interactively
   edit [name]       Edit an existing account
   delete [name]     Remove an account
-  set-secret <name> Store the account's secret in the macOS Keychain (no plaintext)
+  set-secret <name>     Store a NEW secret in the OS keychain (prompts; no plaintext)
+  migrate-secret <name> Move an existing plaintext password into the OS keychain
 
 Examples:
   email-mcp account list
@@ -853,6 +855,7 @@ Examples:
   email-mcp account edit personal
   email-mcp account delete work
   email-mcp account set-secret personal
+  email-mcp account migrate-secret personal
 `);
 }
 
@@ -878,6 +881,14 @@ export default async function runAccountCommand(subcommand?: string, arg?: strin
       case 'set-secret':
       case 'set-password':
         await setSecret(arg);
+        return;
+      case 'migrate-secret':
+        if (!arg) {
+          console.error('Usage: email-mcp account migrate-secret <account-name>');
+          process.exitCode = 1;
+          return;
+        }
+        await migrateAccountSecret(arg);
         return;
       default:
         printAccountUsage();

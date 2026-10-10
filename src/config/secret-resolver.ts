@@ -32,6 +32,8 @@ export type SecretRunner = (command: string, args: string[]) => Promise<string>;
 export interface ResolveOptions {
   runner?: SecretRunner;
   env?: Record<string, string | undefined>;
+  /** Override the detected platform (testing / explicit control). */
+  platform?: NodeJS.Platform;
 }
 
 /** Default runner: read a generic password from the macOS Keychain. */
@@ -83,28 +85,39 @@ export async function resolveSecret(value: string, opts: ResolveOptions = {}): P
   }
 
   if (value.startsWith(KEYCHAIN_PREFIX)) {
-    if (platform() !== 'darwin' && !opts.runner) {
+    const os = opts.platform ?? platform();
+    const { service, account } = parseKeychainRef(value);
+
+    // macOS → `security`; Linux → libsecret `secret-tool`. Both receive only
+    // the non-secret service/account identifiers; the secret returns on stdout.
+    let command: string;
+    let args: string[];
+    if (os === 'darwin') {
+      command = 'security';
+      args = ['find-generic-password', '-s', service, '-a', account, '-w'];
+    } else if (os === 'linux') {
+      command = 'secret-tool';
+      args = ['lookup', 'service', service, 'account', account];
+    } else {
       throw new Error(
-        `Keychain references require macOS (the "security" CLI). On other platforms, store the secret in an environment variable and use "env:<VAR>" instead.`,
+        `Keychain references are supported on macOS (security) and Linux (libsecret secret-tool), ` +
+          `not "${os}". Store the secret in an environment variable and use "env:<VAR>" instead.`,
       );
     }
-    const { service, account } = parseKeychainRef(value);
+
     const runner = opts.runner ?? securityRunner;
     let secret: string;
     try {
-      secret = await runner('security', [
-        'find-generic-password',
-        '-s',
-        service,
-        '-a',
-        account,
-        '-w',
-      ]);
+      secret = await runner(command, args);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const how =
+        os === 'darwin'
+          ? `email-mcp account set-secret ${account}`
+          : `secret-tool store --label="email-mcp ${account}" service ${service} account ${account}`;
       throw new Error(
-        `Could not read secret for account "${account}" from the macOS Keychain ` +
-          `(service "${service}"): ${msg}. Store it with: email-mcp account set-secret ${account}`,
+        `Could not read secret for account "${account}" from the keychain ` +
+          `(service "${service}"): ${msg}. Store it with: ${how}`,
       );
     }
     return secret.replace(/\r?\n$/, '');

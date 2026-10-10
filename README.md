@@ -566,7 +566,7 @@ indirection so credentials need not sit in the file as plaintext:
 
 | Value | Resolved from |
 |---|---|
-| `keychain:<account>` | macOS Keychain, generic-password item, service `email-mcp`, account `<account>` |
+| `keychain:<account>` | OS keychain — macOS Keychain (`security`) or Linux libsecret (`secret-tool`), service `email-mcp`, account `<account>` |
 | `keychain:<service>/<account>` | macOS Keychain with an explicit service name |
 | `env:<VAR>` | the environment variable `<VAR>` (use on Linux, or with an age/SOPS-sourced env) |
 | any other string | used literally (plaintext — backward compatible) |
@@ -577,10 +577,14 @@ The config file itself is always written `0600` (owner-only), and so is its
 **macOS Keychain (multi-account):** store each account's secret once —
 
 ```bash
-email-mcp account set-secret personal   # prompts via macOS; nothing is echoed or placed in argv
+email-mcp account set-secret personal      # store a NEW secret (prompts; nothing echoed or in argv)
+email-mcp account migrate-secret personal  # move an EXISTING plaintext password into the keychain
 ```
 
-then set `password = "keychain:personal"`. Each account is a separate Keychain
+`set-secret` prompts for the value and stores it; `migrate-secret` reads the
+account's current plaintext password from `config.toml`, stores it in the
+keychain, verifies it, then rewrites the line to `password = "keychain:personal"`.
+Either way you end up with `password = "keychain:personal"`. Each account is a separate Keychain
 item under the shared `email-mcp` service, so multiple accounts coexist.
 Secrets are read back at startup over the `security` CLI; only the service and
 account names are ever passed as arguments — the secret travels on stdout only.
