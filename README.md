@@ -492,6 +492,8 @@ Commands:
   account delete [name]     Remove an account
   setup                     Alias for 'account add'
   test                      Test connections for all or a specific account
+  open <id> [--print]       Open an email in the native mail client via its message: link
+                            (macOS; --print or other platforms print the URL instead)
   install                   Register email-mcp with MCP clients interactively
   install status            Show registration status for detected clients
   install remove            Unregister email-mcp from MCP clients
@@ -998,8 +1000,8 @@ harmless copy → read-back → clear round-trip).
 |------|-------------|
 | `extract_calendar` | Extract ICS/iCalendar events from an email |
 | `analyze_email_for_scheduling` | Analyze an email to detect events and reminder-worthy content |
-| `add_to_calendar` | Add an email event to the local calendar (macOS/Linux) |
-| `create_reminder` | Create a reminder in macOS Reminders.app from an email |
+| `add_to_calendar` | Add an email event to the local calendar (macOS/Linux); event notes link back to the source email |
+| `create_reminder` | Create a reminder in macOS Reminders.app from an email; reminder notes link back to the source email |
 | `list_calendars` | List all available local calendars |
 | `check_calendar_permissions` | Check whether the local calendar is accessible |
 
