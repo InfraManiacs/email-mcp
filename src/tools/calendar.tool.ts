@@ -40,6 +40,7 @@ export default function registerCalendarTools(
   calendarService: CalendarService,
   localCalendarService: LocalCalendarService,
   remindersService: RemindersService,
+  opts: { autoDownloadAttachments: boolean } = { autoDownloadAttachments: true },
 ): void {
   // ---------------------------------------------------------------------------
   // extract_calendar
@@ -132,8 +133,10 @@ export default function registerCalendarTools(
           .describe('Minutes before event to show an alert (default: 15)'),
         save_attachments: z
           .boolean()
-          .default(true)
-          .describe('Save non-ICS email attachments locally and link them in the event notes'),
+          .optional()
+          .describe(
+            'Save non-ICS email attachments locally and link them in the event notes (default: the [settings.attachments] auto_download setting)',
+          ),
         confirm: z
           .boolean()
           .default(true)
@@ -198,7 +201,8 @@ export default function registerCalendarTools(
         size: number;
       }[] = [];
 
-      if (saveAttachments && email.attachments.length > 0) {
+      const shouldSaveAttachments = saveAttachments ?? opts.autoDownloadAttachments;
+      if (shouldSaveAttachments && email.attachments.length > 0) {
         const destDir = join(
           CALENDAR_ATTACHMENTS_DIR,
           `${account}-${emailId}`.replace(/[^a-zA-Z0-9-_]/g, '_'),

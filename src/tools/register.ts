@@ -73,6 +73,7 @@ export default function registerAllTools(
     calendarService,
     localCalendarService,
     remindersService,
+    { autoDownloadAttachments: config.settings.attachments.autoDownload },
   );
   registerAnalyticsTools(server, imapService);
   registerHealthTools(server, connections, imapService);

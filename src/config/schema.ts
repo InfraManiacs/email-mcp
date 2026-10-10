@@ -203,6 +203,16 @@ export const SendConfigSchema = z.object({
   max_attachment_mb: z.number().int().min(1).default(25),
 });
 
+/**
+ * Inbound attachment handling. `auto_download` controls whether attachments
+ * are saved locally as a side effect of other actions — calendar events
+ * created from emails (tools and watcher hooks) link saved copies in their
+ * notes. Explicit `download_attachment` calls are never affected.
+ */
+export const AttachmentsConfigSchema = z.object({
+  auto_download: z.boolean().default(true),
+});
+
 export const SettingsSchema = z.object({
   rate_limit: z.number().int().min(1).default(10),
   read_only: z.boolean().default(false),
@@ -234,6 +244,9 @@ export const SettingsSchema = z.object({
   ),
   send: SendConfigSchema.default(
     () => ({ max_attachment_mb: 25 }) as z.infer<typeof SendConfigSchema>,
+  ),
+  attachments: AttachmentsConfigSchema.default(
+    () => ({ auto_download: true }) as z.infer<typeof AttachmentsConfigSchema>,
   ),
   cache: CacheConfigSchema.default(
     () =>
@@ -305,6 +318,7 @@ export const AppConfigFileSchema = z.object({
           sender_denylist: [],
         },
         send: { max_attachment_mb: 25 },
+        attachments: { auto_download: true },
         cache: {
           enabled: true,
           mailboxes: ['INBOX'],

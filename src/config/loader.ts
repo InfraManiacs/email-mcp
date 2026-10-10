@@ -87,6 +87,9 @@ function loadFromEnv(): RawAppConfig | null {
       send: {
         max_attachment_mb: parseInt(process.env.MCP_EMAIL_SEND_MAX_ATTACHMENT_MB ?? '25', 10),
       },
+      attachments: {
+        auto_download: process.env.MCP_EMAIL_ATTACHMENTS_AUTO_DOWNLOAD !== 'false',
+      },
       cache: {
         // Opt-out rather than opt-in: the mirror is a pure win for reads and
         // degrades to live behaviour if anything goes wrong.
@@ -287,6 +290,9 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       },
       send: {
         maxAttachmentMb: raw.settings.send.max_attachment_mb,
+      },
+      attachments: {
+        autoDownload: raw.settings.attachments.auto_download,
       },
       cache: {
         enabled: raw.settings.cache.enabled,
@@ -501,6 +507,13 @@ read_only = false  # set to true to disable all write operations
 # individual [[accounts]] entry to override both for that account.
 # [settings.send]
 # max_attachment_mb = 25
+
+# Inbound attachment handling. auto_download controls whether attachments are
+# saved locally as a side effect of calendar events created from emails
+# (add_to_calendar and watcher hooks). Explicit download_attachment calls are
+# never affected.
+# [settings.attachments]
+# auto_download = true
 
 # [settings.watcher]
 # enabled = false        # enable IMAP IDLE real-time monitoring

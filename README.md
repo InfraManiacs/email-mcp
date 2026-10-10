@@ -540,6 +540,9 @@ rate_limit = 10  # max emails per minute per account
 [settings.send]
 max_attachment_mb = 25  # global cap on the base64-encoded attachment total
 
+[settings.attachments]
+auto_download = true  # save attachments locally when calendar events are created from emails
+
 [[accounts]]
 name = "personal"
 email = "you@gmail.com"

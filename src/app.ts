@@ -70,7 +70,9 @@ export async function buildServices(): Promise<AppServices> {
   const remindersService = new RemindersService();
   const schedulerService = new SchedulerService(smtpService, imapService);
   const watcherService = new WatcherService(config.settings.watcher, config.accounts);
-  const hooksService = new HooksService(config.settings.hooks, imapService);
+  const hooksService = new HooksService(config.settings.hooks, imapService, {
+    autoDownloadAttachments: config.settings.attachments.autoDownload,
+  });
   const clipboardService = new ClipboardService();
   const dialogService = new DialogService();
   // Shares the hooks notifier so desktop notifications from both features

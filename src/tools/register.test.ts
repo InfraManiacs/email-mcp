@@ -42,6 +42,7 @@ function createConfig(readOnly: boolean): AppConfig {
   return {
     settings: {
       send: { maxAttachmentMb: 25 },
+      attachments: { autoDownload: true },
       rateLimit: 10,
       readOnly,
       server: { host: '127.0.0.1', port: 8080, path: '/mcp', token: '', allowedHosts: [] },

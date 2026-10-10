@@ -240,6 +240,21 @@ describe('send settings', () => {
       }),
     ).toThrow();
   });
+});
+
+describe('attachments settings', () => {
+  it('defaults auto_download to true when settings.attachments is absent', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.settings.attachments).toEqual({ auto_download: true });
+  });
+
+  it('accepts disabling auto_download', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount()],
+      settings: { attachments: { auto_download: false } },
+    });
+    expect(result.settings.attachments.auto_download).toBe(false);
+  });
 
   it('rejects a non-positive max_attachment_mb', () => {
     expect(() =>

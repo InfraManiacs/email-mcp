@@ -171,6 +171,11 @@ export interface SendConfig {
   maxAttachmentMb: number;
 }
 
+/** Inbound attachment handling — see AttachmentsConfigSchema for scope. */
+export interface AttachmentsConfig {
+  autoDownload: boolean;
+}
+
 /** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
 export interface CacheConfig {
   enabled: boolean;
@@ -188,6 +193,7 @@ export interface AppConfig {
     server: ServerConfig;
     verification: VerificationConfig;
     send: SendConfig;
+    attachments: AttachmentsConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;
