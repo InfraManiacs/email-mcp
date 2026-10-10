@@ -164,6 +164,11 @@ export interface VerificationConfig {
   senderDenylist: string[];
 }
 
+/** Outbound send settings — see SendConfigSchema for the cap rationale. */
+export interface SendConfig {
+  maxAttachmentMb: number;
+}
+
 /** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
 export interface CacheConfig {
   enabled: boolean;
@@ -180,6 +185,7 @@ export interface AppConfig {
     readOnly: boolean;
     server: ServerConfig;
     verification: VerificationConfig;
+    send: SendConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;

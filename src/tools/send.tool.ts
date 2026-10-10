@@ -7,9 +7,21 @@ import { z } from 'zod';
 import audit from '../safety/audit.js';
 import { validateInputLength } from '../safety/validation.js';
 
+import { formatSize, prepareAttachments } from '../services/attachments.js';
 import type SmtpService from '../services/smtp.service.js';
 
-export default function registerSendTools(server: McpServer, smtpService: SmtpService): void {
+/** One result line per attachment, so the caller sees exactly what went out. */
+function attachmentReport(prepared: Awaited<ReturnType<typeof prepareAttachments>> | null): string {
+  if (!prepared || prepared.attachments.length === 0) return '';
+  const lines = prepared.attachments.map((a) => `  - ${a.filename} (${formatSize(a.size)})`);
+  return `\n📎 Attachments (${prepared.attachments.length}, ${formatSize(prepared.totalBytes)} raw ≈ ${formatSize(prepared.totalEncodedBytes)} encoded):\n${lines.join('\n')}`;
+}
+
+export default function registerSendTools(
+  server: McpServer,
+  smtpService: SmtpService,
+  maxAttachmentMb: number,
+): void {
   // ---------------------------------------------------------------------------
   // send_email
   // ---------------------------------------------------------------------------
@@ -26,6 +38,12 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
         cc: z.array(z.string().email()).optional().describe('CC recipients'),
         bcc: z.array(z.string().email()).optional().describe('BCC recipients'),
         html: z.boolean().default(false).describe('Send as HTML (default: plain text)'),
+        attachments: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the configured limit (currently ${maxAttachmentMb} MB).`,
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -33,7 +51,13 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
       try {
         validateInputLength(params.subject, 998, 'Subject');
         validateInputLength(params.body, 5_000_000, 'Body');
-        const result = await smtpService.sendEmail(params.account, params);
+        const prepared = params.attachments?.length
+          ? await prepareAttachments(params.attachments, maxAttachmentMb)
+          : null;
+        const result = await smtpService.sendEmail(params.account, {
+          ...params,
+          attachments: prepared?.attachments,
+        });
         await audit.log(
           'send_email',
           params.account,
@@ -44,7 +68,7 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
           content: [
             {
               type: 'text' as const,
-              text: `✅ Email sent successfully!\nTo: ${params.to.join(', ')}\nSubject: ${params.subject}\nMessage-ID: ${result.messageId}`,
+              text: `✅ Email sent successfully!\nTo: ${params.to.join(', ')}\nSubject: ${params.subject}\nMessage-ID: ${result.messageId}${attachmentReport(prepared)}`,
             },
           ],
         };
@@ -86,12 +110,24 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
         body: z.string().describe('Reply body content'),
         replyAll: z.boolean().default(false).describe('Reply to all recipients'),
         html: z.boolean().default(false).describe('Send as HTML'),
+        attachments: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `Local file paths to attach. Sizes are checked before sending; the base64-encoded total must stay under the configured limit (currently ${maxAttachmentMb} MB).`,
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async (params) => {
       try {
-        const result = await smtpService.replyToEmail(params.account, params);
+        const prepared = params.attachments?.length
+          ? await prepareAttachments(params.attachments, maxAttachmentMb)
+          : null;
+        const result = await smtpService.replyToEmail(params.account, {
+          ...params,
+          attachments: prepared?.attachments,
+        });
         await audit.log(
           'reply_email',
           params.account,
@@ -102,7 +138,7 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
           content: [
             {
               type: 'text' as const,
-              text: `✅ Reply sent successfully!\nMessage-ID: ${result.messageId}`,
+              text: `✅ Reply sent successfully!\nMessage-ID: ${result.messageId}${attachmentReport(prepared)}`,
             },
           ],
         };
@@ -136,7 +172,7 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
     {
       title: 'Forward email',
       description:
-        'Forward an email to new recipients with optional additional message. Original email is quoted below.',
+        'Forward an email to new recipients with optional additional message. Original email is quoted below and its attachments are re-attached unless includeAttachments is false.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID to forward (from list_emails or get_email)'),
@@ -144,6 +180,10 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
         to: z.array(z.string().email()).min(1).describe('Forward to these recipients'),
         body: z.string().optional().describe('Additional message above the forwarded content'),
         cc: z.array(z.string().email()).optional().describe('CC recipients'),
+        includeAttachments: z
+          .boolean()
+          .default(true)
+          .describe('Re-attach the original attachments (default: true)'),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -160,7 +200,7 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
           content: [
             {
               type: 'text' as const,
-              text: `✅ Email forwarded successfully!\nTo: ${params.to.join(', ')}\nMessage-ID: ${result.messageId}`,
+              text: `✅ Email forwarded successfully!\nTo: ${params.to.join(', ')}\nMessage-ID: ${result.messageId}${params.includeAttachments === false ? '\n(original attachments not included)' : ''}`,
             },
           ],
         };

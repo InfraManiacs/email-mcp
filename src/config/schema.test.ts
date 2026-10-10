@@ -206,3 +206,27 @@ describe('AppConfigFileSchema', () => {
     ).toThrow();
   });
 });
+
+describe('send settings', () => {
+  it('defaults max_attachment_mb to 25 when settings.send is absent', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.settings.send).toEqual({ max_attachment_mb: 25 });
+  });
+
+  it('accepts an explicit max_attachment_mb', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount()],
+      settings: { send: { max_attachment_mb: 10 } },
+    });
+    expect(result.settings.send.max_attachment_mb).toBe(10);
+  });
+
+  it('rejects a non-positive max_attachment_mb', () => {
+    expect(() =>
+      AppConfigFileSchema.parse({
+        accounts: [validAccount()],
+        settings: { send: { max_attachment_mb: 0 } },
+      }),
+    ).toThrow();
+  });
+});

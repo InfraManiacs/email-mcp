@@ -83,6 +83,9 @@ function loadFromEnv(): RawAppConfig | null {
           .map((s) => s.trim())
           .filter(Boolean),
       },
+      send: {
+        max_attachment_mb: parseInt(process.env.MCP_EMAIL_SEND_MAX_ATTACHMENT_MB ?? '25', 10),
+      },
       cache: {
         // Opt-out rather than opt-in: the mirror is a pure win for reads and
         // degrades to live behaviour if anything goes wrong.
@@ -280,6 +283,9 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
         senderAllowlist: raw.settings.verification.sender_allowlist,
         senderDenylist: raw.settings.verification.sender_denylist,
       },
+      send: {
+        maxAttachmentMb: raw.settings.send.max_attachment_mb,
+      },
       cache: {
         enabled: raw.settings.cache.enabled,
         mailboxes: raw.settings.cache.mailboxes,
@@ -452,6 +458,12 @@ read_only = false  # set to true to disable all write operations
 # path = "/mcp"
 # token = ""             # bearer token; empty = no auth (loopback only)
 # allowed_hosts = []     # Host-header allowlist for reverse proxies
+
+# Outbound sends. Caps the base64-encoded total of all attachments on one
+# message; oversized sends fail locally with a per-file listing instead of a
+# provider-side 552.
+# [settings.send]
+# max_attachment_mb = 25
 
 # [settings.watcher]
 # enabled = false        # enable IMAP IDLE real-time monitoring

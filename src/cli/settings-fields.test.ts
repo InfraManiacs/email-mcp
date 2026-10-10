@@ -4,6 +4,7 @@ import {
   AppConfigFileSchema,
   CacheConfigSchema,
   HooksConfigSchema,
+  SendConfigSchema,
   ServerConfigSchema,
   SettingsSchema,
   VerificationConfigSchema,
@@ -48,9 +49,14 @@ describe('SETTINGS_SECTIONS drift guards', () => {
   // Both directions: every schema key is in the catalog (minus deliberate
   // exclusions) and the catalog invents no keys the schema lacks.
   const cases: [string, Record<string, unknown>, string[]][] = [
-    ['general', SettingsSchema.shape, ['verification', 'cache', 'watcher', 'hooks', 'server']],
+    [
+      'general',
+      SettingsSchema.shape,
+      ['verification', 'cache', 'watcher', 'hooks', 'server', 'send'],
+    ],
     ['watcher', WatcherConfigSchema.shape, []],
     ['verification', VerificationConfigSchema.shape, []],
+    ['send', SendConfigSchema.shape, []],
     ['cache', CacheConfigSchema.shape, []],
     ['hooks', HooksConfigSchema.shape, ['rules', 'alerts']],
     ['alerts', AlertsConfigSchema.shape, []],
@@ -67,12 +73,13 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     expect(catalogKeys).toEqual(schemaKeys);
   });
 
-  it('exposes all seven sections in order', () => {
+  it('exposes all eight sections in order', () => {
     expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
       'general',
       'server',
       'watcher',
       'verification',
+      'send',
       'cache',
       'hooks',
       'alerts',

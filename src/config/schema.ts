@@ -187,6 +187,16 @@ export const ServerConfigSchema = z.object({
   allowed_hosts: z.array(z.string()).default(() => []),
 });
 
+/**
+ * Outbound send settings. `max_attachment_mb` caps the base64-encoded total
+ * of all attachments on one message (25 MB ~= the Gmail/common-provider
+ * ceiling) so an oversized send fails locally with a per-file listing
+ * instead of a provider-side 552.
+ */
+export const SendConfigSchema = z.object({
+  max_attachment_mb: z.number().int().min(1).default(25),
+});
+
 export const SettingsSchema = z.object({
   rate_limit: z.number().int().min(1).default(10),
   read_only: z.boolean().default(false),
@@ -215,6 +225,9 @@ export const SettingsSchema = z.object({
         sender_allowlist: [],
         sender_denylist: [],
       }) as z.infer<typeof VerificationConfigSchema>,
+  ),
+  send: SendConfigSchema.default(
+    () => ({ max_attachment_mb: 25 }) as z.infer<typeof SendConfigSchema>,
   ),
   cache: CacheConfigSchema.default(
     () =>
@@ -285,6 +298,7 @@ export const AppConfigFileSchema = z.object({
           sender_allowlist: [],
           sender_denylist: [],
         },
+        send: { max_attachment_mb: 25 },
         cache: {
           enabled: true,
           mailboxes: ['INBOX'],

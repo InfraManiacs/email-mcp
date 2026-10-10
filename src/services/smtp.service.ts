@@ -7,7 +7,11 @@
 import type { IConnectionManager } from '../connections/types.js';
 import type RateLimiter from '../safety/rate-limiter.js';
 import type { SendResult } from '../types/index.js';
+import type { PreparedAttachment } from './attachments.js';
 import type ImapService from './imap.service.js';
+
+/** Per-file ceiling when re-fetching originals for a forward. */
+const FORWARD_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 
 export default class SmtpService {
   constructor(
@@ -29,6 +33,7 @@ export default class SmtpService {
       cc?: string[];
       bcc?: string[];
       html?: boolean;
+      attachments?: PreparedAttachment[];
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -43,6 +48,9 @@ export default class SmtpService {
       bcc: options.bcc?.join(', '),
       subject: options.subject,
       ...(options.html ? { html: options.body } : { text: options.body }),
+      ...(options.attachments?.length
+        ? { attachments: options.attachments.map(({ filename, path }) => ({ filename, path })) }
+        : {}),
     });
 
     return {
@@ -63,6 +71,7 @@ export default class SmtpService {
       body: string;
       replyAll?: boolean;
       html?: boolean;
+      attachments?: PreparedAttachment[];
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -106,6 +115,9 @@ export default class SmtpService {
       inReplyTo: original.messageId,
       references: references.join(' '),
       ...(options.html ? { html: options.body } : { text: options.body }),
+      ...(options.attachments?.length
+        ? { attachments: options.attachments.map(({ filename, path }) => ({ filename, path })) }
+        : {}),
     });
 
     return {
@@ -126,12 +138,33 @@ export default class SmtpService {
       to: string[];
       body?: string;
       cc?: string[];
+      includeAttachments?: boolean;
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
 
     const account = this.connections.getAccount(accountName);
     const original = await this.imapService.getEmail(accountName, options.emailId, options.mailbox);
+
+    // Carry the original's attachments unless explicitly declined -- a forward
+    // that silently strips them misrepresents the original message.
+    const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
+    if (options.includeAttachments !== false && original.attachments?.length) {
+      for (const meta of original.attachments) {
+        const dl = await this.imapService.downloadAttachment(
+          accountName,
+          options.emailId,
+          options.mailbox ?? 'INBOX',
+          meta.filename,
+          FORWARD_ATTACHMENT_MAX_BYTES,
+        );
+        attachments.push({
+          filename: dl.filename,
+          content: Buffer.from(dl.contentBase64, 'base64'),
+          contentType: dl.mimeType,
+        });
+      }
+    }
 
     const subject = original.subject.startsWith('Fwd:')
       ? original.subject
@@ -159,6 +192,7 @@ export default class SmtpService {
       cc: options.cc?.join(', '),
       subject,
       text: fullBody,
+      ...(attachments.length ? { attachments } : {}),
     });
 
     return {

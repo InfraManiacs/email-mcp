@@ -14,6 +14,7 @@ import {
   AlertsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
+  SendConfigSchema,
   ServerConfigSchema,
   SettingsSchema,
   VerificationConfigSchema,
@@ -23,6 +24,7 @@ import {
 export type SectionId =
   | 'general'
   | 'server'
+  | 'send'
   | 'watcher'
   | 'verification'
   | 'cache'
@@ -71,6 +73,7 @@ function onOff(value: unknown): string {
 }
 
 const generalShape = SettingsSchema.shape;
+const sendShape = SendConfigSchema.shape;
 const serverShape = ServerConfigSchema.shape;
 const watcherShape = WatcherConfigSchema.shape;
 const verificationShape = VerificationConfigSchema.shape;
@@ -251,6 +254,21 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
         kind: 'string-array',
         schema: verificationShape.sender_denylist,
         emptyLabel: '(none)',
+      },
+    ],
+  },
+  {
+    id: 'send',
+    label: 'Send (outbound)',
+    resolve: (raw) => raw.settings.send as unknown as Record<string, unknown>,
+    summarize: (raw) =>
+      `attachment cap ${raw.settings.send.max_attachment_mb} MB (base64-encoded total)`,
+    fields: [
+      {
+        key: 'max_attachment_mb',
+        label: 'Max attachment total per message, MB (base64-encoded; 1+)',
+        kind: 'int',
+        schema: sendShape.max_attachment_mb,
       },
     ],
   },

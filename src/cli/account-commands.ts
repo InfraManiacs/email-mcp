@@ -485,6 +485,7 @@ async function addAccount(): Promise<void> {
         settings: {
           rate_limit: 10,
           read_only: false,
+          send: { max_attachment_mb: 25 },
           server: {
             host: '127.0.0.1',
             port: 8080,

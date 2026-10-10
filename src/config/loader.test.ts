@@ -394,3 +394,49 @@ link_action = "copy"
     });
   });
 });
+
+describe('send settings mapping', () => {
+  let tmpDir: string;
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'send-cfg-'));
+  });
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    for (const k of [
+      'MCP_EMAIL_ADDRESS',
+      'MCP_EMAIL_PASSWORD',
+      'MCP_EMAIL_IMAP_HOST',
+      'MCP_EMAIL_SMTP_HOST',
+      'MCP_EMAIL_SEND_MAX_ATTACHMENT_MB',
+    ]) {
+      delete process.env[k];
+    }
+  });
+
+  it('maps [settings.send] max_attachment_mb to camelCase and defaults to 25', async () => {
+    const configPath = path.join(tmpDir, 'config.toml');
+    await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
+    const config = await loadConfig(configPath);
+    expect(config.settings.send).toEqual({ maxAttachmentMb: 25 });
+
+    await fs.writeFile(
+      configPath,
+      MINIMAL_TOML + '\n[settings.send]\nmax_attachment_mb = 10\n',
+      'utf-8',
+    );
+    const custom = await loadConfig(configPath);
+    expect(custom.settings.send.maxAttachmentMb).toBe(10);
+  });
+
+  it('reads MCP_EMAIL_SEND_MAX_ATTACHMENT_MB in env mode', async () => {
+    process.env.MCP_EMAIL_ADDRESS = 'env@example.com';
+    process.env.MCP_EMAIL_PASSWORD = 'env-pass';
+    process.env.MCP_EMAIL_IMAP_HOST = 'imap.env.com';
+    process.env.MCP_EMAIL_SMTP_HOST = 'smtp.env.com';
+    process.env.MCP_EMAIL_SEND_MAX_ATTACHMENT_MB = '5';
+
+    const config = await loadConfig(path.join(tmpDir, 'nonexistent.toml'));
+
+    expect(config.settings.send.maxAttachmentMb).toBe(5);
+  });
+});
