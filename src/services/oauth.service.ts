@@ -39,23 +39,51 @@ const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
 export default class OAuthService {
   /**
+   * Refreshes already in progress, keyed by the config object they belong to.
+   *
+   * Several callers share one account: the IMAP client, the SMTP transport,
+   * their two connection tests, and the IDLE watcher. When a token expires
+   * they can arrive together and each start its own refresh. That is not
+   * merely a wasted request — providers that rotate the refresh token on use
+   * invalidate the loser's copy, and Microsoft rate-limits refreshes, so the
+   * account can end up unable to authenticate at all. Concurrent callers get
+   * the same in-flight promise instead, as ImapService does for its label
+   * strategy. Keyed weakly so a dropped account config is not retained.
+   */
+  private pendingRefreshes = new WeakMap<OAuth2Config, Promise<string>>();
+
+  /**
    * Get a valid access token, refreshing if expired.
    */
-  // eslint-disable-next-line class-methods-use-this
   async getAccessToken(oauth2: OAuth2Config): Promise<string> {
     if (!OAuthService.isTokenExpired(oauth2) && oauth2.accessToken) {
       return oauth2.accessToken;
     }
 
-    const result = await OAuthService.refreshAccessToken(oauth2);
+    const inFlight = this.pendingRefreshes.get(oauth2);
+    if (inFlight) return inFlight;
 
-    // Cache on the config object (in-memory only)
-    Object.assign(oauth2, {
-      accessToken: result.accessToken,
-      tokenExpiry: Date.now() + result.expiresIn * 1000,
-    });
+    const refresh = (async () => {
+      const result = await OAuthService.refreshAccessToken(oauth2);
 
-    return result.accessToken;
+      // Cache on the config object (in-memory only). Callers share the object,
+      // so one refresh serves every holder of this account.
+      Object.assign(oauth2, {
+        accessToken: result.accessToken,
+        tokenExpiry: Date.now() + result.expiresIn * 1000,
+      });
+
+      return result.accessToken;
+    })();
+
+    this.pendingRefreshes.set(oauth2, refresh);
+    try {
+      return await refresh;
+    } finally {
+      // Cleared on failure too, so a transient refresh error does not pin a
+      // rejected promise and fail every later attempt.
+      this.pendingRefreshes.delete(oauth2);
+    }
   }
 
   /**
