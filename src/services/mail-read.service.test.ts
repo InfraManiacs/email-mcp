@@ -647,3 +647,112 @@ describe('MailReadService (locate)', () => {
     expect(result.folders).toEqual(['Archive']);
   });
 });
+
+describe('MailReadService (cached attachments)', () => {
+  function createAttachmentSetup() {
+    const base = createCachedSetup();
+    const blobs = new Map<string, Buffer>();
+    const blobStore = {
+      put: vi.fn(async (content: Buffer) => {
+        const { createHash } = await import('node:crypto');
+        const sha256 = createHash('sha256').update(content).digest('hex');
+        blobs.set(sha256, content);
+        return { sha256, size: content.length };
+      }),
+      get: vi.fn(async (sha256: string) => blobs.get(sha256)),
+      delete: vi.fn(async (sha256: string) => {
+        blobs.delete(sha256);
+      }),
+    };
+    const service = new MailReadService(
+      base.imap as unknown as ImapService,
+      base.store,
+      base.engine as unknown as SyncEngine,
+      { syncWaitMs: 50 },
+      blobStore as never,
+    );
+    return { ...base, blobs, blobStore, service };
+  }
+
+  const liveAttachment = {
+    filename: 'report.pdf',
+    mimeType: 'application/pdf',
+    size: 5,
+    contentBase64: Buffer.from('bytes').toString('base64'),
+  };
+
+  it('downloads once and serves the repeat read from the blob store', async () => {
+    const { imap, blobStore, service } = createAttachmentSetup();
+    imap.downloadAttachment.mockResolvedValue(liveAttachment);
+
+    const first = await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+    const second = await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+
+    expect(imap.downloadAttachment).toHaveBeenCalledTimes(1);
+    expect(blobStore.put).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+    expect(second.contentBase64).toBe(liveAttachment.contentBase64);
+  });
+
+  it('deduplicates identical content across messages', async () => {
+    const { imap, blobs, service } = createAttachmentSetup();
+    imap.downloadAttachment.mockResolvedValue(liveAttachment);
+
+    await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+    await service.downloadAttachment('work', '2', 'INBOX', 'report.pdf');
+
+    expect(blobs.size).toBe(1);
+  });
+
+  it('re-downloads when the indexed blob has vanished', async () => {
+    const { imap, blobs, service } = createAttachmentSetup();
+    imap.downloadAttachment.mockResolvedValue(liveAttachment);
+    await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+
+    // The XDG cache dir may be wiped at any moment; the index outliving the
+    // bytes must degrade to a live download, never to an error.
+    blobs.clear();
+
+    const again = await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+
+    expect(imap.downloadAttachment).toHaveBeenCalledTimes(2);
+    expect(again.contentBase64).toBe(liveAttachment.contentBase64);
+  });
+
+  it('does not cache an attachment from an unmirrored mailbox', async () => {
+    const { imap, blobStore, service } = createAttachmentSetup();
+    imap.downloadAttachment.mockResolvedValue(liveAttachment);
+
+    await service.downloadAttachment('work', '1', 'Archive', 'report.pdf');
+
+    expect(blobStore.put).not.toHaveBeenCalled();
+  });
+
+  it('passes the caller size cap through to the live download', async () => {
+    const { imap, service } = createAttachmentSetup();
+    imap.downloadAttachment.mockResolvedValue(liveAttachment);
+
+    await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf', 2048);
+
+    expect(imap.downloadAttachment).toHaveBeenCalledExactlyOnceWith(
+      'work',
+      '1',
+      'INBOX',
+      'report.pdf',
+      2048,
+    );
+  });
+
+  it('serves a cached attachment even when IMAP is unreachable', async () => {
+    const { imap, service } = createAttachmentSetup();
+    imap.downloadAttachment.mockResolvedValue(liveAttachment);
+    await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+
+    imap.downloadAttachment.mockRejectedValue(new Error('ECONNREFUSED'));
+    imap.getMailboxStatus.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const offline = await service.downloadAttachment('work', '1', 'INBOX', 'report.pdf');
+
+    expect(offline.contentBase64).toBe(liveAttachment.contentBase64);
+  });
+});

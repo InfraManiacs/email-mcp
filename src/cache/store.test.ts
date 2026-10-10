@@ -567,3 +567,82 @@ describe('schema v3: thread discovery', () => {
     expect(store.countSearchMessages('work', 'INBOX', '100', 'Rechnung')).toBe(5);
   });
 });
+
+describe('schema v3: attachment index', () => {
+  let store: CacheStore;
+
+  const entry = {
+    account: 'work',
+    mailbox: 'INBOX',
+    uid: 1,
+    uidValidity: '100',
+    partId: '2',
+    filename: 'Q3 report.pdf',
+    mimeType: 'application/pdf',
+    size: 1024,
+    sha256: 'a'.repeat(64),
+  };
+
+  beforeEach(() => {
+    store = new CacheStore(':memory:');
+    store.putMessages([makeMessage({ uid: 1, hasAttachments: true })]);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('round-trips an attachment by filename', () => {
+    store.putAttachment(entry);
+
+    expect(store.getAttachment('work', 'INBOX', 1, '100', 'Q3 report.pdf')).toMatchObject({
+      filename: 'Q3 report.pdf',
+      mimeType: 'application/pdf',
+      size: 1024,
+      sha256: 'a'.repeat(64),
+    });
+  });
+
+  it('returns undefined for an unknown filename or a different epoch', () => {
+    store.putAttachment(entry);
+
+    expect(store.getAttachment('work', 'INBOX', 1, '100', 'other.pdf')).toBeUndefined();
+    expect(store.getAttachment('work', 'INBOX', 1, '999', 'Q3 report.pdf')).toBeUndefined();
+  });
+
+  it('counts how many rows reference one blob, so deletes are safe', () => {
+    store.putAttachment(entry);
+    store.putAttachment({ ...entry, uid: 1, partId: '3', filename: 'copy.pdf' });
+
+    expect(store.countBlobRefs('a'.repeat(64))).toBe(2);
+    expect(store.countBlobRefs('b'.repeat(64))).toBe(0);
+  });
+
+  it('records attachment access for LRU eviction', () => {
+    store.putAttachment(entry);
+
+    store.touchAttachment('work', 'INBOX', 1, '100', 'Q3 report.pdf');
+
+    expect(
+      store.getAttachment('work', 'INBOX', 1, '100', 'Q3 report.pdf')?.lastAccessedAt,
+    ).toBeDefined();
+  });
+
+  it('drops attachment rows when the epoch resets', () => {
+    store.putAttachment(entry);
+
+    store.resetEpoch('work', 'INBOX', '200');
+
+    expect(store.getAttachment('work', 'INBOX', 1, '100', 'Q3 report.pdf')).toBeUndefined();
+    expect(store.countBlobRefs('a'.repeat(64))).toBe(0);
+  });
+
+  it('reports attachment counts and bytes in the statistics', () => {
+    store.putAttachment(entry);
+
+    const stats = store.getStats();
+
+    expect(stats.attachmentCount).toBe(1);
+    expect(stats.attachmentBytes).toBe(1024);
+  });
+});

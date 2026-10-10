@@ -8,10 +8,11 @@
 
 import type { McpServer, Server } from '@modelcontextprotocol/server';
 
+import BlobStore from './cache/blob-store.js';
 import CacheStore from './cache/store.js';
 import SyncEngine from './cache/sync-engine.js';
 import { loadConfig } from './config/loader.js';
-import { CACHE_DB } from './config/xdg.js';
+import { CACHE_BLOBS_DIR, CACHE_DB } from './config/xdg.js';
 import ConnectionManager from './connections/manager.js';
 import { mcpLog } from './logging.js';
 import registerAllPrompts from './prompts/register.js';
@@ -56,6 +57,7 @@ export interface AppServices {
   /** Absent when the local mirror is disabled in config. */
   cacheStore?: CacheStore;
   syncEngine?: SyncEngine;
+  blobStore?: BlobStore;
 }
 
 /** Construct the full service graph from persisted configuration. */
@@ -72,6 +74,7 @@ export async function buildServices(): Promise<AppServices> {
   // still serves every tool live.
   let cacheStore: CacheStore | undefined;
   let syncEngine: SyncEngine | undefined;
+  let blobStore: BlobStore | undefined;
   if (config.settings.cache.enabled) {
     try {
       cacheStore = new CacheStore(CACHE_DB);
@@ -80,9 +83,11 @@ export async function buildServices(): Promise<AppServices> {
         bodyMessages: config.settings.cache.bodyMessages,
       });
       imapService.setCacheStore(cacheStore);
+      blobStore = new BlobStore(CACHE_BLOBS_DIR);
     } catch (err) {
       cacheStore = undefined;
       syncEngine = undefined;
+      blobStore = undefined;
       await mcpLog(
         'warning',
         'cache',
@@ -93,7 +98,7 @@ export async function buildServices(): Promise<AppServices> {
     }
   }
 
-  const mailReadService = new MailReadService(imapService, cacheStore, syncEngine);
+  const mailReadService = new MailReadService(imapService, cacheStore, syncEngine, {}, blobStore);
   const smtpService = new SmtpService(connections, rateLimiter, imapService);
   const templateService = new TemplateService();
   const calendarService = new CalendarService();
@@ -134,6 +139,7 @@ export async function buildServices(): Promise<AppServices> {
     verificationCatcher,
     cacheStore,
     syncEngine,
+    blobStore,
   };
 }
 

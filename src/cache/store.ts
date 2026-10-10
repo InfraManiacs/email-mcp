@@ -155,7 +155,44 @@ export interface CacheStats {
   mailboxes: MailboxCacheStats[];
   messageCount: number;
   bodyCount: number;
+  attachmentCount: number;
+  /** Bytes of attachment content held in the blob store, per the index. */
+  attachmentBytes: number;
+  /** Size of the SQLite mirror itself, excluding attachment blobs. */
   sizeBytes: number;
+}
+
+/** An attachment's bytes as indexed against the blob store. */
+export interface CachedAttachmentInput {
+  account: string;
+  mailbox: string;
+  uid: number;
+  uidValidity: string;
+  /** IMAP MIME part path, e.g. "2" or "1.2". */
+  partId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+}
+
+export interface CachedAttachment extends CachedAttachmentInput {
+  cachedAt: number;
+  lastAccessedAt?: number;
+}
+
+interface AttachmentRow {
+  account: string;
+  mailbox: string;
+  uid: number;
+  uid_validity: string;
+  part_id: string;
+  filename: string | null;
+  mime_type: string | null;
+  size: number;
+  sha256: string;
+  cached_at: number;
+  last_accessed_at: number | null;
 }
 
 /** Raw row shape as returned by SQLite. */
@@ -918,6 +955,104 @@ export default class CacheStore {
   }
 
   // -------------------------------------------------------------------------
+  // Attachments
+  // -------------------------------------------------------------------------
+
+  /** Index an attachment whose bytes are already in the blob store. */
+  putAttachment(entry: CachedAttachmentInput): void {
+    this.prep(`
+      INSERT INTO attachment (
+        account, mailbox, uid, uid_validity, part_id,
+        filename, mime_type, size, sha256, cached_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (account, mailbox, uid, uid_validity, part_id) DO UPDATE SET
+        filename  = excluded.filename,
+        mime_type = excluded.mime_type,
+        size      = excluded.size,
+        sha256    = excluded.sha256,
+        cached_at = excluded.cached_at
+    `).run(
+      entry.account,
+      entry.mailbox,
+      entry.uid,
+      entry.uidValidity,
+      entry.partId,
+      entry.filename,
+      entry.mimeType,
+      entry.size,
+      entry.sha256,
+      Date.now(),
+    );
+  }
+
+  /**
+   * Look an attachment up the way the tool addresses it: by filename within
+   * one message of one mailbox generation.
+   */
+  getAttachment(
+    account: string,
+    mailbox: string,
+    uid: number,
+    uidValidity: string,
+    filename: string,
+  ): CachedAttachment | undefined {
+    const row = this.queryOne<AttachmentRow>(
+      `SELECT * FROM attachment
+       WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ? AND filename = ?`,
+      account,
+      mailbox,
+      uid,
+      uidValidity,
+      filename,
+    );
+
+    if (!row) return undefined;
+
+    return {
+      account: row.account,
+      mailbox: row.mailbox,
+      uid: row.uid,
+      uidValidity: row.uid_validity,
+      partId: row.part_id,
+      filename: row.filename ?? '',
+      mimeType: row.mime_type ?? 'application/octet-stream',
+      size: row.size,
+      sha256: row.sha256,
+      cachedAt: row.cached_at,
+      lastAccessedAt: row.last_accessed_at ?? undefined,
+    };
+  }
+
+  /**
+   * How many index rows point at one blob.
+   *
+   * Content is deduplicated, so a blob may only be deleted once the last row
+   * referencing it is gone. Counting beats a refcount column, which drifts.
+   */
+  countBlobRefs(sha256: string): number {
+    return (
+      this.queryOne<{ total: number }>(
+        'SELECT COUNT(*) AS total FROM attachment WHERE sha256 = ?',
+        sha256,
+      )?.total ?? 0
+    );
+  }
+
+  /** Record an attachment read, so eviction can rank by recency. */
+  touchAttachment(
+    account: string,
+    mailbox: string,
+    uid: number,
+    uidValidity: string,
+    filename: string,
+  ): void {
+    this.prep(`
+      UPDATE attachment SET last_accessed_at = ?
+      WHERE account = ? AND mailbox = ? AND uid = ? AND uid_validity = ? AND filename = ?
+    `).run(Date.now(), account, mailbox, uid, uidValidity, filename);
+  }
+
+  // -------------------------------------------------------------------------
   // Mailbox state
   // -------------------------------------------------------------------------
 
@@ -1013,7 +1148,13 @@ export default class CacheStore {
   // Maintenance
   // -------------------------------------------------------------------------
 
-  /** Drop mirrored mail. Never touches the outbox, which is a separate file. */
+  /**
+   * Drop mirrored mail and the attachment index.
+   *
+   * Blob content is removed by the maintenance pass, which reconciles the
+   * blob directory against this index — so clearing the index is what makes
+   * the bytes collectable.
+   */
   clear(account?: string): void {
     this.transaction(() => {
       if (account) {
@@ -1078,8 +1219,18 @@ export default class CacheStore {
       this.queryOne<{ total: number }>(
         'SELECT COUNT(*) AS total FROM message WHERE body_text IS NOT NULL',
       )?.total ?? 0;
+    const attachments = this.queryOne<{ total: number; bytes: number | null }>(
+      'SELECT COUNT(*) AS total, SUM(size) AS bytes FROM attachment',
+    );
 
-    return { mailboxes, messageCount, bodyCount, sizeBytes: this.sizeBytes() };
+    return {
+      mailboxes,
+      messageCount,
+      bodyCount,
+      attachmentCount: attachments?.total ?? 0,
+      attachmentBytes: attachments?.bytes ?? 0,
+      sizeBytes: this.sizeBytes(),
+    };
   }
 
   /** Truncate the WAL after a sync burst; cheap when there is nothing to do. */

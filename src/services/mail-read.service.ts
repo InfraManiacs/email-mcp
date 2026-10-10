@@ -20,6 +20,7 @@
  * background. With the cache disabled the facade is a pure pass-through.
  */
 
+import type BlobStore from '../cache/blob-store.js';
 import type CacheStore from '../cache/store.js';
 import type { CachedMessage, MessageFilters } from '../cache/store.js';
 import { MAX_CACHED_BODY_BYTES } from '../cache/store.js';
@@ -154,6 +155,7 @@ export default class MailReadService {
     private readonly store?: CacheStore,
     private readonly syncEngine?: SyncEngine,
     options: MailReadOptions = {},
+    private readonly blobStore?: BlobStore,
   ) {
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.syncWaitMs = options.syncWaitMs ?? DEFAULT_SYNC_WAIT_MS;
@@ -588,13 +590,89 @@ export default class MailReadService {
     return this.imapService.findEmailFolder(account, emailId, sourceMailbox);
   }
 
-  downloadAttachment(
+  // -------------------------------------------------------------------------
+  // Attachments
+  // -------------------------------------------------------------------------
+
+  /**
+   * Serve an attachment from the content-addressed blob store when its bytes
+   * are already held, otherwise download once and index them.
+   *
+   * Attachment content is immutable per (uidValidity, uid, part), so a hit is
+   * served with no revalidation at all — not even a STATUS probe. The epoch in
+   * the index key is the fence: after a UIDVALIDITY change those rows are gone.
+   */
+  async downloadAttachment(
     account: string,
     emailId: string,
     mailbox: string,
     filename: string,
     maxSizeBytes?: number,
   ): ReturnType<ImapService['downloadAttachment']> {
-    return this.imapService.downloadAttachment(account, emailId, mailbox, filename, maxSizeBytes);
+    const store = this.store;
+    const blobs = this.blobStore;
+    const uid = Number.parseInt(emailId, 10);
+    if (!store || !blobs || Number.isNaN(uid)) {
+      return this.imapService.downloadAttachment(account, emailId, mailbox, filename, maxSizeBytes);
+    }
+
+    const uidValidity = store.getMailboxState(account, mailbox)?.uidValidity;
+
+    if (uidValidity) {
+      try {
+        const indexed = store.getAttachment(account, mailbox, uid, uidValidity, filename);
+        if (indexed) {
+          const content = await blobs.get(indexed.sha256);
+          if (content) {
+            store.touchAttachment(account, mailbox, uid, uidValidity, filename);
+            this.metrics.hits += 1;
+            return {
+              filename: indexed.filename,
+              mimeType: indexed.mimeType,
+              size: indexed.size,
+              contentBase64: content.toString('base64'),
+            };
+          }
+          // Indexed but the bytes are gone (wiped cache dir, failed
+          // verification): fall through and download again.
+        }
+      } catch {
+        // A broken mirror must never break the download.
+      }
+    }
+
+    this.metrics.liveFallbacks += 1;
+    const result = await this.imapService.downloadAttachment(
+      account,
+      emailId,
+      mailbox,
+      filename,
+      maxSizeBytes,
+    );
+
+    // Only cache for mailboxes the mirror actually tracks — otherwise the
+    // index would hold rows no epoch check can ever invalidate.
+    if (uidValidity) {
+      try {
+        const { sha256, size } = await blobs.put(Buffer.from(result.contentBase64, 'base64'));
+        store.putAttachment({
+          account,
+          mailbox,
+          uid,
+          uidValidity,
+          // The live download resolves the part by filename and does not
+          // report which path it used; the filename is the stable key here.
+          partId: filename,
+          filename: result.filename,
+          mimeType: result.mimeType,
+          size,
+          sha256,
+        });
+      } catch {
+        // Cache failures never break the read path.
+      }
+    }
+
+    return result;
   }
 }
