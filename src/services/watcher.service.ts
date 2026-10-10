@@ -14,6 +14,7 @@ import type { ImapFlow } from 'imapflow';
 import { mcpLog } from '../logging.js';
 import type { AccountConfig, EmailMeta, WatcherConfig } from '../types/index.js';
 import { createImapClient } from '../utils/imap-client.js';
+import { readWatermark, resolveBaselineUid, writeWatermark } from '../utils/watcher-state.js';
 import eventBus from './event-bus.js';
 import { messageToEmailMeta } from './imap.service.js';
 import type OAuthService from './oauth.service.js';
@@ -27,6 +28,8 @@ interface IdleState {
   account: AccountConfig;
   folder: string;
   lastSeenUid: number;
+  /** UIDVALIDITY the watermark above belongs to; '' until first connect. */
+  uidValidity: string;
   lock: { release: () => void } | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   backoffMs: number;
@@ -152,6 +155,7 @@ export default class WatcherService {
       account,
       folder,
       lastSeenUid: 0,
+      uidValidity: '',
       lock: null,
       reconnectTimer: null,
       backoffMs: INITIAL_BACKOFF_MS,
@@ -186,15 +190,28 @@ export default class WatcherService {
 
       const lock = await client.getMailboxLock(state.folder);
       const { mailbox } = client;
-      const uidNext =
+      const box =
         mailbox && typeof mailbox === 'object'
-          ? ((mailbox as { uidNext?: number }).uidNext ?? 1)
-          : 1;
+          ? (mailbox as { uidNext?: number; uidValidity?: bigint | number })
+          : {};
+      const uidNext = box.uidNext ?? 1;
+      const uidValidity = box.uidValidity?.toString() ?? '';
+
+      // Resuming, not re-baselining: UIDNEXT-1 would silently skip everything
+      // that arrived while this process was down or mid-reconnect.
+      const stored = await readWatermark(state.account.name, state.folder);
+      const lastSeenUid = resolveBaselineUid({
+        inMemoryLastSeenUid: state.lastSeenUid,
+        stored,
+        uidValidity,
+        uidNext,
+      });
 
       this.updateState(key, {
         client,
         lock,
-        lastSeenUid: uidNext - 1,
+        lastSeenUid,
+        uidValidity,
         backoffMs: INITIAL_BACKOFF_MS,
       });
 
@@ -311,6 +328,14 @@ export default class WatcherService {
 
       if (maxUid > state.lastSeenUid) {
         this.updateState(key, { lastSeenUid: maxUid });
+        // Persisted so the next process resumes here instead of re-baselining.
+        // Awaited rather than fired-and-forgotten: this subsystem is
+        // concurrency-sensitive and a dropped rejection here would be silent.
+        await writeWatermark(state.account.name, state.folder, state.uidValidity, maxUid).catch(
+          (err: unknown) => {
+            mcpLog('warning', 'watcher', `could not persist watermark: ${String(err)}`);
+          },
+        );
       }
 
       if (emails.length > 0) {

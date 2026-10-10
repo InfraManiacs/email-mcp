@@ -1,6 +1,20 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// The watcher persists its IDLE watermark under XDG state, and WATCHER_STATE_FILE
+// resolves at module load — point it at a throwaway directory before anything
+// imports it, or a test run rewrites the real watermarks and the next real
+// start resumes from a UID this suite invented.
+const STATE_HOME = mkdtempSync(join(tmpdir(), 'watcher-'));
+process.env.XDG_STATE_HOME = STATE_HOME;
+
+afterAll(() => {
+  rmSync(STATE_HOME, { recursive: true, force: true });
+});
+
 import type { AccountConfig, WatcherConfig } from '../types/index.js';
 import eventBus from './event-bus.js';
-import WatcherService from './watcher.service.js';
 
 // Track constructed clients so tests can drive their event handlers.
 const { instances } = vi.hoisted(() => ({
@@ -45,6 +59,10 @@ vi.mock('../logging.js', () => ({
 vi.mock('./event-bus.js', () => ({
   default: { emit: vi.fn() },
 }));
+
+// Imported dynamically, after XDG_STATE_HOME above: a static import is hoisted
+// past the assignment, and the watcher's state-file path resolves at load.
+const { default: WatcherService } = await import('./watcher.service.js');
 
 const testAccount: AccountConfig = {
   name: 'test',
