@@ -117,6 +117,7 @@ export function registerTemplateWriteTools(
             to: to ?? [],
             subject: composed.subject,
             body: composed.body,
+            html: composed.html,
           });
 
           audit.log(
@@ -156,6 +157,7 @@ export function registerTemplateWriteTools(
           to,
           subject: composed.subject,
           body: composed.body,
+          html: composed.html,
         });
 
         audit.log(

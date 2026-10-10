@@ -112,7 +112,24 @@ describe('SmtpService', () => {
       );
     });
 
-    it('sends as HTML when html=true', async () => {
+    it('passes threading headers to the transport when given', async () => {
+      await service.sendEmail('test', {
+        to: ['a@example.com'],
+        subject: 'Re: thread',
+        body: 'scheduled reply',
+        inReplyTo: '<orig@x>',
+        references: ['<root@x>', '<orig@x>'],
+      });
+
+      expect(transport.sendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inReplyTo: '<orig@x>',
+          references: '<root@x> <orig@x>',
+        }),
+      );
+    });
+
+    it('sends HTML with a generated plain-text alternative', async () => {
       await service.sendEmail('test', {
         to: ['a@example.com'],
         subject: 'HTML Test',
@@ -120,9 +137,36 @@ describe('SmtpService', () => {
         html: true,
       });
 
+      // nodemailer 10 removed text:'auto', so the service generates the
+      // text/plain alternative itself — HTML mail goes out as
+      // multipart/alternative, not as a single text/html part.
       const call = transport.sendMail.mock.calls[0][0];
       expect(call.html).toBe('<h1>Hello</h1>');
-      expect(call.text).toBeUndefined();
+      expect(call.text).toBe('Hello');
+    });
+  });
+
+  describe('sendDraft', () => {
+    it('sends both parts for an HTML draft', async () => {
+      const imap = {
+        fetchDraft: vi.fn().mockResolvedValue({
+          email: {
+            to: [{ address: 'a@b.c' }],
+            subject: 'Draft',
+            bodyHtml: '<p>drafted <b>text</b></p>',
+            references: [],
+          },
+          mailbox: 'Drafts',
+        }),
+        deleteDraft: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ImapService;
+      service = new SmtpService(connections, rateLimiter, imap);
+
+      await service.sendDraft('test', 7);
+
+      const call = transport.sendMail.mock.calls[0][0];
+      expect(call.html).toBe('<p>drafted <b>text</b></p>');
+      expect(call.text).toBe('drafted text');
     });
   });
 });
@@ -149,6 +193,39 @@ describe('outbound attachments', () => {
     expect(transport.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({
         attachments: [{ filename: 'report.pdf', path: '/tmp/report.pdf' }],
+      }),
+    );
+  });
+
+  it('sendEmail turns a cid attachment into an inline related part', async () => {
+    const svc = service();
+    await svc.sendEmail('test', {
+      to: ['a@b.c'],
+      subject: 's',
+      body: '<p>Logo: <img src="cid:logo@x"></p>',
+      html: true,
+      attachments: [
+        {
+          filename: 'logo.png',
+          path: '/tmp/logo.png',
+          size: 10,
+          cid: 'logo@x',
+          contentType: 'image/png',
+        },
+      ],
+    });
+
+    expect(transport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          {
+            filename: 'logo.png',
+            path: '/tmp/logo.png',
+            cid: 'logo@x',
+            contentDisposition: 'inline',
+            contentType: 'image/png',
+          },
+        ],
       }),
     );
   });
@@ -197,6 +274,192 @@ describe('outbound attachments', () => {
         contentType: 'application/pdf',
       },
     ]);
+  });
+
+  it('forwardEmail converts an HTML-only original and quotes it', async () => {
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyText: undefined,
+        bodyHtml: '<p>Hello <b>world</b></p><p>second line</p>',
+        attachments: [],
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], body: 'FYI' });
+
+    const payload = transport.sendMail.mock.calls[0][0];
+    // 165/169 real messages are HTML-only; the old text ?? html fallback
+    // stuffed raw markup into a text/plain part.
+    expect(payload.text).not.toContain('<p>');
+    expect(payload.text).toContain('FYI');
+    expect(payload.text).toContain('---------- Forwarded message ----------');
+    expect(payload.text).toContain('> Hello world');
+    expect(payload.text).toContain('> second line');
+    expect(payload.html).toBeUndefined();
+  });
+
+  it('forwardEmail html=true carries the original HTML in a blockquote', async () => {
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyText: undefined,
+        bodyHtml: '<p>original rich content</p>',
+        attachments: [],
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], body: 'note', html: true });
+
+    const payload = transport.sendMail.mock.calls[0][0];
+    expect(payload.html).toContain('note');
+    expect(payload.html).toContain('<blockquote');
+    expect(payload.html).toContain('<p>original rich content</p>');
+    // The text alternative still ships, quoted and markup-free.
+    expect(payload.text).toContain('> original rich content');
+    expect(payload.text).not.toContain('<p>');
+  });
+
+  it('forwardEmail neutralises line breaks in the quoted envelope fields', async () => {
+    // Envelope subjects and display names arrive RFC 2047-decoded with no
+    // newline stripping, so a crafted subject could forge a "From:" line in
+    // the forward header block — which is NOT "> "-quoted.
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Invoice\r\nFrom: ceo@bank.test',
+        from: { name: 'X\r\nTo: victim@x.test', address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyText: 'hello',
+        attachments: [],
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'] });
+
+    const { text, subject } = transport.sendMail.mock.calls[0][0];
+    const headerBlock = text.slice(0, text.indexOf('> '));
+    expect(headerBlock).not.toMatch(/^From: ceo@bank\.test/m);
+    expect(headerBlock).not.toMatch(/^To: victim@x\.test/m);
+    expect(subject).not.toContain('\n');
+  });
+
+  it('forwardEmail carries an inline file the HTML never references', async () => {
+    // Apple Mail ships user-inserted photos as `inline; filename=...` with a
+    // Content-ID, and some mailers ship invoices that way too. Skipping every
+    // inline part silently dropped real user files from forwards.
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyText: 'see photo',
+        bodyHtml: '<p>see photo</p>',
+        attachments: [
+          {
+            filename: 'IMG_1234.jpg',
+            mimeType: 'image/jpeg',
+            size: 3,
+            partId: '2',
+            contentId: 'photo@mail',
+            inline: true,
+          },
+        ],
+      }),
+      downloadAttachment: vi.fn().mockResolvedValue({
+        filename: 'IMG_1234.jpg',
+        mimeType: 'image/jpeg',
+        size: 3,
+        contentBase64: Buffer.from('jpg').toString('base64'),
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'] });
+
+    const payload = transport.sendMail.mock.calls[0][0];
+    expect(payload.attachments).toHaveLength(1);
+    expect(payload.attachments[0].filename).toBe('IMG_1234.jpg');
+  });
+
+  it('forwardEmail keeps cid parts the forwarded HTML embeds, as inline', async () => {
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyHtml: '<p>Logo <img src="cid:logo@x"></p>',
+        attachments: [
+          {
+            filename: 'logo.png',
+            mimeType: 'image/png',
+            size: 3,
+            partId: '2',
+            contentId: 'logo@x',
+            inline: true,
+          },
+        ],
+      }),
+      downloadAttachment: vi.fn().mockResolvedValue({
+        filename: 'logo.png',
+        mimeType: 'image/png',
+        size: 3,
+        contentBase64: Buffer.from('png').toString('base64'),
+      }),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], html: true });
+
+    // An html forward embeds the original markup verbatim, so the parts its
+    // <img src="cid:..."> points at have to travel with it or the images break.
+    const payload = transport.sendMail.mock.calls[0][0];
+    expect(payload.attachments).toEqual([
+      expect.objectContaining({ cid: 'logo@x', contentDisposition: 'inline' }),
+    ]);
+  });
+
+  it('forwardEmail drops an embedded cid part when forwarding as text only', async () => {
+    const imap = {
+      getEmail: vi.fn().mockResolvedValue({
+        subject: 'Orig',
+        from: { address: 'x@y.z' },
+        to: [{ address: 'me@y.z' }],
+        date: '2026-01-01',
+        bodyHtml: '<p>Logo <img src="cid:logo@x"></p>',
+        attachments: [
+          {
+            filename: 'logo.png',
+            mimeType: 'image/png',
+            size: 3,
+            partId: '2',
+            contentId: 'logo@x',
+            inline: true,
+          },
+        ],
+      }),
+      downloadAttachment: vi.fn(),
+    } as unknown as ImapService;
+
+    const svc = service(imap);
+    await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'] });
+
+    // Nothing references it once the body is plain text — re-attaching would
+    // turn layout images into stray files.
+    expect(imap.downloadAttachment).not.toHaveBeenCalled();
+    const payload = transport.sendMail.mock.calls[0][0];
+    expect('attachments' in payload).toBe(false);
   });
 
   it('forwardEmail skips attachments when includeAttachments is false', async () => {

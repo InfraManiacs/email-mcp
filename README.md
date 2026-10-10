@@ -1010,6 +1010,48 @@ harmless copy → read-back → clear round-trip).
 
 > **Structured output:** `list_emails`, `search_emails`, `get_email_status`, and `list_mailboxes` also return machine-readable results (`outputSchema` + `structuredContent`) alongside the human-readable text, for clients that consume typed tool output.
 
+#### Email bodies: HTML and other formats
+
+Nearly all real mail is HTML — in one sampled mailbox, 165 of 169 messages were
+single-part `text/html` — so the read tools convert it rather than handing back
+markup.
+
+`get_email`, `get_emails`, and `get_thread` take a `format`:
+
+| `format` | Body you get |
+|---|---|
+| `text` *(default)* | HTML converted to readable text: links become `[label](url)`, tables keep cell boundaries, lists are numbered or bulleted, quotes are `> `-prefixed, images become `[image: alt]` |
+| `stripped` | As `text`, minus quoted reply chains and signatures |
+| `full` | The raw body part, HTML included |
+
+Bodies are capped by default — 10 000 characters for `get_email`, 5 000 per
+message for `get_emails` and `get_thread` — and a hint reports how much was
+left out. Pass `maxLength: 0` for no cap. A single body part is read up to
+512 KB.
+
+Other formats behave as follows:
+
+- **`multipart/alternative`** — both halves are fetched, so `bodyText` and
+  `bodyHtml` are both available.
+- **Inline (`cid:`) images** — listed as attachments with `partId`,
+  `contentId`, and `inline`, and downloadable via `download_attachment`'s
+  `partId`. To embed one when sending, pass
+  `{path, cid, contentType}` in `attachments` and reference it as
+  `<img src="cid:…">`.
+- **Bounces** (`multipart/report`) — the machine-readable
+  `message/delivery-status` part is surfaced separately from the body.
+- **Calendar invites** — handled by `extract_calendar` / `add_to_calendar`,
+  honouring the part's declared charset.
+- **Encrypted mail** (S/MIME, PGP/MIME) — not decrypted; the body says so
+  plainly instead of appearing empty.
+- **Attached messages** (`message/rfc822`) — never mistaken for the body, but
+  used as the body when the message carries no other text (forward-as-attachment,
+  digests).
+
+Outbound HTML (`html: true`) is sent as `multipart/alternative` with a
+generated plain-text alternative. Forwards quote the original as converted
+text; pass `html: true` to `forward_email` to also carry the original HTML.
+
 #### Read (14)
 
 | Tool | Description |
@@ -1017,11 +1059,11 @@ harmless copy → read-back → clear round-trip).
 | `list_accounts` | List all configured email accounts |
 | `list_mailboxes` | List folders with unread counts and special-use flags |
 | `list_emails` | Paginated email listing with date, sender, subject, and flag filters |
-| `get_email` | Read full email content with attachment metadata |
+| `get_email` | Read full email content with attachment metadata (HTML converted to readable text by default) |
 | `get_emails` | Fetch full content of multiple emails in a single call (max 20) |
 | `get_email_status` | Get read/flag/label state of an email without fetching the body |
 | `search_emails` | Search by keyword across subject, sender, and body |
-| `download_attachment` | Download an email attachment by filename |
+| `download_attachment` | Download an email attachment by filename or MIME part id |
 | `find_email_folder` | Discover the real folder(s) an email resides in (resolves virtual folders) |
 | `extract_contacts` | Extract unique contacts from recent email headers |
 | `get_thread` | Reconstruct a conversation thread via References/In-Reply-To |

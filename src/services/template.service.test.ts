@@ -34,6 +34,24 @@ describe('substituteVariables', () => {
     const result = await service.applyTemplate('greeting', { name: 'Alice', company: 'Acme' });
     expect(result.subject).toBe('Hello Alice');
     expect(result.body).toBe('Dear Alice, welcome to Acme!');
+    expect(result.html).toBe(false);
+  });
+
+  it('escapes variables and reports html for an html template', async () => {
+    const htmlTemplate = `name = "rich"
+subject = "Hi {{name}}"
+body = "<p>Hello {{name}}</p>"
+variables = ["name"]
+html = true
+`;
+    await fs.writeFile(path.join(tempDir, 'rich.toml'), htmlTemplate);
+
+    // The variable is data, not markup — unescaped it could inject tags into
+    // the rendered body.
+    const result = await service.applyTemplate('rich', { name: '<Ada & Co>' });
+
+    expect(result.html).toBe(true);
+    expect(result.body).toBe('<p>Hello &lt;Ada &amp; Co&gt;</p>');
   });
 
   it('leaves unresolved {{unknown}} as-is', async () => {

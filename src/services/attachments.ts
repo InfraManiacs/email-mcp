@@ -12,10 +12,23 @@
 import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 
+/** An attachment request: a bare path, or a path with inline/cid metadata. */
+export interface AttachmentInput {
+  path: string;
+  /** Override the filename shown to the recipient (default: basename). */
+  filename?: string;
+  /** Content-ID — the HTML body references the file as src="cid:<cid>". */
+  cid?: string;
+  /** Explicit MIME type when the extension would misdetect. */
+  contentType?: string;
+}
+
 export interface PreparedAttachment {
   filename: string;
   path: string;
   size: number;
+  cid?: string;
+  contentType?: string;
 }
 
 export interface PreparedAttachments {
@@ -31,22 +44,29 @@ export function formatSize(bytes: number): string {
 }
 
 export async function prepareAttachments(
-  paths: string[],
+  paths: (string | AttachmentInput)[],
   maxTotalMb: number,
 ): Promise<PreparedAttachments> {
   const attachments: PreparedAttachment[] = [];
 
-  for (const path of paths) {
+  for (const entry of paths) {
+    const spec = typeof entry === 'string' ? { path: entry } : entry;
     let info: Awaited<ReturnType<typeof stat>>;
     try {
-      info = await stat(path);
+      info = await stat(spec.path);
     } catch {
-      throw new Error(`Attachment not found: ${path}`);
+      throw new Error(`Attachment not found: ${spec.path}`);
     }
     if (!info.isFile()) {
-      throw new Error(`Attachment is not a file: ${path}`);
+      throw new Error(`Attachment is not a file: ${spec.path}`);
     }
-    attachments.push({ filename: basename(path), path, size: info.size });
+    attachments.push({
+      filename: spec.filename ?? basename(spec.path),
+      path: spec.path,
+      size: info.size,
+      ...(spec.cid ? { cid: spec.cid } : {}),
+      ...(spec.contentType ? { contentType: spec.contentType } : {}),
+    });
   }
 
   const totalBytes = attachments.reduce((sum, a) => sum + a.size, 0);

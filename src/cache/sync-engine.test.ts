@@ -723,28 +723,6 @@ describe('review fixes: sync engine', () => {
     eventBus.removeAllListeners();
   });
 
-  it('stores a preview from the bounded source fetch, so cached listings keep their snippet', async () => {
-    client = createMockClient();
-    client.fetch.mockImplementation(() =>
-      (async function* gen() {
-        yield {
-          uid: 1,
-          envelope: { subject: 'Hi', date: new Date('2026-08-01') },
-          flags: new Set<string>(),
-          internalDate: new Date('2026-08-01'),
-          source: Buffer.from('Subject: Hi\r\n\r\nDas ist der Anfang des Textes.'),
-        };
-      })(),
-    );
-    client.search.mockResolvedValue([1]);
-    client.mailbox.exists = 1;
-    engine = new SyncEngine(createConnections(client), store);
-
-    await engine.syncMailbox('work', 'INBOX');
-
-    expect(store.getMessage('work', 'INBOX', 1, '100')?.preview).toContain('Das ist der Anfang');
-  });
-
   it('sweeps flags on a mailbox far larger than the argument-spread limit', async () => {
     client = createMockClient();
     const many = Array.from({ length: 150_000 }, (_, i) => i + 1);

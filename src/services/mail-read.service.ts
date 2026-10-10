@@ -28,7 +28,8 @@ import type SyncEngine from '../cache/sync-engine.js';
 import type { Email, EmailMeta, PaginatedResult } from '../types/index.js';
 import { stripHtml } from '../utils/html.js';
 import type ImapService from './imap.service.js';
-import { extractAttachments, messageToEmailMeta, parseAddresses } from './imap.service.js';
+import { messageToEmailMeta, parseAddresses } from './imap.service.js';
+import { extractAttachments } from './mime-structure.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -684,25 +685,30 @@ export default class MailReadService {
     account: string,
     emailId: string,
     mailbox: string,
-    filename: string,
+    selector: string | { filename?: string; partId?: string },
     maxSizeBytes?: number,
   ): ReturnType<ImapService['downloadAttachment']> {
     const store = this.store;
     const blobs = this.blobStore;
     const uid = Number.parseInt(emailId, 10);
-    if (!store || !blobs || Number.isNaN(uid)) {
-      return this.imapService.downloadAttachment(account, emailId, mailbox, filename, maxSizeBytes);
+    // The part id is unambiguous where a filename is not (duplicate names,
+    // inline cid images), so it is the cache key whenever the caller supplies
+    // one; otherwise the filename is all there is to key on.
+    const key =
+      typeof selector === 'string' ? selector : (selector.partId ?? selector.filename ?? '');
+    if (!store || !blobs || Number.isNaN(uid) || key === '') {
+      return this.imapService.downloadAttachment(account, emailId, mailbox, selector, maxSizeBytes);
     }
 
     const uidValidity = store.getMailboxState(account, mailbox)?.uidValidity;
 
     if (uidValidity) {
       try {
-        const indexed = store.getAttachment(account, mailbox, uid, uidValidity, filename);
+        const indexed = store.getAttachment(account, mailbox, uid, uidValidity, key);
         if (indexed) {
           const content = await blobs.get(indexed.sha256);
           if (content) {
-            store.touchAttachment(account, mailbox, uid, uidValidity, filename);
+            store.touchAttachment(account, mailbox, uid, uidValidity, key);
             this.metrics.hits += 1;
             return {
               filename: indexed.filename,
@@ -724,7 +730,7 @@ export default class MailReadService {
       account,
       emailId,
       mailbox,
-      filename,
+      selector,
       maxSizeBytes,
     );
 
@@ -738,9 +744,7 @@ export default class MailReadService {
           mailbox,
           uid,
           uidValidity,
-          // The live download resolves the part by filename and does not
-          // report which path it used; the filename is the stable key here.
-          partId: filename,
+          partId: key,
           filename: result.filename,
           mimeType: result.mimeType,
           size,

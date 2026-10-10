@@ -27,6 +27,18 @@ import type { ReconnectEvent } from './event-bus.js';
 import eventBus from './event-bus.js';
 import type { LabelStrategy } from './label-strategy.js';
 import { detectLabelStrategy } from './label-strategy.js';
+import {
+  collectTextParts,
+  describeUndisplayableStructure,
+  extractAttachments,
+  findDeliveryStatusPart,
+  findMimePartByFilename,
+  hasAttachments,
+  parseHeaders,
+  selectBodyParts,
+  splitMimeType,
+  type TextPart,
+} from './mime-structure.js';
 
 // ---------------------------------------------------------------------------
 // Helpers (must be defined before ImapService)
@@ -39,76 +51,12 @@ function parseAddress(addr: { name?: string; address?: string } | undefined): Em
   };
 }
 
+/** Exported so the cached read path produces addresses identically. */
 export function parseAddresses(
   addrs: { name?: string; address?: string }[] | undefined,
 ): EmailAddress[] {
   if (!addrs) return [];
   return addrs.map(parseAddress);
-}
-
-function hasAttachments(bodyStructure: unknown): boolean {
-  if (!bodyStructure || typeof bodyStructure !== 'object') return false;
-  const bs = bodyStructure as Record<string, unknown>;
-  if (bs.disposition === 'attachment') return true;
-  if (Array.isArray(bs.childNodes)) {
-    return bs.childNodes.some((child: unknown) => hasAttachments(child));
-  }
-  return false;
-}
-
-export function extractAttachments(bodyStructure: unknown): AttachmentMeta[] {
-  const attachments: AttachmentMeta[] = [];
-  if (!bodyStructure || typeof bodyStructure !== 'object') return attachments;
-
-  const bs = bodyStructure as Record<string, unknown>;
-  if (bs.disposition === 'attachment') {
-    const params = (bs.dispositionParameters ?? bs.parameters ?? {}) as Record<string, string>;
-    attachments.push({
-      filename: params.filename ?? params.name ?? 'unnamed',
-      // `bs.type` is already a complete Content-Type; there is no subtype
-      // field to append.
-      mimeType: typeof bs.type === 'string' ? bs.type.toLowerCase() : 'application/octet-stream',
-      size: (bs.size as number) ?? 0,
-    });
-  }
-
-  if (Array.isArray(bs.childNodes)) {
-    (bs.childNodes as unknown[]).forEach((child) => {
-      attachments.push(...extractAttachments(child));
-    });
-  }
-
-  return attachments;
-}
-
-/** Find the MIME part number for an attachment by filename. */
-function findMimePartByFilename(
-  bodyStructure: unknown,
-  targetFilename: string,
-  partPath = '',
-): string | undefined {
-  if (!bodyStructure || typeof bodyStructure !== 'object') return undefined;
-
-  const bs = bodyStructure as Record<string, unknown>;
-  const currentPart = bs.part as string | undefined;
-  const effectivePath = currentPart ?? partPath;
-
-  if (bs.disposition === 'attachment') {
-    const params = (bs.dispositionParameters ?? bs.parameters ?? {}) as Record<string, string>;
-    const filename = params.filename ?? params.name ?? 'unnamed';
-    if (filename === targetFilename) return effectivePath;
-  }
-
-  if (Array.isArray(bs.childNodes)) {
-    // eslint-disable-next-line no-plusplus
-    for (let i = 0; i < bs.childNodes.length; i++) {
-      const childPart = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
-      const found = findMimePartByFilename(bs.childNodes[i], targetFilename, childPart);
-      if (found) return found;
-    }
-  }
-
-  return undefined;
 }
 
 /**
@@ -124,20 +72,6 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
 
   // Extract non-system flags as labels (IMAP keywords)
   const labels = [...flags].filter((f) => !f.startsWith('\\'));
-
-  // Extract preview from source buffer
-  let preview: string | undefined;
-  if (msg.source && Buffer.isBuffer(msg.source)) {
-    const rawText = msg.source.toString('utf-8');
-    // Try to extract body text after the header blank line
-    const bodyStart = rawText.indexOf('\r\n\r\n');
-    if (bodyStart >= 0) {
-      preview = rawText
-        .slice(bodyStart + 4, bodyStart + 204)
-        .replace(/\s+/g, ' ')
-        .trim();
-    }
-  }
 
   // Every fetch in this service passes `{ uid: true }`, so a missing UID means
   // the server broke protocol. Falling back to `msg.seq` would mint an id that
@@ -162,127 +96,110 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
     answered: flags.has('\\Answered'),
     hasAttachments: hasAttachments(msg.bodyStructure),
     labels,
-    preview,
+    // `preview` stays optional in EmailMeta for a future RFC 8970 PREVIEW
+    // implementation; the old 256-byte source window never reached past real
+    // header blocks, so it was always undefined anyway.
   };
 }
 
-/** A displayable (non-attachment) text part discovered in the MIME tree. */
-export interface TextPart {
-  /** IMAP part path, e.g. "1.1" */
-  path: string;
-  /** Content subtype: "plain" | "html" | … (derived from the full MIME type) */
-  subtype: string;
-  size: number;
-}
+/**
+ * Cap on a single downloaded body part. Checked against the BODYSTRUCTURE
+ * size, which is the encoded octet count — conservative, since encoded is
+ * never smaller than decoded.
+ */
+const BODY_PART_MAX_BYTES = 512 * 1024;
 
 /**
- * Split an ImapFlow structure node's Content-Type.
+ * Reject a header value containing a line break.
  *
- * ImapFlow reports `type` as the complete Content-Type ("text/html") and has
- * no `subtype` field at all — see MessageStructureObject in imap-flow.d.ts.
+ * `saveDraft` assembles an RFC 822 message by hand, so a CR or LF in a value
+ * injects arbitrary headers or terminates the header block early.
  */
-function splitMimeType(type: unknown): { type: string; subtype: string } {
-  const full = typeof type === 'string' ? type.toLowerCase() : '';
-  const slash = full.indexOf('/');
-  if (slash < 0) return { type: full, subtype: '' };
-  return { type: full.slice(0, slash), subtype: full.slice(slash + 1) };
-}
-
-/**
- * Collect every non-attachment text/* part in the MIME tree, in document order.
- *
- * Mirrors the traversal in `findMimePartByFilename` — part paths come from
- * `bs.part` when the server supplies one, otherwise from the 1-based child
- * index chain.
- */
-export function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
-  if (!bodyStructure || typeof bodyStructure !== 'object') return [];
-
-  const bs = bodyStructure as Record<string, unknown>;
-  const effectivePath = (bs.part as string | undefined) ?? partPath;
-  const found: TextPart[] = [];
-
-  if (Array.isArray(bs.childNodes)) {
-    bs.childNodes.forEach((child, i) => {
-      const childPath = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
-      found.push(...collectTextParts(child, childPath));
-    });
-    return found;
+function assertNoCrlf(value: string, field: string): void {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${field} must not contain a line break`);
   }
-
-  // Leaf node. Attachments are never body content, even when text/*.
-  const { type, subtype } = splitMimeType(bs.type);
-  if (type === 'text' && bs.disposition !== 'attachment') {
-    found.push({
-      // A single-part message has no `part` field at all — the body is
-      // addressable as part "1", which is what the vast majority of real mail
-      // looks like. Without this the caller falls back to raw `source`, which
-      // is still transfer-encoded.
-      path: effectivePath || '1',
-      subtype,
-      size: typeof bs.size === 'number' ? bs.size : 0,
-    });
-  }
-
-  return found;
 }
 
 /**
- * Choose which text part to download for an email's body, or `undefined` to
- * skip the extra round trip and use the body already parsed from `source`.
- *
- * `parts` is in document order and excludes attachments.
- *
- * Prefers `text/plain`: it is far cheaper in agent context-window terms, which
- * `docs/performance-roadmap.md` identifies as the real constraint.
- *
- * The exception is the stub plain part — a few dozen bytes of "This message
- * requires an HTML-capable reader" shipped next to the real content in HTML.
- * Taking it literally makes the model report the placeholder as the email, so
- * an implausibly small plain part loses to a much larger HTML sibling.
+ * Download one body part, transfer-decoded by ImapFlow, bounded by
+ * BODY_PART_MAX_BYTES. Past the cap the stream is still drained to the end —
+ * destroying an ImapFlow download stream mid-command corrupts the
+ * connection's command state — but only the first cap bytes are kept.
  */
-const STUB_PLAIN_MAX_BYTES = 200;
-const STUB_PLAIN_RATIO = 5;
+async function downloadBodyPart(
+  client: ImapFlow,
+  uid: number,
+  path: TextPart['path'],
+  subtype?: string,
+): Promise<string | undefined> {
+  try {
+    const part = await client.download(String(uid), path, { uid: true });
+    if (!part?.content) return undefined;
 
-export function selectBodyPart(parts: TextPart[]): TextPart | undefined {
-  const plain = parts.find((p) => p.subtype === 'plain');
-  const html = parts.find((p) => p.subtype === 'html');
-
-  if (!plain) return html ?? parts[0];
-  if (html && plain.size < STUB_PLAIN_MAX_BYTES && html.size > plain.size * STUB_PLAIN_RATIO) {
-    return html;
-  }
-  return plain;
-}
-
-/**
- * Parse an RFC 5322 header block into a lowercase-keyed map.
- *
- * Continuation lines (leading space or tab) are unfolded onto the preceding
- * header, so a long References or Subject split across lines survives intact.
- */
-export function parseHeaders(raw: unknown): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (!Buffer.isBuffer(raw)) return headers;
-
-  const text = raw.toString('utf-8');
-  const headerEnd = text.indexOf('\r\n\r\n');
-  const section = headerEnd >= 0 ? text.slice(0, headerEnd) : text;
-
-  let currentKey: string | undefined;
-  section.split(/\r?\n/).forEach((line) => {
-    if (/^[ \t]/.test(line)) {
-      if (currentKey) headers[currentKey] += ` ${line.trim()}`;
-      return;
+    const chunks: Buffer[] = [];
+    let kept = 0;
+    let truncated = false;
+    // eslint-disable-next-line no-restricted-syntax
+    for await (const chunk of part.content) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const room = BODY_PART_MAX_BYTES - kept;
+      if (room > 0) {
+        chunks.push(buf.length > room ? buf.subarray(0, room) : buf);
+        kept += Math.min(buf.length, room);
+      }
+      if (buf.length > room) truncated = true;
     }
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      currentKey = line.slice(0, colonIdx).trim().toLowerCase();
-      headers[currentKey] = line.slice(colonIdx + 1).trim();
-    }
-  });
+    let raw = Buffer.concat(chunks);
 
-  return headers;
+    // A cut at an arbitrary byte can land inside a multibyte character, whose
+    // remaining bytes then decode to U+FFFD. Back off to the last codepoint
+    // boundary — a lead byte is 0b0xxxxxxx or 0b11xxxxxx, continuations are
+    // 0b10xxxxxx.
+    if (truncated) {
+      for (let back = 0; back < 4 && raw.length - back > 0; back += 1) {
+        const byte = raw[raw.length - 1 - back] as number;
+        if ((byte & 0b1100_0000) !== 0b1000_0000) {
+          const seqLen =
+            // biome-ignore format: the width ladder reads better aligned
+            byte < 0x80 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+          // Keep the sequence only when all of its bytes survived the cut.
+          if (back + 1 < seqLen) raw = raw.subarray(0, raw.length - 1 - back);
+          break;
+        }
+      }
+    }
+
+    // ImapFlow charset-converts text/plain and text/html only (its isTextNode
+    // list), so any other text subtype — text/calendar, text/enriched —
+    // arrives as raw bytes with the declared charset in meta.
+    const charset = (part.meta as Record<string, unknown> | undefined)?.charset as
+      | string
+      | undefined;
+    const needsDecode = subtype !== undefined && subtype !== 'plain' && subtype !== 'html';
+    let decoded: string;
+    if (needsDecode && charset) {
+      try {
+        decoded = new TextDecoder(charset).decode(raw);
+      } catch {
+        // Unknown charset label — utf-8 is the least-wrong fallback.
+        decoded = raw.toString('utf-8');
+      }
+    } else {
+      decoded = raw.toString('utf-8');
+    }
+
+    return truncated ? `${decoded}\n…[body truncated at 512 KB]` : decoded;
+  } catch (err) {
+    // Part may not exist on this server — better an empty body than a throw,
+    // but not a silent one. stderr is safe under the stdio transport.
+    process.stderr.write(
+      `email-mcp: body part ${path} of uid ${uid} failed to download: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+    return undefined;
+  }
 }
 
 async function messageToEmail(
@@ -301,30 +218,43 @@ async function messageToEmail(
   // bytes of header.
   const headers = parseHeaders(msg.headers);
 
-  // Always download the body part; never read it out of `source`. Raw source
+  // Always download body parts; never read them out of `source`. Raw source
   // is transfer-encoded (quoted-printable, base64) with soft line breaks, so
   // using it directly yields "=3D" for '=' and words split mid-token.
   // download() applies the decoding declared by Content-Transfer-Encoding.
-  const chosen = selectBodyPart(collectTextParts(msg.bodyStructure));
+  let { plain, html } = selectBodyParts(collectTextParts(msg.bodyStructure));
 
-  if (chosen) {
-    try {
-      const part = await client.download(String(uid), chosen.path, { uid: true });
-      if (part?.content) {
-        const chunks: Buffer[] = [];
-        // eslint-disable-next-line no-restricted-syntax
-        for await (const chunk of part.content) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        }
-        const decoded = Buffer.concat(chunks).toString('utf-8');
-        if (chosen.subtype === 'html') {
-          bodyHtml = decoded;
-        } else {
-          bodyText = decoded;
-        }
-      }
-    } catch {
-      // Part may not exist on this server — better an empty body than a throw.
+  // An over-cap part loses to a within-cap sibling outright. When both are
+  // over the cap, fetch only one — transferring 1.6 MB to truncate both
+  // halves to 512 KB buys nothing — and prefer plain, which is both cheaper
+  // in context-window terms and already readable.
+  if (plain && html && plain.size > BODY_PART_MAX_BYTES) {
+    if (html.size <= BODY_PART_MAX_BYTES) plain = undefined;
+    else html = undefined;
+  } else if (plain && html && html.size > BODY_PART_MAX_BYTES) {
+    html = undefined;
+  }
+
+  if (plain) bodyText = await downloadBodyPart(client, uid, plain.path, plain.subtype);
+  if (html) bodyHtml = await downloadBodyPart(client, uid, html.path, html.subtype);
+
+  if (bodyText === undefined && bodyHtml === undefined) {
+    // No displayable part at all — S/MIME and PGP payloads land here. A
+    // labeled placeholder beats the bare "(no content)" the tool layer shows.
+    bodyText = describeUndisplayableStructure(msg.bodyStructure);
+  }
+
+  // Bounces carry their actual status codes in a machine-readable part that
+  // is not text/* and would otherwise never be surfaced. It gets its own
+  // field rather than being appended to bodyText: the human-readable
+  // explanation is often the HTML part, and applyBodyFormat prefers bodyText,
+  // so appending there would show the status block and hide the reason.
+  let deliveryStatus: string | undefined;
+  const statusPath = findDeliveryStatusPart(msg.bodyStructure);
+  if (statusPath) {
+    const status = await downloadBodyPart(client, uid, statusPath);
+    if (status?.trim()) {
+      deliveryStatus = status.trim();
     }
   }
 
@@ -339,6 +269,7 @@ async function messageToEmail(
     references: headers.references?.split(/\s+/).filter(Boolean),
     attachments: extractAttachments(msg.bodyStructure),
     headers,
+    deliveryStatus,
   };
 }
 
@@ -610,7 +541,6 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          source: { start: 0, maxLength: 256 },
         },
         { uid: true },
       )) {
@@ -865,7 +795,6 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
-          source: { start: 0, maxLength: 256 },
         },
         { uid: true },
       )) {
@@ -1322,8 +1251,18 @@ export default class ImapService {
       bcc?: string[];
       html?: boolean;
       inReplyTo?: string;
+      references?: string[];
     },
   ): Promise<{ id: number; mailbox: string }> {
+    // Validate before touching the network: every one of these is spliced
+    // into a hand-assembled header block.
+    assertNoCrlf(options.subject, 'Subject');
+    for (const addr of options.to) assertNoCrlf(addr, 'Recipient');
+    for (const addr of options.cc ?? []) assertNoCrlf(addr, 'CC recipient');
+    for (const addr of options.bcc ?? []) assertNoCrlf(addr, 'BCC recipient');
+    if (options.inReplyTo) assertNoCrlf(options.inReplyTo, 'In-Reply-To');
+    for (const ref of options.references ?? []) assertNoCrlf(ref, 'References entry');
+
     const client = await this.connections.getImapClient(accountName);
     const account = this.connections.getAccount(accountName);
 
@@ -1344,6 +1283,11 @@ export default class ImapService {
     if (options.cc?.length) headers.push(`Cc: ${options.cc.join(', ')}`);
     if (options.bcc?.length) headers.push(`Bcc: ${options.bcc.join(', ')}`);
     if (options.inReplyTo) headers.push(`In-Reply-To: ${options.inReplyTo}`);
+    if (options.references?.length) {
+      // One message-id per continuation line: valid RFC 5322 folding that can
+      // never produce an overlong header line.
+      headers.push(`References: ${options.references.join('\r\n ')}`);
+    }
 
     const contentType = options.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8';
     headers.push(`Content-Type: ${contentType}`);
@@ -1426,7 +1370,7 @@ export default class ImapService {
     accountName: string,
     emailId: string,
     mailbox: string,
-    filename: string,
+    selector: string | { filename?: string; partId?: string },
     maxSizeBytes = 5 * 1024 * 1024,
   ): Promise<{
     filename: string;
@@ -1451,23 +1395,46 @@ export default class ImapService {
       }
 
       const attachments = extractAttachments(msg.bodyStructure);
-      const attachment = attachments.find((a) => a.filename === filename);
-      if (!attachment) {
-        throw new Error(
-          `Attachment "${filename}" not found. Available: ${attachments.map((a) => a.filename).join(', ') || 'none'}`,
-        );
+      const sel = typeof selector === 'string' ? { filename: selector } : selector;
+
+      let attachment: AttachmentMeta | undefined;
+      if (sel.partId !== undefined) {
+        // The part id is unambiguous — duplicate filenames and unnamed parts
+        // are only reachable this way.
+        attachment = attachments.find((a) => a.partId === sel.partId);
+        if (!attachment) {
+          throw new Error(
+            `No attachment with part id "${sel.partId}". Available: ${
+              attachments.map((a) => `${a.partId} (${a.filename})`).join(', ') || 'none'
+            }`,
+          );
+        }
+      } else if (sel.filename !== undefined) {
+        attachment = attachments.find((a) => a.filename === sel.filename);
+        if (!attachment) {
+          throw new Error(
+            `Attachment "${sel.filename}" not found. Available: ${attachments.map((a) => a.filename).join(', ') || 'none'}`,
+          );
+        }
+      } else {
+        throw new Error('Either a filename or a partId is required');
       }
 
-      if (attachment.size > maxSizeBytes) {
+      // BODYSTRUCTURE reports encoded octets; base64 decodes ~25% smaller.
+      // The cap means "bytes you will receive", so compare the estimate.
+      const estimatedBytes =
+        attachment.encoding === 'base64' ? Math.floor((attachment.size * 3) / 4) : attachment.size;
+      if (estimatedBytes > maxSizeBytes) {
         throw new Error(
-          `Attachment "${filename}" is ${Math.round(attachment.size / 1024 / 1024)}MB, exceeds ${Math.round(maxSizeBytes / 1024 / 1024)}MB limit`,
+          `Attachment "${attachment.filename}" is ~${(estimatedBytes / 1024 / 1024).toFixed(1)}MB, exceeds ${Math.round(maxSizeBytes / 1024 / 1024)}MB limit`,
         );
       }
 
       // Find the MIME part number
-      const partNumber = findMimePartByFilename(msg.bodyStructure, filename);
+      const partNumber =
+        attachment.partId ?? findMimePartByFilename(msg.bodyStructure, attachment.filename);
       if (!partNumber) {
-        throw new Error(`Could not locate MIME part for "${filename}"`);
+        throw new Error(`Could not locate MIME part for "${attachment.filename}"`);
       }
 
       // Download the part
@@ -1476,7 +1443,7 @@ export default class ImapService {
       });
 
       if (!downloadResult?.content) {
-        throw new Error(`Failed to download attachment "${filename}"`);
+        throw new Error(`Failed to download attachment "${attachment.filename}"`);
       }
 
       const chunks: Buffer[] = [];
@@ -1484,7 +1451,24 @@ export default class ImapService {
       for await (const chunk of downloadResult.content) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
-      const content = Buffer.concat(chunks);
+      let content = Buffer.concat(chunks);
+
+      // Some servers (GreenMail among them) answer the n.MIME section of a
+      // nested part empty; ImapFlow then sees no transfer encoding and streams
+      // the raw base64 through undecoded. Its meta.encoding mirrors what it
+      // decoded with, so its absence next to a BODYSTRUCTURE-declared base64
+      // means the decode never ran — apply it here.
+      const downloadMeta = downloadResult.meta as Record<string, unknown> | undefined;
+      if (attachment.encoding === 'base64' && downloadMeta?.encoding === undefined) {
+        // Only when the bytes really do look like base64 text. A server that
+        // withholds the MIME section *and* serves the part via FETCH BINARY
+        // hands back already-decoded data, and Buffer.from(…, 'base64') would
+        // mangle it silently rather than throwing.
+        const asText = content.toString('latin1');
+        if (/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(asText)) {
+          content = Buffer.from(asText, 'base64');
+        }
+      }
 
       return {
         filename: attachment.filename,
@@ -1534,8 +1518,12 @@ export default class ImapService {
         { uid: true },
       );
       if (!msg) return [];
+      // Inline parts with no filename are layout machinery (spacers, tracking
+      // pixels) and not worth a file on disk — but one that carries a filename
+      // is a real file: Apple Mail ships user-inserted photos as
+      // `inline; filename=...`, and dropping those loses the user's data.
       // biome-ignore format: line too long; eslint implicit-arrow-linebreak prevents multi-line implicit return
-      attachmentMetas = extractAttachments(msg.bodyStructure).filter((a) => a.size <= maxSizeBytes && !a.mimeType.includes('calendar') && !a.filename.toLowerCase().endsWith('.ics'));
+      attachmentMetas = extractAttachments(msg.bodyStructure).filter((a) => !(a.inline && a.filename === 'unnamed') && a.size <= maxSizeBytes && !a.mimeType.includes('calendar') && !a.filename.toLowerCase().endsWith('.ics'));
     } finally {
       lock.release();
     }
@@ -1551,7 +1539,8 @@ export default class ImapService {
           accountName,
           emailId,
           mailbox,
-          meta.filename,
+          // The part id survives duplicate filenames; filename is the fallback.
+          meta.partId !== undefined ? { partId: meta.partId } : meta.filename,
           maxSizeBytes,
         );
         const safe = meta.filename.replace(/[/\\?%*:|"<>]/g, '_');
@@ -2050,7 +2039,20 @@ export default class ImapService {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
         if (chunks.length > 0) {
-          icsContents.push(Buffer.concat(chunks).toString('utf-8'));
+          // ImapFlow transfer-decodes this part but does not charset-convert
+          // it — its text handling covers only text/plain|html — so a Latin-1
+          // ICS would come out as mojibake under a blind utf-8 read. The
+          // declared charset rides along in the download meta.
+          const raw = Buffer.concat(chunks);
+          const charset =
+            ((part.meta as Record<string, unknown> | undefined)?.charset as string | undefined) ??
+            'utf-8';
+          try {
+            icsContents.push(new TextDecoder(charset).decode(raw));
+          } catch {
+            // Unknown charset label — utf-8 is the least-wrong fallback.
+            icsContents.push(raw.toString('utf-8'));
+          }
         }
       }
 

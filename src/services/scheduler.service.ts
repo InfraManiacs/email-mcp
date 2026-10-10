@@ -237,6 +237,10 @@ export default class SchedulerService {
           cc: scheduled.cc,
           bcc: scheduled.bcc,
           html: scheduled.html,
+          // Persisted at schedule time; without them a scheduled reply is
+          // delivered outside its thread.
+          inReplyTo: scheduled.inReplyTo,
+          references: scheduled.references,
         });
 
         // Mark as sent and move to sent dir

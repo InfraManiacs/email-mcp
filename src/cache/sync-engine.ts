@@ -36,7 +36,7 @@ import type {
   ReconnectEvent,
 } from '../services/event-bus.js';
 import eventBus from '../services/event-bus.js';
-import { collectTextParts, parseHeaders, selectBodyPart } from '../services/imap.service.js';
+import { collectTextParts, parseHeaders, selectBodyParts } from '../services/mime-structure.js';
 import { stripHtml } from '../utils/html.js';
 import type CacheStore from './store.js';
 import type { CachedMessageInput, SyncTier } from './store.js';
@@ -75,8 +75,6 @@ interface FetchedMessage {
   internalDate?: Date;
   /** Raw header subset when the fetch asked for specific headers. */
   headers?: Buffer;
-  /** Bounded raw slice, used to derive a preview. */
-  source?: Buffer;
   /** RFC 8474 EMAILID / Gmail X-GM-MSGID when the server supports it. */
   emailId?: string;
 }
@@ -159,22 +157,6 @@ function parseReferences(headers?: Buffer): string[] | undefined {
   return ids && ids.length > 0 ? ids : undefined;
 }
 
-/**
- * Derive a preview from a bounded raw slice — same rule as the live mapper:
- * take what follows the header break, collapse whitespace.
- */
-function previewFromSource(source?: Buffer): string | undefined {
-  if (!source || !Buffer.isBuffer(source)) return undefined;
-  const text = source.toString('utf-8');
-  const bodyStart = text.indexOf('\r\n\r\n');
-  if (bodyStart < 0) return undefined;
-  const preview = text
-    .slice(bodyStart + 4, bodyStart + 204)
-    .replace(/\s+/g, ' ')
-    .trim();
-  return preview.length > 0 ? preview : undefined;
-}
-
 function formatSender(from?: { name?: string; address?: string }[]): string | undefined {
   const first = from?.[0];
   if (!first) return undefined;
@@ -206,7 +188,6 @@ function toCachedMessage(
     internalDate: (msg.internalDate ?? envelope.date ?? new Date()).getTime(),
     subject: envelope.subject,
     fromText: formatSender(envelope.from),
-    preview: previewFromSource(msg.source),
     hasAttachments: hasAttachment(msg.bodyStructure),
     attachmentNames: attachmentNames(msg.bodyStructure),
   };
@@ -490,10 +471,6 @@ export default class SyncEngine {
       // RFC 8474 EMAILID (X-GM-MSGID on Gmail) — stable across moves. Servers
       // without OBJECTID simply omit it from the response.
       emailId: true,
-      // The same bounded slice the live listEmails path uses to derive a
-      // preview. Without it a cached listing loses its snippet line until the
-      // body backfill reaches that message — hours, on a large mailbox.
-      source: { start: 0, maxLength: 256 },
     };
 
     let range = '1:*';
@@ -622,7 +599,10 @@ export default class SyncEngine {
       return false;
     };
 
-    const chosen = selectBodyPart(collectTextParts(row.bodyStructure));
+    // Prefer plain for the mirror: it is what search indexes and what an
+    // agent reads, and it is far cheaper to store.
+    const { plain, html } = selectBodyParts(collectTextParts(row.bodyStructure));
+    const chosen = plain ?? html;
     if (!chosen || chosen.size > MAX_CACHED_BODY_BYTES) return giveUp();
 
     try {

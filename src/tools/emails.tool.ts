@@ -8,8 +8,12 @@ import { z } from 'zod';
 import type ImapService from '../services/imap.service.js';
 import type MailReadService from '../services/mail-read.service.js';
 import type { Email, EmailMeta } from '../types/index.js';
-import { stripHtml } from '../utils/html.js';
-import { stripReplyChain } from '../utils/reply-chain.js';
+import {
+  applyBodyFormat,
+  type BodyFormat,
+  DEFAULT_MULTI_BODY_MAX,
+  DEFAULT_SINGLE_BODY_MAX,
+} from '../utils/body-format.js';
 import { emailListOutputSchema, emailStatusOutputSchema } from './schemas.js';
 
 // ---------------------------------------------------------------------------
@@ -36,38 +40,6 @@ function formatEmailMeta(email: EmailMeta): string {
   const labelStr = email.labels.length > 0 ? `\n  🏷️ ${email.labels.join(', ')}` : '';
 
   return `[${email.id}] ${flags} ${email.subject}\n  From: ${from} | ${email.date}${labelStr}${email.preview ? `\n  ${email.preview}` : ''}`;
-}
-
-type BodyFormat = 'full' | 'text' | 'stripped';
-
-/**
- * Applies the requested body format and optional character cap.
- *
- * - full:     raw bodyText ?? bodyHtml (preserves original, default)
- * - text:     prefers bodyText; converts bodyHtml to plain text if needed
- * - stripped: like text, but also removes quoted reply chains and signatures
- */
-function applyBodyFormat(
-  bodyText: string | undefined,
-  bodyHtml: string | undefined,
-  format: BodyFormat,
-  maxLength?: number,
-): string {
-  let body: string;
-
-  if (format === 'full') {
-    body = bodyText ?? bodyHtml ?? '(no content)';
-  } else {
-    const base = bodyText ?? (bodyHtml ? stripHtml(bodyHtml) : undefined) ?? '(no content)';
-    body = format === 'stripped' ? stripReplyChain(base) : base;
-  }
-
-  if (maxLength !== undefined && maxLength > 0 && body.length > maxLength) {
-    const remaining = body.length - maxLength;
-    body = `${body.slice(0, maxLength)}\n\n… (${remaining} more characters — increase maxLength to read the full body)`;
-  }
-
-  return body;
 }
 
 /** Renders the current read/flag/label state as a concise status line. */
@@ -195,8 +167,9 @@ export default function registerEmailsTools(
       description:
         'Get the full content of a specific email by ID. ' +
         'Does NOT mark the email as seen (uses IMAP BODY.PEEK — non-destructive). ' +
-        'Use format="text" to strip HTML, or format="stripped" to also remove quoted replies and signatures. ' +
-        'Use maxLength to cap the body size for large emails. ' +
+        'format: text (default) = HTML converted to readable text with [markdown](links); ' +
+        'stripped = text minus quoted replies and signatures; full = raw body part (HTML mail returns raw HTML). ' +
+        `Body is capped at ${DEFAULT_SINGLE_BODY_MAX} chars by default — pass maxLength (0 = unlimited) to change. ` +
         'Set markRead=true only when you want to explicitly mark the email as read.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
@@ -204,17 +177,17 @@ export default function registerEmailsTools(
         mailbox: z.string().default('INBOX').describe('Mailbox path (default: INBOX)'),
         format: z
           .enum(['full', 'text', 'stripped'])
-          .default('full')
+          .default('text')
           .describe(
-            'Body format: full=raw (default), text=plain text (strips HTML), stripped=plain text without quoted replies or signatures',
+            'Body format: text=readable text with markdown links (default), stripped=text without quoted replies or signatures, full=raw body part',
           ),
         maxLength: z
           .number()
           .int()
-          .min(100)
-          .optional()
+          .min(0)
+          .default(DEFAULT_SINGLE_BODY_MAX)
           .describe(
-            'Truncate body at this many characters. A hint shows how many characters remain.',
+            `Truncate body at this many characters (default ${DEFAULT_SINGLE_BODY_MAX}; 0 = unlimited). A hint shows how many characters remain.`,
           ),
         markRead: z
           .boolean()
@@ -254,6 +227,12 @@ export default function registerEmailsTools(
           parts.push(
             `📎 Attachments: ${email.attachments.map((a) => `${a.filename} (${a.mimeType}, ${formatSize(a.size)})`).join(', ')}`,
           );
+        }
+
+        if (email.deliveryStatus) {
+          // A bounce reads like an ordinary email without this — the codes
+          // that say what actually failed live in a non-text MIME part.
+          parts.push('', '⚠️ Delivery status:', email.deliveryStatus);
         }
 
         parts.push('', '--- Body ---', '');
@@ -306,14 +285,16 @@ export default function registerEmailsTools(
           .enum(['full', 'text', 'stripped'])
           .default('text')
           .describe(
-            'Body format (default: text — strips HTML for efficient AI reading). Use stripped to also remove quoted replies.',
+            'Body format (default: text — HTML converted to readable text with markdown links). Use stripped to also remove quoted replies.',
           ),
         maxLength: z
           .number()
           .int()
-          .min(100)
-          .optional()
-          .describe('Truncate each email body at this many characters.'),
+          .min(0)
+          .default(DEFAULT_MULTI_BODY_MAX)
+          .describe(
+            `Truncate each email body at this many characters (default ${DEFAULT_MULTI_BODY_MAX}; 0 = unlimited).`,
+          ),
       }),
       annotations: { readOnlyHint: true, destructiveHint: false },
     },

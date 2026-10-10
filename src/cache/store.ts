@@ -1032,8 +1032,9 @@ export default class CacheStore {
   }
 
   /**
-   * Look an attachment up the way the tool addresses it: by filename within
-   * one message of one mailbox generation.
+   * Look an attachment up the way the tool addresses it: by the selector the
+   * caller used (MIME part id when available, else filename) within one
+   * message of one mailbox generation.
    */
   getAttachment(
     account: string,
