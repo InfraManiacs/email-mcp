@@ -347,8 +347,17 @@ Run the server in a container — mount your config directory read-only:
 ```bash
 docker run --rm -i \
   -v ~/.config/email-mcp:/home/node/.config/email-mcp:ro \
+  -v email-mcp-state:/home/node/.local/state/email-mcp \
+  -v email-mcp-cache:/home/node/.cache/email-mcp \
   ghcr.io/codefuturist/email-mcp
 ```
+
+The config mount can stay read-only, but **state and cache must be persisted**.
+The image declares both as volumes, so Docker keeps them in anonymous volumes
+if you omit the flags — naming them, as above, is what makes them survive a
+`docker run --rm`. State holds the scheduled-email queue: without it, a restart
+drops every email scheduled but not yet sent. Cache holds the local mirror,
+which is regenerable, so losing that only costs a re-sync.
 
 For MCP client configuration (e.g. Claude Desktop):
 
@@ -360,6 +369,8 @@ For MCP client configuration (e.g. Claude Desktop):
       "args": [
         "run", "--rm", "-i",
         "-v", "~/.config/email-mcp:/home/node/.config/email-mcp:ro",
+        "-v", "email-mcp-state:/home/node/.local/state/email-mcp",
+        "-v", "email-mcp-cache:/home/node/.cache/email-mcp",
         "ghcr.io/codefuturist/email-mcp"
       ]
     }
