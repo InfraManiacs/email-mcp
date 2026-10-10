@@ -84,6 +84,11 @@ export function formatEmailFull(email: Email, opts: Opts): string {
       `${C.bold('Attach: ', opts)}${email.attachments.map((a) => `${a.filename} (${formatSize(a.size)})`).join(', ')}`,
     );
   }
+  if (email.deliveryStatus) {
+    // The part is key-value text over several lines; folded onto one so the
+    // header block stays a block.
+    h.push(`${C.bold('Status: ', opts)}${email.deliveryStatus.replace(/\n/g, '; ')}`);
+  }
   const body =
     email.bodyText?.trim() ||
     (email.bodyHtml ? stripHtml(email.bodyHtml) : '') ||

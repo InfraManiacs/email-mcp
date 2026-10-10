@@ -117,6 +117,25 @@ describe('formatEmailFull', () => {
     expect(out).toContain('’');
     expect(out).toContain('[link](https://x.com/a)');
   });
+
+  // A bounce carries its reason in message/delivery-status, which the service
+  // surfaces separately from the body; without this line the CLI showed the
+  // provider's prose and silently dropped the machine-readable status.
+  it('shows the delivery status of a bounce on one line', () => {
+    const out = formatEmailFull(
+      {
+        ...email,
+        deliveryStatus: 'Action: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 no such user',
+      },
+      { color: false },
+    );
+    expect(out).toContain('Status: ');
+    expect(out).toContain('Action: failed; Status: 5.1.1; Diagnostic-Code: smtp; 550 no such user');
+  });
+
+  it('omits the status line for an ordinary message', () => {
+    expect(formatEmailFull(email, { color: false })).not.toContain('Action: failed');
+  });
 });
 
 describe('formatMailboxes', () => {
