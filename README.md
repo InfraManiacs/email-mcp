@@ -170,6 +170,8 @@ docker build -t ghcr.io/codefuturist/email-mcp .
 
 ```bash
 # Add an email account interactively (recommended)
+# On macOS and Linux this offers to store the password in the OS keychain,
+# so config.toml only carries a `keychain:<account>` reference.
 email-mcp account add
 
 # Or use the legacy alias

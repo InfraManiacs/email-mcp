@@ -1,4 +1,18 @@
-import { buildKeychainStoreArgs, keychainRefFor } from './keychain-store.js';
+import { buildKeychainStoreArgs, keychainRefFor, keychainSupported } from './keychain-store.js';
+
+describe('keychainSupported', () => {
+  // storeSecretNonInteractive has a backend for exactly these two; anywhere
+  // else `account add` must not offer what it cannot do.
+  it('covers the platforms with a keychain backend', () => {
+    expect(keychainSupported('darwin')).toBe(true);
+    expect(keychainSupported('linux')).toBe(true);
+  });
+
+  it('excludes platforms with no backend', () => {
+    expect(keychainSupported('win32')).toBe(false);
+    expect(keychainSupported('freebsd')).toBe(false);
+  });
+});
 
 describe('keychain store helpers', () => {
   it('builds hygienic security args with -w LAST (interactive prompt, no secret in argv)', () => {
