@@ -427,12 +427,14 @@ export default class ImapService {
           messages: true,
           unseen: true,
         });
+        // imapflow's status() returns `false` when the STATUS call is refused
+        // (e.g. a \Noselect folder); leave counts undefined in that case.
         return {
           name: mb.name,
           path: mb.path,
           specialUse: mb.specialUse ?? undefined,
-          totalMessages: status.messages,
-          unseenMessages: status.unseen,
+          totalMessages: status ? status.messages : undefined,
+          unseenMessages: status ? status.unseen : undefined,
         };
       }),
     );
