@@ -22,6 +22,28 @@ type SmtpAuth =
   | { user: string; pass?: string }
   | { type: string; user: string; accessToken: string };
 
+/**
+ * A `starttls = true` account demands an encrypted session on a plain port.
+ * imapflow upgrades opportunistically when the server offers STARTTLS, but it
+ * will also happily stay plaintext when the server does not — so the flag was
+ * silently unenforced (proven E2E against a no-STARTTLS server 2026-10-10).
+ * nodemailer's requireTLS covers SMTP; this is the IMAP counterpart.
+ */
+async function assertImapUpgraded(client: ImapFlow, account: AccountConfig): Promise<void> {
+  if (!account.imap.starttls || account.imap.tls) return;
+  const secured = (client as unknown as { secureConnection?: boolean }).secureConnection;
+  if (secured) return;
+  try {
+    await client.logout();
+  } catch {
+    client.close();
+  }
+  throw new Error(
+    `IMAP connection to ${account.imap.host}:${account.imap.port} stayed plaintext but ` +
+      `starttls = true requires an upgraded session — the server likely does not support STARTTLS.`,
+  );
+}
+
 export default class ConnectionManager implements IConnectionManager {
   private imapClients = new Map<string, ImapFlow>();
 
@@ -104,6 +126,7 @@ export default class ConnectionManager implements IConnectionManager {
     });
 
     await client.connect();
+    await assertImapUpgraded(client, account);
     await mcpLog(
       'info',
       'imap',
@@ -232,6 +255,7 @@ export default class ConnectionManager implements IConnectionManager {
         logger: false,
       });
       await client.connect();
+      await assertImapUpgraded(client, account);
 
       const mailboxes = await client.list();
       let messageCount = 0;
