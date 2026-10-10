@@ -66,6 +66,8 @@ export interface AccountConfig {
   username: string;
   password?: string;
   oauth2?: OAuth2Config;
+  /** Optional per-account attachment cap (MB, base64-encoded total). */
+  maxAttachmentMb?: number;
   imap: ImapConfig;
   smtp: SmtpConfig;
 }
@@ -169,6 +171,11 @@ export interface SendConfig {
   maxAttachmentMb: number;
 }
 
+/** Inbound attachment handling — see AttachmentsConfigSchema for scope. */
+export interface AttachmentsConfig {
+  autoDownload: boolean;
+}
+
 /** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
 export interface CacheConfig {
   enabled: boolean;
@@ -186,6 +193,7 @@ export interface AppConfig {
     server: ServerConfig;
     verification: VerificationConfig;
     send: SendConfig;
+    attachments: AttachmentsConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;
@@ -327,6 +335,8 @@ export interface ProviderConfig {
   domains: string[];
   imap: ImapConfig;
   smtp: SmtpConfig;
+  /** Documented total-message cap (MB, base64-encoded) this provider accepts. */
+  maxAttachmentMb?: number;
   notes?: string;
   oauth2?: {
     authUrl: string;

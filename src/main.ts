@@ -30,6 +30,7 @@ Commands:
   account     Account management (list, add, edit, delete)
   setup       Alias for 'account add'
   test        Test connections for all or a specific account
+  open        Open an email in the native mail client via its message: link (macOS)
   install     Register/unregister with MCP clients (Claude, Cursor, …)
   config      Config management (show, edit, path, init)
   scheduler   Email scheduling management (check, list, install, uninstall, status)
@@ -65,6 +66,8 @@ Examples:
   email-mcp config init              # Create template config
   email-mcp scheduler check          # Send overdue scheduled emails
   email-mcp scheduler install        # Install OS periodic check
+  email-mcp open 234                 # Open email 234 (INBOX) in Mail.app
+  email-mcp open 234 --print         # Print the message: URL instead of opening it
   email-mcp notify test              # Send a test notification
   email-mcp notify status            # Check notification platform support
   email-mcp update                   # Update the binary to the latest release
@@ -166,6 +169,12 @@ async function main(): Promise<void> {
     case 'test': {
       const { default: runTest } = await import('./cli/test.js');
       await runTest(process.argv[3]);
+      break;
+    }
+
+    case 'open': {
+      const { default: runOpenCommand } = await import('./cli/open-command.js');
+      await runOpenCommand(process.argv.slice(3));
       break;
     }
 

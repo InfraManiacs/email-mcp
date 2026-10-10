@@ -162,6 +162,50 @@ describe('ImapService', () => {
     });
   });
 
+  describe('searchEmails cache supplement', () => {
+    function fetchYielding(...messages: Record<string, unknown>[]) {
+      return () =>
+        (async function* gen() {
+          for (const m of messages) yield m;
+        })();
+    }
+
+    function stubMailbox() {
+      (client as unknown as { mailbox: { uidValidity: bigint } }).mailbox = {
+        uidValidity: 100n,
+      };
+    }
+
+    it('unions cached FTS hits (attachment filenames) into live results', async () => {
+      stubMailbox();
+      client.search.mockResolvedValue([5]);
+      client.fetch.mockImplementation(
+        fetchYielding(
+          { uid: 9, envelope: { subject: 'Q3 report attached' }, flags: [] },
+          { uid: 5, envelope: { subject: 'report discussion' }, flags: [] },
+        ),
+      );
+      const cacheStub = { searchMessages: vi.fn().mockReturnValue([{ uid: 9 }, { uid: 5 }]) };
+      service.setCacheStore(cacheStub as never);
+
+      const result = await service.searchEmails('test', 'report', {});
+
+      expect(cacheStub.searchMessages).toHaveBeenCalledWith('test', 'INBOX', '100', 'report');
+      expect(result.total).toBe(2);
+    });
+
+    it('leaves the cache out when structured filters are active', async () => {
+      stubMailbox();
+      client.search.mockResolvedValue([]);
+      const cacheStub = { searchMessages: vi.fn().mockReturnValue([{ uid: 9 }]) };
+      service.setCacheStore(cacheStub as never);
+
+      await service.searchEmails('test', 'report', { to: 'someone@example.com' });
+
+      expect(cacheStub.searchMessages).not.toHaveBeenCalled();
+    });
+  });
+
   // -----------------------------------------------------------------------
   // getEmail — body part selection
   // -----------------------------------------------------------------------

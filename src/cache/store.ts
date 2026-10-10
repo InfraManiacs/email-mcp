@@ -41,6 +41,8 @@ export interface CachedMessageInput {
   fromText?: string;
   preview?: string;
   hasAttachments: boolean;
+  /** Attachment filenames, indexed for full-text search. */
+  attachmentNames?: string[];
 }
 
 /** A message as read back out of the mirror. */
@@ -63,6 +65,7 @@ export interface CachedMessage {
   bodyText?: string;
   bodyFetchedAt?: number;
   hasAttachments: boolean;
+  attachmentNames: string[];
   cachedAt: number;
 }
 
@@ -123,6 +126,7 @@ interface MessageRow {
   body_text: string | null;
   body_fetched_at: number | null;
   has_attachments: number;
+  attachment_names: string | null;
   cached_at: number;
 }
 
@@ -146,6 +150,7 @@ function rowToMessage(row: MessageRow): CachedMessage {
     bodyText: row.body_text ?? undefined,
     bodyFetchedAt: row.body_fetched_at ?? undefined,
     hasAttachments: row.has_attachments === 1,
+    attachmentNames: row.attachment_names ? row.attachment_names.split('\n') : [],
     cachedAt: row.cached_at,
   };
 }
@@ -199,16 +204,17 @@ export default class CacheStore {
   }
 
   /**
-   * Apply the schema, rebuilding from scratch if the file was written by a
-   * newer build. The mirror is regenerable, so discarding it is always safe
-   * and is preferable to failing at startup.
+   * Apply the schema, rebuilding from scratch if the file was written by any
+   * other build (older or newer — CREATE IF NOT EXISTS cannot reshape an
+   * existing table). The mirror is regenerable, so discarding it is always
+   * safe and is preferable to failing at startup.
    */
   private migrate(): void {
     const { user_version: version } = this.db.prepare('PRAGMA user_version').get() as {
       user_version: number;
     };
 
-    if (version > SCHEMA_VERSION) {
+    if (version !== SCHEMA_VERSION) {
       this.db.exec('DROP TABLE IF EXISTS message_fts');
       this.db.exec('DROP TABLE IF EXISTS message');
       this.db.exec('DROP TABLE IF EXISTS mailbox_state');
@@ -277,8 +283,8 @@ export default class CacheStore {
         envelope_json, body_structure_json, flags_json,
         message_id, in_reply_to, references_json,
         internal_date, subject, from_text, preview,
-        has_attachments, cached_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        has_attachments, attachment_names, cached_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (account, mailbox, uid, uid_validity) DO UPDATE SET
         modseq              = excluded.modseq,
         envelope_json       = excluded.envelope_json,
@@ -292,6 +298,7 @@ export default class CacheStore {
         from_text           = excluded.from_text,
         preview             = excluded.preview,
         has_attachments     = excluded.has_attachments,
+        attachment_names    = excluded.attachment_names,
         cached_at           = excluded.cached_at
     `);
 
@@ -315,6 +322,7 @@ export default class CacheStore {
           m.fromText ?? null,
           m.preview ?? null,
           m.hasAttachments ? 1 : 0,
+          m.attachmentNames?.length ? m.attachmentNames.join('\n') : null,
           now,
         );
       });

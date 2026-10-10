@@ -9,6 +9,7 @@ import type { ProviderConfig } from '../types/index.js';
 export const PROVIDERS: ProviderConfig[] = [
   {
     name: 'Gmail',
+    maxAttachmentMb: 25,
     domains: ['gmail.com', 'googlemail.com'],
     imap: {
       host: 'imap.gmail.com',
@@ -33,6 +34,7 @@ export const PROVIDERS: ProviderConfig[] = [
   },
   {
     name: 'Outlook / Hotmail',
+    maxAttachmentMb: 20,
     domains: ['outlook.com', 'hotmail.com', 'live.com', 'outlook.de', 'outlook.co.uk'],
     imap: {
       host: 'outlook.office365.com',
@@ -60,6 +62,7 @@ export const PROVIDERS: ProviderConfig[] = [
   },
   {
     name: 'Yahoo Mail',
+    maxAttachmentMb: 25,
     domains: ['yahoo.com', 'yahoo.co.uk', 'yahoo.de', 'ymail.com'],
     imap: {
       host: 'imap.mail.yahoo.com',
@@ -79,6 +82,7 @@ export const PROVIDERS: ProviderConfig[] = [
   },
   {
     name: 'iCloud',
+    maxAttachmentMb: 20,
     domains: ['icloud.com', 'me.com', 'mac.com'],
     imap: {
       host: 'imap.mail.me.com',
@@ -98,6 +102,7 @@ export const PROVIDERS: ProviderConfig[] = [
   },
   {
     name: 'Fastmail',
+    maxAttachmentMb: 50,
     domains: ['fastmail.com', 'fastmail.fm'],
     imap: {
       host: 'imap.fastmail.com',
@@ -116,6 +121,7 @@ export const PROVIDERS: ProviderConfig[] = [
   },
   {
     name: 'ProtonMail Bridge',
+    maxAttachmentMb: 25,
     domains: ['proton.me', 'protonmail.com', 'protonmail.ch', 'pm.me'],
     imap: {
       host: '127.0.0.1',
@@ -153,6 +159,7 @@ export const PROVIDERS: ProviderConfig[] = [
   },
   {
     name: 'GMX',
+    maxAttachmentMb: 20,
     domains: ['gmx.com', 'gmx.de', 'gmx.net', 'gmx.at', 'gmx.ch'],
     imap: {
       host: 'imap.gmx.net',
@@ -180,4 +187,21 @@ export function detectProvider(email: string): ProviderConfig | undefined {
   if (!domain) return undefined;
 
   return PROVIDERS.find((p) => p.domains.includes(domain));
+}
+
+/**
+ * Identify the provider behind a configured account.
+ *
+ * The SMTP host is the strongest signal (it also catches custom domains
+ * routed through a known provider, e.g. ProtonMail Bridge on 127.0.0.1);
+ * the email domain is the fallback for custom relays.
+ */
+export function findProviderForAccount(account: {
+  email: string;
+  smtp: { host: string };
+}): ProviderConfig | undefined {
+  const host = account.smtp.host.toLowerCase();
+  const byHost = PROVIDERS.find((p) => p.smtp.host.toLowerCase() === host);
+  if (byHost) return byHost;
+  return detectProvider(account.email);
 }

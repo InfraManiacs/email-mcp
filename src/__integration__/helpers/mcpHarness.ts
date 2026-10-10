@@ -42,7 +42,10 @@ export async function createMcpHarness(
   const server = createServer();
   registerEmailsTools(server, imapService);
   registerAttachmentTools(server, imapService);
-  registerSendTools(server, smtpService, maxAttachmentMb);
+  registerSendTools(server, smtpService, {
+    globalMb: maxAttachmentMb,
+    forAccount: () => maxAttachmentMb,
+  });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'integration-tool-harness', version: '0.0.0' });

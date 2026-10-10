@@ -103,6 +103,15 @@ export const COMMANDS: CommandSpec[] = [
   { name: 'setup', description: "Alias for 'account add'" },
   { name: 'test', description: 'Test IMAP/SMTP connections', arg: 'accounts' },
   {
+    name: 'open',
+    description: 'Open an email in the native mail client (macOS)',
+    flags: [
+      { flag: '--mailbox', description: 'Mailbox containing the email', takesValue: true },
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--print', description: 'Print the message: URL instead of opening it' },
+    ],
+  },
+  {
     name: 'install',
     description: 'Register with MCP clients',
     subcommands: [

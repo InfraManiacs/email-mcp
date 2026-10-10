@@ -87,6 +87,9 @@ function loadFromEnv(): RawAppConfig | null {
       send: {
         max_attachment_mb: parseInt(process.env.MCP_EMAIL_SEND_MAX_ATTACHMENT_MB ?? '25', 10),
       },
+      attachments: {
+        auto_download: process.env.MCP_EMAIL_ATTACHMENTS_AUTO_DOWNLOAD !== 'false',
+      },
       cache: {
         // Opt-out rather than opt-in: the mirror is a pure win for reads and
         // degrades to live behaviour if anything goes wrong.
@@ -214,6 +217,7 @@ function normalizeAccount(raw: RawAccountConfig): AccountConfig {
     username: raw.username ?? raw.email,
     password: raw.password,
     oauth2: raw.oauth2 ? normalizeOAuth2(raw.oauth2) : undefined,
+    maxAttachmentMb: raw.max_attachment_mb,
     imap: {
       host: raw.imap.host,
       port: raw.imap.port,
@@ -286,6 +290,9 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       },
       send: {
         maxAttachmentMb: raw.settings.send.max_attachment_mb,
+      },
+      attachments: {
+        autoDownload: raw.settings.attachments.auto_download,
       },
       cache: {
         enabled: raw.settings.cache.enabled,
@@ -495,9 +502,18 @@ read_only = false  # set to true to disable all write operations
 
 # Outbound sends. Caps the base64-encoded total of all attachments on one
 # message; oversized sends fail locally with a per-file listing instead of a
-# provider-side 552.
+# provider-side 552. Known providers (Gmail, Outlook, Proton, …) are capped
+# at their documented limit when it is stricter; set max_attachment_mb on an
+# individual [[accounts]] entry to override both for that account.
 # [settings.send]
 # max_attachment_mb = 25
+
+# Inbound attachment handling. auto_download controls whether attachments are
+# saved locally as a side effect of calendar events created from emails
+# (add_to_calendar and watcher hooks). Explicit download_attachment calls are
+# never affected.
+# [settings.attachments]
+# auto_download = true
 
 # [settings.watcher]
 # enabled = false        # enable IMAP IDLE real-time monitoring
@@ -555,6 +571,9 @@ full_name = "Your Name"
 # username defaults to email if omitted
 # username = "you@example.com"
 password = "your-app-password"
+# Per-account attachment cap (MB, base64-encoded total). Overrides the global
+# [settings.send] cap and the provider's documented limit for this account.
+# max_attachment_mb = 25
 
 [accounts.imap]
 host = "imap.example.com"

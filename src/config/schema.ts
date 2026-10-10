@@ -52,6 +52,12 @@ export const AccountConfigSchema = z
     oauth2: OAuth2ConfigSchema.optional(),
     imap: ImapConfigSchema,
     smtp: SmtpConfigSchema,
+    /**
+     * Optional per-account attachment cap (MB, base64-encoded total).
+     * Overrides both the global `[settings.send]` cap and the provider's
+     * documented limit for this account.
+     */
+    max_attachment_mb: z.number().int().min(1).optional(),
   })
   .refine((data) => data.password ?? data.oauth2, {
     message: 'Either password or oauth2 config is required',
@@ -197,6 +203,16 @@ export const SendConfigSchema = z.object({
   max_attachment_mb: z.number().int().min(1).default(25),
 });
 
+/**
+ * Inbound attachment handling. `auto_download` controls whether attachments
+ * are saved locally as a side effect of other actions — calendar events
+ * created from emails (tools and watcher hooks) link saved copies in their
+ * notes. Explicit `download_attachment` calls are never affected.
+ */
+export const AttachmentsConfigSchema = z.object({
+  auto_download: z.boolean().default(true),
+});
+
 export const SettingsSchema = z.object({
   rate_limit: z.number().int().min(1).default(10),
   read_only: z.boolean().default(false),
@@ -228,6 +244,9 @@ export const SettingsSchema = z.object({
   ),
   send: SendConfigSchema.default(
     () => ({ max_attachment_mb: 25 }) as z.infer<typeof SendConfigSchema>,
+  ),
+  attachments: AttachmentsConfigSchema.default(
+    () => ({ auto_download: true }) as z.infer<typeof AttachmentsConfigSchema>,
   ),
   cache: CacheConfigSchema.default(
     () =>
@@ -299,6 +318,7 @@ export const AppConfigFileSchema = z.object({
           sender_denylist: [],
         },
         send: { max_attachment_mb: 25 },
+        attachments: { auto_download: true },
         cache: {
           enabled: true,
           mailboxes: ['INBOX'],
