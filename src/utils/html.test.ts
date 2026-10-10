@@ -101,6 +101,116 @@ describe('stripHtml — invisible characters', () => {
   });
 });
 
+describe('stripHtml — links', () => {
+  it('converts an anchor into a markdown link', () => {
+    expect(
+      stripHtml('<p>Confirm: <a href="https://example.com/verify?t=abc">Verify email</a></p>'),
+    ).toBe('Confirm: [Verify email](https://example.com/verify?t=abc)');
+  });
+
+  it('collapses an anchor whose text is its own URL to the bare URL', () => {
+    expect(stripHtml('<a href="https://example.com/help">https://example.com/help</a>')).toBe(
+      'https://example.com/help',
+    );
+    // Scheme, www. and a trailing slash are display noise, not a different link.
+    expect(stripHtml('<a href="https://www.example.com/">example.com</a>')).toBe(
+      'https://www.example.com/',
+    );
+  });
+
+  it('decodes &amp; inside a preserved href', () => {
+    expect(stripHtml('<a href="https://x.com/?a=1&amp;b=2">link</a>')).toBe(
+      '[link](https://x.com/?a=1&b=2)',
+    );
+  });
+
+  it('drops javascript:, fragment, and empty hrefs but keeps the text', () => {
+    expect(stripHtml('<a href="javascript:void(0)">menu</a>')).toBe('menu');
+    expect(stripHtml('<a href="#section">jump</a>')).toBe('jump');
+    expect(stripHtml('<a href="">nothing</a>')).toBe('nothing');
+  });
+
+  it('collapses a mailto link with matching text to the bare address', () => {
+    expect(stripHtml('<a href="mailto:ada@example.com">ada@example.com</a>')).toBe(
+      'ada@example.com',
+    );
+    expect(stripHtml('<a href="mailto:ada@example.com">Contact us</a>')).toBe(
+      '[Contact us](mailto:ada@example.com)',
+    );
+  });
+
+  it('uses image alt text for an image-only anchor, or the bare URL without one', () => {
+    expect(stripHtml('<a href="https://x.com"><img src="https://c.dn/l.png" alt="Logo"></a>')).toBe(
+      '[Logo](https://x.com)',
+    );
+    expect(stripHtml('<a href="https://x.com"><img src="cid:img1" alt=""></a>')).toBe(
+      'https://x.com',
+    );
+  });
+});
+
+describe('stripHtml — images', () => {
+  it('renders alt text as an image placeholder', () => {
+    expect(stripHtml('<p>See <img src="https://c.dn/chart.png" alt="Q3 chart"> above</p>')).toBe(
+      'See [image: Q3 chart] above',
+    );
+  });
+
+  it('marks an inline cid image without alt text', () => {
+    // cid: parts ship with the message — the model should know one exists.
+    expect(stripHtml('<p>Logo: <img src="cid:logo@x"></p>')).toBe('Logo: [image]');
+  });
+
+  it('drops remote images without alt text (tracking pixels, spacers)', () => {
+    expect(stripHtml('<p>Hi<img src="https://t.rack/px.gif" width="1"></p>')).toBe('Hi');
+  });
+});
+
+describe('stripHtml — structure', () => {
+  it('separates table cells with pipes and rows with newlines', () => {
+    const html = '<table><tr><th>Name</th><th>Age</th></tr><tr><td>Ann</td><td>7</td></tr></table>';
+    expect(stripHtml(html)).toBe('Name | Age\nAnn | 7');
+  });
+
+  it('degrades single-cell layout tables to plain lines without pipe noise', () => {
+    const html = '<table><tr><td>Hello</td></tr><tr><td>World</td></tr></table>';
+    expect(stripHtml(html)).toBe('Hello\nWorld');
+  });
+
+  it('separates headings from surrounding text', () => {
+    expect(stripHtml('intro<h1>Title</h1>para')).toBe('intro\n\nTitle\n\npara');
+  });
+
+  it('treats <br> with attributes as a line break', () => {
+    expect(stripHtml('a<br class="x">b')).toBe('a\nb');
+  });
+
+  it('renders a horizontal rule as a divider line', () => {
+    expect(stripHtml('a<hr>b')).toBe('a\n---\nb');
+  });
+
+  it('prefixes blockquote content with "> "', () => {
+    expect(stripHtml('<p>reply</p><blockquote><p>original</p></blockquote>')).toBe(
+      'reply\n\n> original',
+    );
+  });
+
+  it('nests blockquote prefixes', () => {
+    const html = '<blockquote><p>outer</p><blockquote><p>inner</p></blockquote></blockquote>';
+    expect(stripHtml(html)).toBe('> outer\n\n> > inner');
+  });
+
+  it('numbers ordered list items', () => {
+    expect(stripHtml('<ol><li>first</li><li>second</li></ol>')).toBe('1. first\n2. second');
+  });
+
+  it('keeps bullets for an unordered list nested inside an ordered one', () => {
+    expect(stripHtml('<ol><li>one<ul><li>sub</li></ul></li><li>two</li></ol>')).toBe(
+      '1. one\n• sub\n2. two',
+    );
+  });
+});
+
 describe('stripHtml', () => {
   it('removes tags and collapses block elements into newlines', () => {
     expect(stripHtml('<p>one</p><p>two</p>')).toBe('one\n\ntwo');
