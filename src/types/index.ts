@@ -260,6 +260,12 @@ export interface Email extends EmailMeta {
   references?: string[];
   attachments: AttachmentMeta[];
   headers: Record<string, string>;
+  /**
+   * Machine-readable status of a bounce (multipart/report's
+   * message/delivery-status part): Action, Status, Diagnostic-Code. Separate
+   * from the body so it can never displace the human-readable explanation.
+   */
+  deliveryStatus?: string;
 }
 
 // ---------------------------------------------------------------------------

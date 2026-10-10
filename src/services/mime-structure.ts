@@ -135,26 +135,29 @@ function walkTextParts(
   partPath: string,
   excluded: boolean,
   isRoot: boolean,
+  allowEncapsulated = false,
 ): TextPart[] {
   if (!bodyStructure || typeof bodyStructure !== 'object') return [];
 
   const bs = bodyStructure as Record<string, unknown>;
   const effectivePath = (bs.part as string | undefined) ?? partPath;
   const { type, subtype } = splitMimeType(bs.type);
+  const isEncapsulated = !isRoot && type === 'message' && subtype === 'rfc822';
 
   // An attached subtree is never body content — neither is a message
   // encapsulated inside this one (a forwarded .eml), whose text parts belong
-  // to the attachment, not to the message being read.
-  const nodeExcluded =
-    excluded ||
-    bs.disposition === 'attachment' ||
-    (!isRoot && type === 'message' && subtype === 'rfc822');
+  // to the attachment, not to the message being read. `allowEncapsulated`
+  // lifts both exclusions for the fallback pass in collectTextParts, where
+  // the encapsulated text is the only text there is.
+  const nodeExcluded = allowEncapsulated
+    ? excluded
+    : excluded || bs.disposition === 'attachment' || isEncapsulated;
 
   if (Array.isArray(bs.childNodes)) {
     const found: TextPart[] = [];
     bs.childNodes.forEach((child, i) => {
       const childPath = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
-      found.push(...walkTextParts(child, childPath, nodeExcluded, false));
+      found.push(...walkTextParts(child, childPath, nodeExcluded, false, allowEncapsulated));
     });
     return found;
   }
@@ -183,9 +186,15 @@ function walkTextParts(
  * contents of embedded message/rfc822 parts. Part paths come from `bs.part`
  * when the server supplies one, otherwise from the 1-based child index chain
  * (mirroring the traversal in `findMimePartByFilename`).
+ *
+ * A message whose only text lives inside encapsulated messages — "forward as
+ * attachment" with no covering note, or a mailing-list digest — is retried
+ * with that exclusion lifted, since otherwise there is no body to show at all.
  */
 export function collectTextParts(bodyStructure: unknown, partPath = ''): TextPart[] {
-  return walkTextParts(bodyStructure, partPath, false, true);
+  const own = walkTextParts(bodyStructure, partPath, false, true);
+  if (own.length > 0) return own;
+  return walkTextParts(bodyStructure, partPath, false, true, true);
 }
 
 /**
@@ -307,7 +316,7 @@ export function parseHeaders(raw: unknown): Record<string, string> {
   // continuation lines. decodeWords is a no-op on values without "=?".
   Object.keys(headers).forEach((key) => {
     const value = headers[key];
-    if (value !== undefined && value.includes('=?')) {
+    if (value?.includes('=?')) {
       try {
         headers[key] = libmime.decodeWords(value);
       } catch {

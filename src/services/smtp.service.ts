@@ -182,12 +182,28 @@ export default class SmtpService {
     const original = await this.imapService.getEmail(accountName, options.emailId, options.mailbox);
 
     // Carry the original's attachments unless explicitly declined -- a forward
-    // that silently strips them misrepresents the original message. Inline
-    // parts (cid images referenced by the HTML) stay behind: the forward is
-    // composed as text, so re-attaching them would turn layout images into
-    // stray attachments.
-    const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
-    const forwardable = (original.attachments ?? []).filter((a) => !a.inline);
+    // that silently strips them misrepresents the original message.
+    //
+    // What "inline" means here depends on whether the original HTML actually
+    // embeds the part. A part its <img src="cid:..."> points at is layout: it
+    // travels along, still inline, when the HTML does (otherwise the images
+    // break), and is dropped when the forward is plain text because nothing
+    // references it. An inline part nothing embeds is a real file the sender
+    // attached — Apple Mail ships user-inserted photos as `inline; filename=`
+    // — so it forwards like any other attachment.
+    const embedded = (contentId: string | undefined): boolean =>
+      contentId !== undefined && (original.bodyHtml?.includes(`cid:${contentId}`) ?? false);
+
+    const attachments: {
+      filename: string;
+      content: Buffer;
+      contentType: string;
+      cid?: string;
+      contentDisposition?: 'inline';
+    }[] = [];
+    const forwardable = (original.attachments ?? []).filter(
+      (a) => !embedded(a.contentId) || options.html === true,
+    );
     if (options.includeAttachments !== false && forwardable.length) {
       for (const meta of forwardable) {
         const dl = await this.imapService.downloadAttachment(
@@ -197,26 +213,36 @@ export default class SmtpService {
           meta.partId !== undefined ? { partId: meta.partId } : meta.filename,
           FORWARD_ATTACHMENT_MAX_BYTES,
         );
+        const keepsEmbedding = embedded(meta.contentId);
         attachments.push({
           filename: dl.filename,
           content: Buffer.from(dl.contentBase64, 'base64'),
           contentType: dl.mimeType,
+          ...(keepsEmbedding && meta.contentId
+            ? { cid: meta.contentId, contentDisposition: 'inline' as const }
+            : {}),
         });
       }
     }
 
+    // Envelope fields arrive RFC 2047-decoded with no newline stripping, and
+    // the forward header block below is NOT "> "-quoted — so a crafted
+    // subject or display name could forge a "From:" line a reader would take
+    // as genuine. Collapse any line break before interpolating.
+    const oneLine = (value: string): string => value.replace(/[\r\n]+/g, ' ').trim();
+
     const subject = original.subject.startsWith('Fwd:')
-      ? original.subject
-      : `Fwd: ${original.subject}`;
+      ? oneLine(original.subject)
+      : `Fwd: ${oneLine(original.subject)}`;
 
     // Build forwarded message body
     const forwardHeader = [
       '',
       '---------- Forwarded message ----------',
-      `From: ${original.from.name ? `${original.from.name} <${original.from.address}>` : original.from.address}`,
-      `Date: ${original.date}`,
-      `Subject: ${original.subject}`,
-      `To: ${original.to.map((a) => a.address).join(', ')}`,
+      `From: ${original.from.name ? `${oneLine(original.from.name)} <${oneLine(original.from.address)}>` : oneLine(original.from.address)}`,
+      `Date: ${oneLine(original.date)}`,
+      `Subject: ${oneLine(original.subject)}`,
+      `To: ${original.to.map((a) => oneLine(a.address)).join(', ')}`,
       '',
     ].join('\n');
 

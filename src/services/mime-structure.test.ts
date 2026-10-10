@@ -234,6 +234,39 @@ describe('collectTextParts', () => {
     };
     expect(collectTextParts(bs).map((p) => p.path)).toEqual(['1']);
   });
+
+  it('falls back to encapsulated text when the message has no body of its own', () => {
+    // "Forward as attachment" with no covering note, and mailing-list
+    // digests, carry their only readable text inside message/rfc822 parts.
+    // Excluding those unconditionally left the reader with "(no content)".
+    const forwardedOnly = {
+      type: 'multipart/mixed',
+      childNodes: [
+        { type: 'message/rfc822', disposition: 'attachment', childNodes: [textPlain(300)] },
+      ],
+    };
+    expect(collectTextParts(forwardedOnly).map((p) => p.path)).toEqual(['1.1']);
+
+    const digest = {
+      type: 'multipart/digest',
+      childNodes: [
+        { type: 'message/rfc822', childNodes: [textPlain(200)] },
+        { type: 'message/rfc822', childNodes: [textPlain(250)] },
+      ],
+    };
+    expect(collectTextParts(digest).map((p) => p.path)).toEqual(['1.1', '2.1']);
+  });
+
+  it("still prefers the message's own body over encapsulated text", () => {
+    const bs = {
+      type: 'multipart/mixed',
+      childNodes: [
+        textHtml(),
+        { type: 'message/rfc822', disposition: 'attachment', childNodes: [textPlain(300)] },
+      ],
+    };
+    expect(collectTextParts(bs).map((p) => p.path)).toEqual(['1']);
+  });
 });
 
 describe('selectBodyParts', () => {

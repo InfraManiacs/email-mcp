@@ -1,4 +1,5 @@
 import { decodeEntities, stripHtml } from './html.js';
+import { stripReplyChain } from './reply-chain.js';
 
 describe('decodeEntities', () => {
   it('decodes named entities', () => {
@@ -163,6 +164,58 @@ describe('stripHtml — images', () => {
 
   it('drops remote images without alt text (tracking pixels, spacers)', () => {
     expect(stripHtml('<p>Hi<img src="https://t.rack/px.gif" width="1"></p>')).toBe('Hi');
+  });
+});
+
+describe('stripHtml — sender-controlled hostile input', () => {
+  it('cannot be tricked into quoting content with entity-encoded quote markers', () => {
+    // The blockquote markers are private-use characters stripped from the
+    // input — but entity references decode AFTER that strip, so
+    // "&#xE000;" would smuggle a live marker in and make everything after it
+    // look quoted. stripReplyChain then deletes it entirely, letting a sender
+    // choose what the model never sees.
+    const html = '<p>Dear customer,</p><p>&#xE000;</p><p>Please wire CHF 50000.</p>';
+    const out = stripHtml(html);
+
+    expect(out).toContain('Please wire CHF 50000.');
+    expect(out).not.toMatch(/^>/m);
+    expect(stripReplyChain(out)).toContain('Please wire CHF 50000.');
+  });
+
+  it('keeps a decimal-encoded marker inert too', () => {
+    expect(stripHtml('<p>a</p><p>&#57345;</p><p>b</p>')).not.toMatch(/^>/m);
+  });
+
+  it('converts a document full of unclosed anchors promptly', () => {
+    // ANCHOR_RE's trailing lazy scan is quadratic against unclosed tags: 50k
+    // of them took >4s, blocking the loop that also serves IMAP IDLE, the
+    // watcher, and the scheduler.
+    const html = '<a href=x>'.repeat(50_000);
+    const started = process.hrtime.bigint();
+
+    stripHtml(html);
+
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  it('does not leak attribute text when a quoted value contains ">"', () => {
+    // "a > b" needs no escaping inside an attribute value, so this is valid
+    // mail — but a tag matcher that stops at the first ">" cuts mid-attribute
+    // and spills the rest, URL and quote characters included, into the body.
+    const out = stripHtml('<a title="a > b" href="https://e.test/x">click</a>');
+
+    expect(out).toBe('[click](https://e.test/x)');
+    expect(stripHtml('<img alt="Price > 100" src="cid:p">')).toBe('[image: Price > 100]');
+    expect(stripHtml('<td style="a>b">cell</td>')).toBe('cell');
+  });
+
+  it('drops an unclosed style or script block instead of printing its source', () => {
+    // A >512KB newsletter is truncated mid-markup by the body cap, which
+    // routinely produces exactly this shape.
+    expect(stripHtml('<p>hi</p><style>.a{color:red} /*')).toBe('hi');
+    expect(stripHtml('<p>hi</p><script>var a = 1;')).toBe('hi');
+    expect(stripHtml('<p>hi</p><!-- unterminated comment')).toBe('hi');
   });
 });
 

@@ -223,6 +223,12 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
           );
         }
 
+        if (email.deliveryStatus) {
+          // A bounce reads like an ordinary email without this — the codes
+          // that say what actually failed live in a non-text MIME part.
+          parts.push('', '⚠️ Delivery status:', email.deliveryStatus);
+        }
+
         parts.push('', '--- Body ---', '');
         parts.push(
           applyBodyFormat(email.bodyText, email.bodyHtml, format as BodyFormat, maxLength),

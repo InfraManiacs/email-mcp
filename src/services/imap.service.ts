@@ -107,6 +107,18 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
 const BODY_PART_MAX_BYTES = 512 * 1024;
 
 /**
+ * Reject a header value containing a line break.
+ *
+ * `saveDraft` assembles an RFC 822 message by hand, so a CR or LF in a value
+ * injects arbitrary headers or terminates the header block early.
+ */
+function assertNoCrlf(value: string, field: string): void {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${field} must not contain a line break`);
+  }
+}
+
+/**
  * Download one body part, transfer-decoded by ImapFlow, bounded by
  * BODY_PART_MAX_BYTES. Past the cap the stream is still drained to the end —
  * destroying an ImapFlow download stream mid-command corrupts the
@@ -187,12 +199,16 @@ async function messageToEmail(
   }
 
   // Bounces carry their actual status codes in a machine-readable part that
-  // is not text/* and would otherwise never be surfaced.
+  // is not text/* and would otherwise never be surfaced. It gets its own
+  // field rather than being appended to bodyText: the human-readable
+  // explanation is often the HTML part, and applyBodyFormat prefers bodyText,
+  // so appending there would show the status block and hide the reason.
+  let deliveryStatus: string | undefined;
   const statusPath = findDeliveryStatusPart(msg.bodyStructure);
   if (statusPath) {
     const status = await downloadBodyPart(client, uid, statusPath);
     if (status?.trim()) {
-      bodyText = `${bodyText ?? ''}\n\n--- Delivery status ---\n${status.trim()}`.trim();
+      deliveryStatus = status.trim();
     }
   }
 
@@ -207,6 +223,7 @@ async function messageToEmail(
     references: headers.references?.split(/\s+/).filter(Boolean),
     attachments: extractAttachments(msg.bodyStructure),
     headers,
+    deliveryStatus,
   };
 }
 
@@ -1122,6 +1139,15 @@ export default class ImapService {
       references?: string[];
     },
   ): Promise<{ id: number; mailbox: string }> {
+    // Validate before touching the network: every one of these is spliced
+    // into a hand-assembled header block.
+    assertNoCrlf(options.subject, 'Subject');
+    for (const addr of options.to) assertNoCrlf(addr, 'Recipient');
+    for (const addr of options.cc ?? []) assertNoCrlf(addr, 'CC recipient');
+    for (const addr of options.bcc ?? []) assertNoCrlf(addr, 'BCC recipient');
+    if (options.inReplyTo) assertNoCrlf(options.inReplyTo, 'In-Reply-To');
+    for (const ref of options.references ?? []) assertNoCrlf(ref, 'References entry');
+
     const client = await this.connections.getImapClient(accountName);
     const account = this.connections.getAccount(accountName);
 
@@ -1319,7 +1345,14 @@ export default class ImapService {
       // means the decode never ran — apply it here.
       const downloadMeta = downloadResult.meta as Record<string, unknown> | undefined;
       if (attachment.encoding === 'base64' && downloadMeta?.encoding === undefined) {
-        content = Buffer.from(content.toString('latin1'), 'base64');
+        // Only when the bytes really do look like base64 text. A server that
+        // withholds the MIME section *and* serves the part via FETCH BINARY
+        // hands back already-decoded data, and Buffer.from(…, 'base64') would
+        // mangle it silently rather than throwing.
+        const asText = content.toString('latin1');
+        if (/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(asText)) {
+          content = Buffer.from(asText, 'base64');
+        }
       }
 
       return {
@@ -1370,10 +1403,12 @@ export default class ImapService {
         { uid: true },
       );
       if (!msg) return [];
-      // Inline parts (signature logos, cid images) are not what a "save the
-      // attachments" caller wants on disk.
+      // Inline parts with no filename are layout machinery (spacers, tracking
+      // pixels) and not worth a file on disk — but one that carries a filename
+      // is a real file: Apple Mail ships user-inserted photos as
+      // `inline; filename=...`, and dropping those loses the user's data.
       // biome-ignore format: line too long; eslint implicit-arrow-linebreak prevents multi-line implicit return
-      attachmentMetas = extractAttachments(msg.bodyStructure).filter((a) => !a.inline && a.size <= maxSizeBytes && !a.mimeType.includes('calendar') && !a.filename.toLowerCase().endsWith('.ics'));
+      attachmentMetas = extractAttachments(msg.bodyStructure).filter((a) => !(a.inline && a.filename === 'unnamed') && a.size <= maxSizeBytes && !a.mimeType.includes('calendar') && !a.filename.toLowerCase().endsWith('.ics'));
     } finally {
       lock.release();
     }

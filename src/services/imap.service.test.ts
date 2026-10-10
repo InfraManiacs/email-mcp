@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { IConnectionManager } from '../connections/types.js';
 import eventBus from './event-bus.js';
 import ImapService from './imap.service.js';
@@ -484,6 +488,35 @@ describe('ImapService', () => {
       expect(email.bodyHtml).toContain('truncated');
     });
 
+    it('keeps the human-readable part of an HTML bounce alongside the status', async () => {
+      // Appending the status into bodyText when the explanation is HTML makes
+      // applyBodyFormat prefer the status block and never show the reason.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Undelivered', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: {
+          type: 'multipart/report',
+          childNodes: [
+            { part: '1', type: 'text/html', size: 300 },
+            { part: '2', type: 'message/delivery-status', size: 200 },
+          ],
+        },
+        headers: Buffer.from('Subject: Undelivered\r\n\r\n', 'utf-8'),
+      });
+      client.download.mockImplementation(async (_uid: string, path: string) =>
+        downloadYielding(
+          path === '2' ? 'Action: failed\nStatus: 5.1.1' : '<p>Your message bounced.</p>',
+        ),
+      );
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bodyHtml).toContain('Your message bounced.');
+      expect(email.bodyText).toBeUndefined();
+      expect(email.deliveryStatus).toContain('Status: 5.1.1');
+    });
+
     it('labels an S/MIME message instead of returning no content', async () => {
       client.fetchOne.mockResolvedValue({
         uid: 42,
@@ -527,10 +560,12 @@ describe('ImapService', () => {
       const email = await service.getEmail('test', '42', 'INBOX');
 
       // The machine-readable part is where the actual status code lives; a
-      // bounce without it reads like an ordinary email.
+      // bounce without it reads like an ordinary email. It rides in its own
+      // field so it can never displace the human-readable explanation.
       expect(email.bodyText).toContain('Delivery failed message');
-      expect(email.bodyText).toContain('--- Delivery status ---');
-      expect(email.bodyText).toContain('Status: 5.1.1');
+      expect(email.bodyText).not.toContain('Status: 5.1.1');
+      expect(email.deliveryStatus).toContain('Action: failed');
+      expect(email.deliveryStatus).toContain('Status: 5.1.1');
     });
 
     it('reports a well-formed attachment mimeType', async () => {
@@ -618,6 +653,41 @@ describe('ImapService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // saveEmailAttachments
+  // -----------------------------------------------------------------------
+
+  describe('saveEmailAttachments', () => {
+    it('saves an inline file that carries a filename', async () => {
+      // Apple Mail sends user-inserted photos as `inline; filename=...`;
+      // skipping every inline part wrote nothing to disk for such a message.
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'multipart/related',
+          childNodes: [
+            { part: '1', type: 'text/html', size: 100 },
+            {
+              part: '2',
+              type: 'image/jpeg',
+              disposition: 'inline',
+              id: '<photo@mail>',
+              dispositionParameters: { filename: 'IMG_1234.jpg' },
+              size: 9,
+            },
+          ],
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('jpegbytes'));
+      const dir = mkdtempSync(join(tmpdir(), 'att-save-'));
+
+      const saved = await service.saveEmailAttachments('test', '42', 'INBOX', dir);
+
+      expect(saved.map((s) => s.filename)).toEqual(['IMG_1234.jpg']);
+      rmSync(dir, { recursive: true, force: true });
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // saveDraft
   // -----------------------------------------------------------------------
 
@@ -638,6 +708,32 @@ describe('ImapService', () => {
       expect(message).toContain('In-Reply-To: <orig@x>');
       // Folded onto continuation lines — valid RFC 5322 and never overlong.
       expect(message).toContain('References: <root@x>\r\n <orig@x>');
+    });
+
+    it('refuses header values carrying a line break', async () => {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+
+      // These land verbatim in a hand-assembled RFC 822 message, so a CRLF
+      // would inject headers or end the header block early.
+      await expect(
+        service.saveDraft('test', {
+          to: ['a@b.c'],
+          subject: 'Hi',
+          body: 'b',
+          inReplyTo: '<x@y>\r\nBcc: attacker@evil.test',
+        }),
+      ).rejects.toThrow(/line break/i);
+
+      await expect(
+        service.saveDraft('test', {
+          to: ['a@b.c'],
+          subject: 'Hi',
+          body: 'b',
+          references: ['<ok@y>', '<x@y>\nX-Evil: 1'],
+        }),
+      ).rejects.toThrow(/line break/i);
+
+      expect(client.append).not.toHaveBeenCalled();
     });
   });
 

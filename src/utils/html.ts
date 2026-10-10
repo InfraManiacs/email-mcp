@@ -97,6 +97,13 @@ export function decodeEntities(text: string): string {
       if (!Number.isFinite(code) || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
         return match;
       }
+      // Private-use characters carry no meaning in mail text, and stripHtml
+      // uses two of them as internal blockquote markers. Decoding them would
+      // let a sender inject a marker — "&#xE000;" — and have everything after
+      // it treated as quoted material, which format="stripped" then deletes.
+      if (code >= 0xe000 && code <= 0xf8ff) {
+        return '';
+      }
       return String.fromCodePoint(code);
     }
     return NAMED_ENTITIES[name] ?? match;
@@ -137,8 +144,31 @@ const JOINER_PADDING = /(?<![^\s])[\u200C\u200D]+(?=[\s\u200C\u200D]|$)|(?<=\s)[
 const QUOTE_OPEN = '\uE000';
 const QUOTE_CLOSE = '\uE001';
 
-const ANCHOR_RE = /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi;
-const IMG_RE = /<img\b[^>]*>/gi;
+/**
+ * One run of tag attributes, quote-aware.
+ *
+ * A ">" needs no escaping inside a quoted attribute value, so `title="a > b"`
+ * is valid mail; a matcher that stops at the first ">" cuts mid-tag and spills
+ * the remaining attribute text — URL and quote characters included — into what
+ * the model reads. Written as an unrolled loop (each alternative starts with a
+ * distinct character class) so it cannot backtrack catastrophically.
+ */
+const ATTRS = '(?:[^>"\']|"[^"]*"|\'[^\']*\')*';
+const ATTRS_LAZY = `${ATTRS.slice(0, -1)}*?`;
+
+// The inner capture refuses to cross another anchor tag. A plain lazy
+// `[\s\S]*?` rescans the whole remaining document for every unclosed <a>,
+// which is quadratic: 50k unclosed anchors inside the 512 KB body cap blocked
+// the event loop — the one that also serves IMAP IDLE, the watcher, and the
+// scheduler — for over four seconds.
+const ANCHOR_RE = new RegExp(
+  `<a\\b${ATTRS_LAZY}\\bhref\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))${ATTRS}>` +
+    `((?:(?!<\\/?a\\b)[\\s\\S])*?)<\\/a>`,
+  'gi',
+);
+const IMG_RE = new RegExp(`<img\\b${ATTRS}>`, 'gi');
+/** Any complete tag, quote-aware; a tag name must follow "<". */
+const ANY_TAG_RE = /<[a-zA-Z!/?][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/g;
 const ALT_ATTR = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 const SRC_ATTR = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 
@@ -280,7 +310,13 @@ export function stripHtml(html: string): string {
           .replace(/<xml[^>]*>[\s\S]*?<\/xml>/gi, '')
           .replace(/<title[^>]*>[\s\S]*?<\/title>/gi, '')
           // Conditional comments carry a whole alternate layout for Outlook.
-          .replace(/<!--[\s\S]*?-->/g, ''),
+          .replace(/<!--[\s\S]*?-->/g, '')
+          // Unterminated machinery: everything from the opener to the end of
+          // the input. The body cap truncates oversized newsletters mid-markup,
+          // which routinely produces exactly this, and without the sweep the
+          // raw CSS or script source becomes the tail of the message.
+          .replace(/<(?:style|script|xml|title)\b[^>]*>[\s\S]*$/i, '')
+          .replace(/<!--[\s\S]*$/, ''),
       ),
     ),
   )
@@ -295,6 +331,10 @@ export function stripHtml(html: string): string {
     .replace(/<\/tr>/gi, '\n')
     .replace(/<\/table>/gi, '\n')
     .replace(/<li\b[^>]*>/gi, '\n• ')
+    // Quote-aware first so a ">" inside an attribute value cannot split a
+    // tag, then the permissive sweep for malformed tags (an unterminated
+    // quote) the first pass cannot parse.
+    .replace(ANY_TAG_RE, '')
     .replace(/<[^>]+>/g, '');
 
   return (
