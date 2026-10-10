@@ -17,7 +17,7 @@
  */
 
 /** Bumped when the statements below change shape. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const SCHEMA_SQL = `
 -- Per-mailbox sync watermarks.
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS message (
   body_text           TEXT,
   body_fetched_at     INTEGER,
   has_attachments     INTEGER NOT NULL DEFAULT 0,
+  attachment_names    TEXT,
   cached_at           INTEGER NOT NULL,
   PRIMARY KEY (account, mailbox, uid, uid_validity)
 );
@@ -76,6 +77,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
   subject,
   from_text,
   body_text,
+  attachment_names,
   content='message',
   content_rowid='rowid',
   tokenize='porter unicode61'
@@ -85,19 +87,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
 -- the table from drifting. The 'delete' command must be issued with the OLD
 -- values, which is why update is expressed as delete-then-insert.
 CREATE TRIGGER IF NOT EXISTS message_fts_insert AFTER INSERT ON message BEGIN
-  INSERT INTO message_fts (rowid, subject, from_text, body_text)
-  VALUES (new.rowid, new.subject, new.from_text, new.body_text);
+  INSERT INTO message_fts (rowid, subject, from_text, body_text, attachment_names)
+  VALUES (new.rowid, new.subject, new.from_text, new.body_text, new.attachment_names);
 END;
 
 CREATE TRIGGER IF NOT EXISTS message_fts_delete AFTER DELETE ON message BEGIN
-  INSERT INTO message_fts (message_fts, rowid, subject, from_text, body_text)
-  VALUES ('delete', old.rowid, old.subject, old.from_text, old.body_text);
+  INSERT INTO message_fts (message_fts, rowid, subject, from_text, body_text, attachment_names)
+  VALUES ('delete', old.rowid, old.subject, old.from_text, old.body_text, old.attachment_names);
 END;
 
 CREATE TRIGGER IF NOT EXISTS message_fts_update AFTER UPDATE ON message BEGIN
-  INSERT INTO message_fts (message_fts, rowid, subject, from_text, body_text)
-  VALUES ('delete', old.rowid, old.subject, old.from_text, old.body_text);
-  INSERT INTO message_fts (rowid, subject, from_text, body_text)
-  VALUES (new.rowid, new.subject, new.from_text, new.body_text);
+  INSERT INTO message_fts (message_fts, rowid, subject, from_text, body_text, attachment_names)
+  VALUES ('delete', old.rowid, old.subject, old.from_text, old.body_text, old.attachment_names);
+  INSERT INTO message_fts (rowid, subject, from_text, body_text, attachment_names)
+  VALUES (new.rowid, new.subject, new.from_text, new.body_text, new.attachment_names);
 END;
 `;

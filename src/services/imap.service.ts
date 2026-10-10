@@ -344,8 +344,22 @@ async function messageToEmail(
 // Service
 // ---------------------------------------------------------------------------
 
+/** The slice of the local mirror search needs — kept structural for testing. */
+interface SearchCache {
+  searchMessages(
+    account: string,
+    mailbox: string,
+    uidValidity: string,
+    query: string,
+    limit?: number,
+  ): { uid: number }[];
+}
+
 export default class ImapService {
   private labelStrategies = new Map<string, LabelStrategy>();
+
+  /** Optional local mirror used to supplement live text search. */
+  private cacheStore?: SearchCache;
 
   private labelStrategyPending = new Map<string, Promise<LabelStrategy>>();
 
@@ -361,6 +375,14 @@ export default class ImapService {
       this.labelStrategyPending.delete(account);
     };
     eventBus.on('imap:reconnect', this.onReconnect);
+  }
+
+  /**
+   * Attach the local mirror so text searches can also match what only the
+   * cache knows — attachment filenames and porter-stemmed full text.
+   */
+  setCacheStore(store: SearchCache): void {
+    this.cacheStore = store;
   }
 
   /**
@@ -722,6 +744,32 @@ export default class ImapService {
 
       const searchResult = await client.search(searchCriteria, { uid: true });
       let uids: number[] = Array.isArray(searchResult) ? searchResult : [];
+
+      // Supplement with local-mirror FTS hits: it matches what IMAP SEARCH
+      // cannot (attachment filenames, stemmed terms) and only ever ADDS
+      // results. Skipped when structured filters are active — the cache
+      // cannot evaluate them, so a union would leak non-matching messages.
+      const structuredFiltersActive =
+        options.to !== undefined ||
+        options.largerThan !== undefined ||
+        options.smallerThan !== undefined ||
+        options.answered !== undefined;
+      if (sanitizedQuery && this.cacheStore && !structuredFiltersActive) {
+        const mb = client.mailbox;
+        const uidValidity =
+          typeof mb === 'object' && mb.uidValidity !== undefined ? String(mb.uidValidity) : '';
+        if (uidValidity) {
+          const known = new Set(uids);
+          for (const hit of this.cacheStore.searchMessages(
+            accountName,
+            mailbox,
+            uidValidity,
+            sanitizedQuery,
+          )) {
+            if (!known.has(hit.uid)) uids.push(hit.uid);
+          }
+        }
+      }
 
       // Post-filter for has_attachment if requested (IMAP doesn't have native support)
       if (options.hasAttachment !== undefined && uids.length > 0) {

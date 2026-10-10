@@ -445,7 +445,9 @@ export default function registerEmailsTools(server: McpServer, imapService: Imap
     {
       title: 'Search emails',
       description:
-        'Search emails by keyword across subject, sender, and body. ' +
+        'Search emails by keyword across subject, sender, and body — and, where the local ' +
+        'mirror is enabled, attachment filenames (searching "report" finds an email carrying ' +
+        'Q3-report.pdf). ' +
         'Omit query (or pass an empty string) to use it as a pure filter — e.g. find all emails ' +
         'with attachments from a specific recipient without a keyword. ' +
         'Supports additional filters for recipient, attachments, size, and reply status.',

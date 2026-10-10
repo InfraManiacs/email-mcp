@@ -94,6 +94,7 @@ export async function buildServices(): Promise<AppServices> {
     try {
       cacheStore = new CacheStore(CACHE_DB);
       syncEngine = new SyncEngine(connections, cacheStore);
+      imapService.setCacheStore(cacheStore);
     } catch (err) {
       cacheStore = undefined;
       syncEngine = undefined;

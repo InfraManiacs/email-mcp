@@ -93,6 +93,25 @@ function hasAttachment(bodyStructure: unknown): boolean {
   return false;
 }
 
+/** Collect attachment filenames from a body structure, for FTS indexing. */
+function attachmentNames(bodyStructure: unknown): string[] {
+  if (!bodyStructure || typeof bodyStructure !== 'object') return [];
+  const bs = bodyStructure as Record<string, unknown>;
+  const names: string[] = [];
+  if (bs.disposition === 'attachment') {
+    const dispositionParams = bs.dispositionParameters as Record<string, unknown> | undefined;
+    const params = bs.parameters as Record<string, unknown> | undefined;
+    const name = dispositionParams?.filename ?? params?.name;
+    if (typeof name === 'string' && name.length > 0) names.push(name);
+  }
+  if (Array.isArray(bs.childNodes)) {
+    for (const child of bs.childNodes) {
+      names.push(...attachmentNames(child));
+    }
+  }
+  return names;
+}
+
 function formatSender(from?: { name?: string; address?: string }[]): string | undefined {
   const first = from?.[0];
   if (!first) return undefined;
@@ -123,6 +142,7 @@ function toCachedMessage(
     subject: envelope.subject,
     fromText: formatSender(envelope.from),
     hasAttachments: hasAttachment(msg.bodyStructure),
+    attachmentNames: attachmentNames(msg.bodyStructure),
   };
 }
 
