@@ -6,6 +6,7 @@
  */
 
 import type { Email, EmailMeta, Mailbox, PaginatedResult } from '../types/index.js';
+import { stripHtml } from '../utils/html.js';
 
 interface Opts {
   color: boolean;
@@ -65,20 +66,6 @@ export function formatEmailList(
     ? `\n${C.dim(`…more (page ${result.page}; raise --limit or use --page to see the rest)`, opts)}`
     : '';
   return `${header}\n${rows.join('\n')}${more}`;
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<\/(p|div|br|li|tr|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 /** A full message: headers, body (text preferred, HTML stripped otherwise), attachments. */

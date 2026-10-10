@@ -101,6 +101,22 @@ describe('formatEmailFull', () => {
     expect(out).toContain('Hi there');
     expect(out).not.toContain('<b>');
   });
+
+  it('converts HTML via the shared converter: <br> breaks lines, entities decode', () => {
+    // The old CLI-private stripHtml matched closing tags only, so <br>-separated
+    // mail collapsed onto one line and most entities leaked through verbatim.
+    const out = formatEmailFull(
+      {
+        ...email,
+        bodyText: undefined,
+        bodyHtml: 'line one<br>line two &rsquo; <a href="https://x.com/a">link</a>',
+      },
+      { color: false },
+    );
+    expect(out).toContain('line one\nline two');
+    expect(out).toContain('’');
+    expect(out).toContain('[link](https://x.com/a)');
+  });
 });
 
 describe('formatMailboxes', () => {
