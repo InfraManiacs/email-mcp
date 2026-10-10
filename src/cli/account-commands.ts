@@ -491,6 +491,7 @@ async function addAccount(): Promise<void> {
           read_only: false,
           send: { max_attachment_mb: 25 },
           attachments: { auto_download: true },
+          scheduler: { sent_retention_days: 90 },
           server: {
             host: '127.0.0.1',
             port: 8080,

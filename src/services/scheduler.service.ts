@@ -28,11 +28,97 @@ const MAX_ATTEMPTS = 3;
  */
 const CLAIM_SUFFIX = '.claim';
 
+/** Keep roughly a quarter of send history: "how far back can I look". */
+const DEFAULT_SENT_RETENTION_DAYS = 90;
+
+/** Floor between prunes within one long-lived process. */
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 export default class SchedulerService {
+  private readonly sentRetentionDays: number;
+
+  private lastPrunedAt = 0;
+
   constructor(
     private smtpService: SmtpService,
     private imapService: ImapService,
-  ) {}
+    options: { sentRetentionDays?: number } = {},
+  ) {
+    this.sentRetentionDays = options.sentRetentionDays ?? DEFAULT_SENT_RETENTION_DAYS;
+  }
+
+  /**
+   * Delete sent history past the retention window.
+   *
+   * Nothing used to remove anything from the sent directory, so it grew one
+   * JSON file per sent email forever. Age-based rather than count-based: the
+   * question a user asks is how far back they can look, never how many
+   * entries to keep. A retention of 0 disables pruning.
+   *
+   * An entry is deleted only when its own `status` says `sent`. That is
+   * redundant against the invariant that the directory holds nothing else,
+   * which is the point: this is the third place in this subsystem where
+   * trusting the directory over the field would destroy a live entry, and
+   * here the cost is a scheduled email deleted before it is sent.
+   */
+  async pruneSent(): Promise<{ deleted: number; kept: number }> {
+    if (this.sentRetentionDays <= 0) return { deleted: 0, kept: 0 };
+
+    const cutoff = Date.now() - this.sentRetentionDays * 86_400_000;
+    let deleted = 0;
+    let kept = 0;
+
+    let files: string[];
+    try {
+      files = await fs.readdir(SCHEDULED_SENT_DIR);
+    } catch {
+      return { deleted: 0, kept: 0 };
+    }
+
+    // eslint-disable-next-line no-restricted-syntax
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue; // eslint-disable-line no-continue
+      const filePath = path.join(SCHEDULED_SENT_DIR, file);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const raw = await fs.readFile(filePath, 'utf-8');
+        const entry = JSON.parse(raw) as ScheduledEmail;
+        // sentAt is written when delivery is recorded; createdAt is the
+        // fallback for history written before that field existed.
+        const stamp = Date.parse(entry.sentAt ?? entry.createdAt ?? '');
+        if (entry.status !== 'sent' || !Number.isFinite(stamp) || stamp >= cutoff) {
+          kept += 1;
+          continue; // eslint-disable-line no-continue
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await fs.unlink(filePath);
+        deleted += 1;
+      } catch {
+        // Unreadable or already gone — leave it alone rather than guess.
+        kept += 1;
+      }
+    }
+
+    this.lastPrunedAt = Date.now();
+    return { deleted, kept };
+  }
+
+  /**
+   * Prune at most once per PRUNE_INTERVAL_MS per process.
+   *
+   * A short-lived runner (the launchd/cron daemon the README recommends) gets
+   * one prune per invocation, which is the "prune on startup" behaviour; a
+   * long-lived server does not re-walk the history every minute.
+   */
+  private async pruneSentIfDue(): Promise<void> {
+    if (Date.now() - this.lastPrunedAt < PRUNE_INTERVAL_MS) return;
+    try {
+      await this.pruneSent();
+    } catch {
+      // Retention is housekeeping; never let it block a send.
+      this.lastPrunedAt = Date.now();
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Schedule a new email
@@ -200,6 +286,7 @@ export default class SchedulerService {
   }> {
     const result = { sent: 0, failed: 0, errors: [] as string[] };
     await SchedulerService.ensureDirs();
+    await this.pruneSentIfDue();
 
     let files: string[];
     try {

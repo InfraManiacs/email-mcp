@@ -90,6 +90,12 @@ function loadFromEnv(): RawAppConfig | null {
       attachments: {
         auto_download: process.env.MCP_EMAIL_ATTACHMENTS_AUTO_DOWNLOAD !== 'false',
       },
+      scheduler: {
+        sent_retention_days: parseInt(
+          process.env.MCP_EMAIL_SCHEDULER_SENT_RETENTION_DAYS ?? '90',
+          10,
+        ),
+      },
       cache: {
         // Opt-out rather than opt-in: the mirror is a pure win for reads and
         // degrades to live behaviour if anything goes wrong.
@@ -334,6 +340,9 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       attachments: {
         autoDownload: raw.settings.attachments.auto_download,
       },
+      scheduler: {
+        sentRetentionDays: raw.settings.scheduler.sent_retention_days,
+      },
       cache: {
         enabled: raw.settings.cache.enabled,
         mailboxes: raw.settings.cache.mailboxes,
@@ -519,6 +528,12 @@ export function generateTemplate(): string {
 [settings]
 rate_limit = 10  # max emails per minute per account
 read_only = false  # set to true to disable all write operations
+
+# Scheduled sends. The queue keeps one JSON file per sent email under
+# $XDG_STATE_HOME/email-mcp/scheduled/sent/; retention bounds how far back
+# that history reaches, pruned by age when the queue is next checked.
+# [settings.scheduler]
+# sent_retention_days = 90  # 0 keeps every sent entry forever
 
 # Local mirror — keeps a SQLite copy of mail under $XDG_CACHE_HOME/email-mcp
 # so reads are fast and still work while offline. On by default; the mirror is

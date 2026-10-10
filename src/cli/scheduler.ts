@@ -34,7 +34,9 @@ async function createSchedulerService(): Promise<SchedulerService> {
   const rateLimiter = new RateLimiter(config.settings.rateLimit);
   const imapService = new ImapService(connections);
   const smtpService = new SmtpService(connections, rateLimiter, imapService);
-  return new SchedulerService(smtpService, imapService);
+  return new SchedulerService(smtpService, imapService, {
+    sentRetentionDays: config.settings.scheduler.sentRetentionDays,
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import {
   AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
+  SchedulerConfigSchema,
   SendConfigSchema,
   ServerConfigSchema,
   SettingsSchema,
@@ -53,12 +54,13 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     [
       'general',
       SettingsSchema.shape,
-      ['verification', 'cache', 'watcher', 'hooks', 'server', 'send', 'attachments'],
+      ['verification', 'cache', 'watcher', 'hooks', 'server', 'send', 'attachments', 'scheduler'],
     ],
     ['watcher', WatcherConfigSchema.shape, []],
     ['verification', VerificationConfigSchema.shape, []],
     ['send', SendConfigSchema.shape, []],
     ['attachments', AttachmentsConfigSchema.shape, []],
+    ['scheduler', SchedulerConfigSchema.shape, []],
     ['cache', CacheConfigSchema.shape, []],
     ['hooks', HooksConfigSchema.shape, ['rules', 'alerts']],
     ['alerts', AlertsConfigSchema.shape, []],
@@ -75,7 +77,7 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     expect(catalogKeys).toEqual(schemaKeys);
   });
 
-  it('exposes all nine sections in order', () => {
+  it('exposes all ten sections in order', () => {
     expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
       'general',
       'server',
@@ -83,6 +85,7 @@ describe('SETTINGS_SECTIONS drift guards', () => {
       'verification',
       'send',
       'attachments',
+      'scheduler',
       'cache',
       'hooks',
       'alerts',

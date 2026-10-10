@@ -106,7 +106,9 @@ export async function buildServices(): Promise<AppServices> {
   const calendarService = new CalendarService();
   const localCalendarService = new LocalCalendarService();
   const remindersService = new RemindersService();
-  const schedulerService = new SchedulerService(smtpService, imapService);
+  const schedulerService = new SchedulerService(smtpService, imapService, {
+    sentRetentionDays: config.settings.scheduler.sentRetentionDays,
+  });
   const watcherService = new WatcherService(config.settings.watcher, config.accounts, oauthService);
   const hooksService = new HooksService(config.settings.hooks, imapService, {
     autoDownloadAttachments: config.settings.attachments.autoDownload,

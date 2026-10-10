@@ -176,6 +176,11 @@ export interface AttachmentsConfig {
   autoDownload: boolean;
 }
 
+/** Scheduler settings — see SchedulerConfigSchema for defaults and rationale. */
+export interface SchedulerConfig {
+  sentRetentionDays: number;
+}
+
 /** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
 export interface CacheConfig {
   enabled: boolean;
@@ -194,6 +199,7 @@ export interface AppConfig {
     verification: VerificationConfig;
     send: SendConfig;
     attachments: AttachmentsConfig;
+    scheduler: SchedulerConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;

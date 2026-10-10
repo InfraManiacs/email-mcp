@@ -15,6 +15,7 @@ import {
   AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
+  SchedulerConfigSchema,
   SendConfigSchema,
   ServerConfigSchema,
   SettingsSchema,
@@ -27,6 +28,7 @@ export type SectionId =
   | 'server'
   | 'send'
   | 'attachments'
+  | 'scheduler'
   | 'watcher'
   | 'verification'
   | 'cache'
@@ -77,6 +79,7 @@ function onOff(value: unknown): string {
 const generalShape = SettingsSchema.shape;
 const sendShape = SendConfigSchema.shape;
 const attachmentsShape = AttachmentsConfigSchema.shape;
+const schedulerShape = SchedulerConfigSchema.shape;
 const serverShape = ServerConfigSchema.shape;
 const watcherShape = WatcherConfigSchema.shape;
 const verificationShape = VerificationConfigSchema.shape;
@@ -287,6 +290,23 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
         label: 'Save attachments locally when creating calendar events from emails',
         kind: 'boolean',
         schema: attachmentsShape.auto_download,
+      },
+    ],
+  },
+  {
+    id: 'scheduler',
+    label: 'Scheduler (send history retention)',
+    resolve: (raw) => raw.settings.scheduler as unknown as Record<string, unknown>,
+    summarize: (raw) =>
+      raw.settings.scheduler.sent_retention_days === 0
+        ? 'sent history kept forever'
+        : `sent history pruned after ${raw.settings.scheduler.sent_retention_days} days`,
+    fields: [
+      {
+        key: 'sent_retention_days',
+        label: 'Days of sent-email history to keep (0 = forever)',
+        kind: 'int',
+        schema: schedulerShape.sent_retention_days,
       },
     ],
   },

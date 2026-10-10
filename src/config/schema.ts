@@ -231,6 +231,16 @@ export const SendConfigSchema = z.object({
 });
 
 /**
+ * Scheduler settings. `sent_retention_days` bounds the send history kept in
+ * the scheduler's sent directory, which previously grew one file per sent
+ * email forever. Age-based because the question is how far back a user can
+ * look; 0 keeps everything.
+ */
+export const SchedulerConfigSchema = z.object({
+  sent_retention_days: z.number().int().min(0).default(90),
+});
+
+/**
  * Inbound attachment handling. `auto_download` controls whether attachments
  * are saved locally as a side effect of other actions — calendar events
  * created from emails (tools and watcher hooks) link saved copies in their
@@ -274,6 +284,9 @@ export const SettingsSchema = z.object({
   ),
   attachments: AttachmentsConfigSchema.default(
     () => ({ auto_download: true }) as z.infer<typeof AttachmentsConfigSchema>,
+  ),
+  scheduler: SchedulerConfigSchema.default(
+    () => ({ sent_retention_days: 90 }) as z.infer<typeof SchedulerConfigSchema>,
   ),
   cache: CacheConfigSchema.default(
     () =>
@@ -346,6 +359,7 @@ export const AppConfigFileSchema = z.object({
         },
         send: { max_attachment_mb: 25 },
         attachments: { auto_download: true },
+        scheduler: { sent_retention_days: 90 },
         cache: {
           enabled: true,
           mailboxes: ['INBOX'],
