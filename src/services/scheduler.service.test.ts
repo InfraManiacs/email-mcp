@@ -20,7 +20,10 @@ import type SmtpService from './smtp.service.js';
 
 const SCHEDULED_DIR = join(STATE_HOME, 'email-mcp', 'scheduled');
 
-function mocks(sendImpl?: () => Promise<{ messageId: string; status: string }>) {
+function mocks(
+  sendImpl?: () => Promise<{ messageId: string; status: string }>,
+  options?: { sentRetentionDays?: number },
+) {
   const smtp = {
     sendEmail: sendImpl
       ? vi.fn().mockImplementation(sendImpl)
@@ -34,7 +37,11 @@ function mocks(sendImpl?: () => Promise<{ messageId: string; status: string }>) 
   return {
     smtp,
     imap,
-    svc: new SchedulerService(smtp as unknown as SmtpService, imap as unknown as ImapService),
+    svc: new SchedulerService(
+      smtp as unknown as SmtpService,
+      imap as unknown as ImapService,
+      options,
+    ),
   };
 }
 
@@ -63,6 +70,97 @@ async function queueDue(
   await fsp.writeFile(file, JSON.stringify(entry, null, 2));
   return file;
 }
+
+const SCHEDULED_SENT_DIR = join(SCHEDULED_DIR, 'sent');
+
+/** Write an entry straight into the sent directory. */
+async function seedSent(
+  fsp: typeof import('node:fs/promises'),
+  id: string,
+  overrides: Record<string, unknown> = {},
+): Promise<string> {
+  await fsp.mkdir(SCHEDULED_SENT_DIR, { recursive: true });
+  const entry = {
+    id,
+    account: 'test',
+    to: ['a@b.c'],
+    subject: 'Delivered',
+    body: 'body',
+    html: false,
+    sendAt: new Date(Date.now() - 86_400_000).toISOString(),
+    createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+    sentAt: new Date(Date.now() - 86_400_000).toISOString(),
+    status: 'sent',
+    attempts: 1,
+    ...overrides,
+  };
+  const file = join(SCHEDULED_SENT_DIR, `${id}.json`);
+  await fsp.writeFile(file, JSON.stringify(entry, null, 2));
+  return file;
+}
+
+const daysAgo = (n: number): string => new Date(Date.now() - n * 86_400_000).toISOString();
+
+describe('SchedulerService sent-history retention', () => {
+  it('deletes a sent entry older than the retention window', async () => {
+    const fsp = await import('node:fs/promises');
+    const file = await seedSent(fsp, 'prune-old', { sentAt: daysAgo(120) });
+    const { svc } = mocks(undefined, { sentRetentionDays: 90 });
+
+    const result = await svc.pruneSent();
+
+    expect(result.deleted).toBe(1);
+    await expect(fsp.access(file)).rejects.toThrow();
+  });
+
+  it('keeps a sent entry inside the retention window', async () => {
+    const fsp = await import('node:fs/promises');
+    const file = await seedSent(fsp, 'prune-recent', { sentAt: daysAgo(10) });
+    const { svc } = mocks(undefined, { sentRetentionDays: 90 });
+
+    await svc.pruneSent();
+
+    await expect(fsp.access(file)).resolves.toBeUndefined();
+  });
+
+  // Third instance of the directory-vs-field class in this subsystem: a pruner
+  // that trusts the directory deletes a live entry the moment anything else
+  // writes there. The guard is redundant against the invariant by design.
+  it('refuses to delete an entry whose status is not sent, even in the sent directory', async () => {
+    const fsp = await import('node:fs/promises');
+    const file = await seedSent(fsp, 'prune-not-sent', {
+      status: 'pending',
+      sentAt: daysAgo(400),
+    });
+    const { svc } = mocks(undefined, { sentRetentionDays: 90 });
+
+    const result = await svc.pruneSent();
+
+    expect(result.deleted).toBe(0);
+    await expect(fsp.access(file)).resolves.toBeUndefined();
+  });
+
+  it('treats a retention of 0 as keep-forever', async () => {
+    const fsp = await import('node:fs/promises');
+    const file = await seedSent(fsp, 'prune-disabled', { sentAt: daysAgo(4000) });
+    const { svc } = mocks(undefined, { sentRetentionDays: 0 });
+
+    const result = await svc.pruneSent();
+
+    expect(result.deleted).toBe(0);
+    await expect(fsp.access(file)).resolves.toBeUndefined();
+  });
+
+  it('never touches the queue directory', async () => {
+    const fsp = await import('node:fs/promises');
+    const queued = await queueDue(fsp, 'prune-queue-safe', { createdAt: daysAgo(500) });
+    const { svc } = mocks(undefined, { sentRetentionDays: 1 });
+
+    await svc.pruneSent();
+
+    await expect(fsp.access(queued)).resolves.toBeUndefined();
+  });
+});
 
 describe('SchedulerService dispatch', () => {
   it('passes inReplyTo and references through to sendEmail', async () => {

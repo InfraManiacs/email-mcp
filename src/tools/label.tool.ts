@@ -45,7 +45,7 @@ export default function registerLabelTools(server: McpServer, imapService: ImapS
           };
         }
 
-        const { strategy } = labels[0];
+        const { strategy } = labels[0] ?? { strategy: 'unknown' };
         const lines = [
           `🏷️ ${labels.length} label(s) — strategy: ${strategy}`,
           '',

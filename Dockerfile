@@ -36,8 +36,15 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Create config directory for volume mount
-RUN mkdir -p /home/node/.config/email-mcp && chown -R node:node /home/node/.config
+# Config is mounted in (read-only is fine); state and cache are written by the
+# container and must outlive it. The scheduler queue lives under state, so
+# without a volume a restart loses every email scheduled but not yet sent.
+RUN mkdir -p /home/node/.config/email-mcp \
+      /home/node/.local/state/email-mcp \
+      /home/node/.cache/email-mcp \
+    && chown -R node:node /home/node/.config /home/node/.local /home/node/.cache
+
+VOLUME ["/home/node/.local/state/email-mcp", "/home/node/.cache/email-mcp"]
 
 ENV NODE_ENV=production
 

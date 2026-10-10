@@ -1246,6 +1246,7 @@ export default class CacheStore {
       `);
       for (const key of touched) {
         const [account, mailbox] = key.split('\u0000');
+        if (account === undefined || mailbox === undefined) continue;
         forget.run(account, mailbox);
       }
 

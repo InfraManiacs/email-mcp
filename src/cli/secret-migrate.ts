@@ -33,10 +33,10 @@ export function extractAccountPassword(configText: string, account: string): str
   for (const line of configText.split('\n')) {
     if (ACCOUNT_HEADER.test(line)) current = null;
     const nameMatch = line.match(NAME_LINE);
-    if (nameMatch) current = nameMatch[1];
+    if (nameMatch?.[1]) current = nameMatch[1];
     if (current === account) {
       const pwMatch = line.match(PASSWORD_LINE);
-      if (pwMatch) {
+      if (pwMatch?.[2] !== undefined) {
         const value = pwMatch[2];
         return isReference(value) ? null : value;
       }
@@ -59,13 +59,13 @@ export function rewritePasswordToKeychainRef(configText: string, account: string
   const out = lines.map((line) => {
     if (ACCOUNT_HEADER.test(line)) current = null;
     const nameMatch = line.match(NAME_LINE);
-    if (nameMatch) current = nameMatch[1];
+    if (nameMatch?.[1]) current = nameMatch[1];
     if (current === account) {
       const pwMatch = line.match(PASSWORD_LINE);
-      if (pwMatch) {
+      if (pwMatch?.[2] !== undefined) {
         touched = true;
         if (isReference(pwMatch[2])) return line; // idempotent
-        return `${pwMatch[1]}password = "${ref}"`;
+        return `${pwMatch[1] ?? ''}password = "${ref}"`;
       }
     }
     return line;

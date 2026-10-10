@@ -100,6 +100,107 @@ export const COMMANDS: CommandSpec[] = [
       },
     ],
   },
+  {
+    name: 'list',
+    description: 'List emails in a mailbox',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+      { flag: '--limit', description: 'Max results', takesValue: true },
+      { flag: '--page', description: 'Page number', takesValue: true },
+      { flag: '--unread', description: 'Only unread' },
+      { flag: '--search', description: 'Filter by subject keyword', takesValue: true },
+      { flag: '--json', description: 'JSON output' },
+    ],
+  },
+  {
+    name: 'read',
+    description: 'Read a full email by id',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+      { flag: '--mark-read', description: 'Mark as read after showing' },
+      { flag: '--json', description: 'JSON output' },
+    ],
+  },
+  {
+    name: 'search',
+    description: 'Search emails',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+      { flag: '--limit', description: 'Max results', takesValue: true },
+      { flag: '--json', description: 'JSON output' },
+    ],
+  },
+  {
+    name: 'mailboxes',
+    description: 'List mailboxes/folders',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--json', description: 'JSON output' },
+    ],
+  },
+  {
+    name: 'flag',
+    description: 'Flag or unflag an email',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+      { flag: '--off', description: 'Remove the flag instead of setting it' },
+    ],
+  },
+  {
+    name: 'delete',
+    description: 'Delete an email',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+      { flag: '--yes', description: 'Skip the confirmation prompt' },
+    ],
+  },
+  {
+    name: 'attach',
+    description: 'Download an attachment to disk',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+    ],
+  },
+  {
+    name: 'reply',
+    description: 'Reply to an email',
+    arg: 'accounts',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--mailbox', description: 'Mailbox (default INBOX)', takesValue: true },
+      { flag: '--body', description: 'Reply body text', takesValue: true },
+      { flag: '--all', description: 'Reply to all recipients' },
+      { flag: '--html', description: 'Send as HTML' },
+      { flag: '--attach', description: 'Attach a file (repeatable)', takesValue: true },
+    ],
+  },
+  {
+    name: 'send',
+    description: 'Send a new email',
+    flags: [
+      { flag: '--account', description: 'Account name', takesValue: true },
+      { flag: '--to', description: 'Recipients (comma-separated)', takesValue: true },
+      { flag: '--cc', description: 'CC recipients', takesValue: true },
+      { flag: '--bcc', description: 'BCC recipients', takesValue: true },
+      { flag: '--subject', description: 'Subject', takesValue: true },
+      { flag: '--body', description: 'Body text', takesValue: true },
+      { flag: '--html', description: 'Send as HTML' },
+      { flag: '--attach', description: 'Attach a file (repeatable)', takesValue: true },
+    ],
+  },
   { name: 'setup', description: "Alias for 'account add'" },
   { name: 'test', description: 'Test IMAP/SMTP connections', arg: 'accounts' },
   {
@@ -161,6 +262,16 @@ export const COMMANDS: CommandSpec[] = [
     subcommands: [
       { name: 'test', description: 'Send a test notification' },
       { name: 'status', description: 'Check platform notification support' },
+    ],
+  },
+  {
+    name: 'logs',
+    description: 'View the daemon log (tail, follow, filter)',
+    flags: [
+      { flag: '--lines', description: 'Number of lines (-n)', takesValue: true },
+      { flag: '--follow', description: 'Stream new lines live (-f)' },
+      { flag: '--level', description: 'Minimum level: debug|info|warn|error', takesValue: true },
+      { flag: '--grep', description: 'Only lines containing TEXT', takesValue: true },
     ],
   },
   {

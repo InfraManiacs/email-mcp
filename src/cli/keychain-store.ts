@@ -27,6 +27,16 @@ export function keychainRefFor(account: string): string {
 }
 
 /**
+ * Whether storeSecretNonInteractive has a backend here.
+ *
+ * Kept beside that function so the two cannot drift: offering to store a
+ * secret on a platform with no backend would fail after the user said yes.
+ */
+export function keychainSupported(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'darwin' || platform === 'linux';
+}
+
+/**
  * Run `security` interactively so the user types the secret into its prompt.
  * stdio is inherited: security owns the terminal for the prompt. Resolves on
  * exit 0, rejects otherwise. The secret never touches this process.

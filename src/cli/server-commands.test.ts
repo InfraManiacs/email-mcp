@@ -1,8 +1,10 @@
 import {
   buildLaunchdPlist,
+  buildSystemdUnit,
   looksLikeOurServer,
   parseServerArgs,
   selfCommand,
+  serverUsage,
   tailLines,
 } from './server-commands.js';
 
@@ -134,5 +136,39 @@ describe('tailLines', () => {
 
   it('returns everything when the file is shorter than N', () => {
     expect(tailLines('only\nlines', 40)).toBe('only\nlines');
+  });
+});
+
+describe('buildSystemdUnit', () => {
+  it('produces a valid systemd --user unit that runs the http server with passthrough flags', () => {
+    const unit = buildSystemdUnit(['/usr/local/bin/email-mcp'], ['--port', '28080']);
+    expect(unit).toMatch(/\[Unit\]/);
+    expect(unit).toMatch(/\[Service\]/);
+    expect(unit).toMatch(/\[Install\]/);
+    // ExecStart carries the command, the http verb, and the passthrough flags.
+    expect(unit).toMatch(/ExecStart=.*email-mcp http --port 28080/);
+    // A user service that stays up and restarts on failure.
+    expect(unit).toMatch(/Restart=on-failure/);
+    expect(unit).toMatch(/WantedBy=default\.target/);
+  });
+
+  it('quotes nothing unexpected and lists the command before the http verb', () => {
+    const unit = buildSystemdUnit(['email-mcp'], []);
+    expect(unit).toMatch(/ExecStart=email-mcp http$/m);
+  });
+});
+
+describe('serverUsage', () => {
+  it('has help for every server subcommand', () => {
+    for (const sub of ['start', 'stop', 'status', 'restart', 'logs', 'install', 'uninstall']) {
+      expect(serverUsage(sub)).toMatch(new RegExp(`server ${sub}`));
+    }
+  });
+
+  it('returns the overview when no subcommand is given', () => {
+    const all = serverUsage();
+    for (const sub of ['start', 'stop', 'status', 'install']) {
+      expect(all).toContain(sub);
+    }
   });
 });

@@ -149,8 +149,8 @@ describe('ImapService', () => {
       expect(result[0]).toMatchObject({ totalMessages: 10, unseenMessages: 3 });
       // A transient STATUS failure must stay distinguishable from a genuinely
       // empty mailbox — reporting 0 here would be cached as fact.
-      expect(result[1].totalMessages).toBeUndefined();
-      expect(result[1].unseenMessages).toBeUndefined();
+      expect(result[1]!.totalMessages).toBeUndefined();
+      expect(result[1]!.unseenMessages).toBeUndefined();
     });
   });
 
@@ -174,7 +174,7 @@ describe('ImapService', () => {
 
       const result = await service.listEmails('test', { mailbox: 'INBOX' });
 
-      expect(result.items[0].id).toBe('77');
+      expect(result.items[0]!.id).toBe('77');
     });
 
     it('does not fetch message source for listings', async () => {
@@ -188,7 +188,7 @@ describe('ImapService', () => {
 
       await service.listEmails('test', { mailbox: 'INBOX' });
 
-      const [, query] = client.fetch.mock.calls[0];
+      const [, query] = client.fetch.mock.calls[0]!;
       expect(query.source).toBeUndefined();
     });
 
@@ -393,7 +393,7 @@ describe('ImapService', () => {
 
       // `source: true` pulls the entire message — base64 attachments included —
       // just to read headers that HEADER alone would supply.
-      const [, query] = client.fetchOne.mock.calls[0];
+      const [, query] = client.fetchOne.mock.calls[0]!;
       expect(query.source).toBeUndefined();
       expect(query.headers).toBe(true);
     });
@@ -719,7 +719,7 @@ describe('ImapService', () => {
 
       // ImapFlow's `type` is already the full Content-Type, so appending a
       // non-existent `subtype` yields "application/pdf/octet-stream".
-      expect(email.attachments[0].mimeType).toBe('application/pdf');
+      expect(email.attachments[0]!.mimeType).toBe('application/pdf');
     });
 
     it('returns an empty body rather than throwing when the part is missing', async () => {
@@ -847,11 +847,55 @@ describe('ImapService', () => {
         references: ['<root@x>', '<orig@x>'],
       });
 
-      const [, raw] = client.append.mock.calls[0];
+      const [, raw] = client.append.mock.calls[0]!;
       const message = (raw as Buffer).toString('utf-8');
       expect(message).toContain('In-Reply-To: <orig@x>');
       // Folded onto continuation lines — valid RFC 5322 and never overlong.
       expect(message).toContain('References: <root@x>\r\n <orig@x>');
+    });
+
+    it('appends a sent copy to the \\Sent special-use folder, flagged seen', async () => {
+      client.list.mockResolvedValue([
+        { path: 'INBOX', specialUse: '\\Inbox' },
+        { path: '[Gmail]/Sent Mail', specialUse: '\\Sent' },
+      ]);
+
+      const path = await service.appendToSent('test', Buffer.from('raw message'));
+
+      expect(path).toBe('[Gmail]/Sent Mail');
+      expect(client.append).toHaveBeenCalledWith('[Gmail]/Sent Mail', expect.any(Buffer), [
+        '\\Seen',
+      ]);
+    });
+
+    it('falls back to "Sent" when no folder advertises the special use', async () => {
+      client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }, { path: 'Sent' }]);
+
+      const path = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(path).toBe('Sent');
+      expect(client.mailboxCreate).not.toHaveBeenCalled();
+    });
+
+    // Not every server ships one — GreenMail does not — and APPEND to a
+    // missing mailbox is rejected, which the caller swallows so a completed
+    // send is never reported as failed. The copy would vanish without a word.
+    it('creates the Sent folder when the server has none', async () => {
+      client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }]);
+
+      const path = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(client.mailboxCreate).toHaveBeenCalledWith('Sent');
+      expect(path).toBe('Sent');
+      expect(client.append).toHaveBeenCalledWith('Sent', expect.any(Buffer), ['\\Seen']);
+    });
+
+    it('does not create anything when the special-use folder exists', async () => {
+      client.list.mockResolvedValue([{ path: '[Gmail]/Sent Mail', specialUse: '\\Sent' }]);
+
+      await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(client.mailboxCreate).not.toHaveBeenCalled();
     });
 
     it('refuses header values carrying a line break', async () => {
@@ -1322,7 +1366,7 @@ describe('ImapService', () => {
       client.list.mockResolvedValue([{ name: 'Work', path: 'Work', flags: new Set() }]);
 
       const before = await service.listLabels('test');
-      expect(before[0].strategy).toBe('gmail');
+      expect(before[0]!.strategy).toBe('gmail');
 
       // Reconnecting may land on a different server for this account, so a
       // strategy memoized against the old connection is no longer trustworthy.
@@ -1331,7 +1375,7 @@ describe('ImapService', () => {
       eventBus.emit('imap:reconnect', { account: 'test' });
 
       const after = await service.listLabels('test');
-      expect(after[0].strategy).toBe('protonmail');
+      expect(after[0]!.strategy).toBe('protonmail');
     });
 
     it('keeps the memo for accounts that did not reconnect', async () => {
@@ -1345,7 +1389,7 @@ describe('ImapService', () => {
       eventBus.emit('imap:reconnect', { account: 'other-account' });
 
       const after = await service.listLabels('test');
-      expect(after[0].strategy).toBe('gmail');
+      expect(after[0]!.strategy).toBe('gmail');
     });
   });
 

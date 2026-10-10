@@ -33,8 +33,12 @@ async function createSchedulerService(): Promise<SchedulerService> {
   const connections = new ConnectionManager(config.accounts);
   const rateLimiter = new RateLimiter(config.settings.rateLimit);
   const imapService = new ImapService(connections);
-  const smtpService = new SmtpService(connections, rateLimiter, imapService);
-  return new SchedulerService(smtpService, imapService);
+  const smtpService = new SmtpService(connections, rateLimiter, imapService, {
+    saveToSent: config.settings.send.saveToSent,
+  });
+  return new SchedulerService(smtpService, imapService, {
+    sentRetentionDays: config.settings.scheduler.sentRetentionDays,
+  });
 }
 
 // ---------------------------------------------------------------------------

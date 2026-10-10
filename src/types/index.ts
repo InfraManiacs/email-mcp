@@ -168,12 +168,19 @@ export interface VerificationConfig {
 
 /** Outbound send settings — see SendConfigSchema for the cap rationale. */
 export interface SendConfig {
+  /** APPEND a copy of each sent message to the IMAP Sent folder (opt-in). */
+  saveToSent: boolean;
   maxAttachmentMb: number;
 }
 
 /** Inbound attachment handling — see AttachmentsConfigSchema for scope. */
 export interface AttachmentsConfig {
   autoDownload: boolean;
+}
+
+/** Scheduler settings — see SchedulerConfigSchema for defaults and rationale. */
+export interface SchedulerConfig {
+  sentRetentionDays: number;
 }
 
 /** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
@@ -194,6 +201,7 @@ export interface AppConfig {
     verification: VerificationConfig;
     send: SendConfig;
     attachments: AttachmentsConfig;
+    scheduler: SchedulerConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;

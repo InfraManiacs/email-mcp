@@ -154,7 +154,7 @@ function parseReferences(headers?: Buffer): string[] | undefined {
   // lines (RFC 5322 folding: CRLF followed by whitespace).
   const match = /^references:[ \t]*(.*(?:\r?\n[ \t].*)*)/im.exec(text);
   if (!match) return undefined;
-  const ids = match[1].match(/<[^>]+>/g);
+  const ids = match[1]?.match(/<[^>]+>/g);
   return ids && ids.length > 0 ? ids : undefined;
 }
 
@@ -497,11 +497,13 @@ export default class SyncEngine {
     if (!previous && windowDays > 0) {
       const horizon = new Date(Date.now() - windowDays * 86_400_000);
       const inWindow = (await client.search({ since: horizon }, { uid: true })) as number[] | false;
-      if (Array.isArray(inWindow)) {
-        if (inWindow.length === 0) return 0;
+      const [firstInWindow] = inWindow === false ? [] : inWindow;
+      if (Array.isArray(inWindow) && firstInWindow !== undefined) {
         // reduce, not Math.min(...uids): spreading more than ~125k arguments
         // throws RangeError, which would make a large mailbox unsyncable.
-        range = `${inWindow.reduce((lo, uid) => (uid < lo ? uid : lo), inWindow[0])}:*`;
+        range = `${inWindow.reduce((lo, uid) => (uid < lo ? uid : lo), firstInWindow)}:*`;
+      } else if (Array.isArray(inWindow)) {
+        return 0;
       }
       // A failed probe falls back to the unbounded range: mirroring too much
       // is recoverable, silently mirroring nothing is not.

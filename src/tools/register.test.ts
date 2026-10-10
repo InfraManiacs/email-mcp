@@ -42,8 +42,9 @@ import registerVerificationTools from './verification.tool.js';
 function createConfig(readOnly: boolean): AppConfig {
   return {
     settings: {
-      send: { maxAttachmentMb: 25 },
+      send: { maxAttachmentMb: 25, saveToSent: false },
       attachments: { autoDownload: true },
+      scheduler: { sentRetentionDays: 90 },
       rateLimit: 10,
       readOnly,
       server: { host: '127.0.0.1', port: 8080, path: '/mcp', token: '', allowedHosts: [] },

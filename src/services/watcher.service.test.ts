@@ -1,6 +1,20 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// The watcher persists its IDLE watermark under XDG state, and WATCHER_STATE_FILE
+// resolves at module load — point it at a throwaway directory before anything
+// imports it, or a test run rewrites the real watermarks and the next real
+// start resumes from a UID this suite invented.
+const STATE_HOME = mkdtempSync(join(tmpdir(), 'watcher-'));
+process.env.XDG_STATE_HOME = STATE_HOME;
+
+afterAll(() => {
+  rmSync(STATE_HOME, { recursive: true, force: true });
+});
+
 import type { AccountConfig, WatcherConfig } from '../types/index.js';
 import eventBus from './event-bus.js';
-import WatcherService from './watcher.service.js';
 
 // Track constructed clients so tests can drive their event handlers.
 const { instances } = vi.hoisted(() => ({
@@ -45,6 +59,10 @@ vi.mock('../logging.js', () => ({
 vi.mock('./event-bus.js', () => ({
   default: { emit: vi.fn() },
 }));
+
+// Imported dynamically, after XDG_STATE_HOME above: a static import is hoisted
+// past the assignment, and the watcher's state-file path resolves at load.
+const { default: WatcherService } = await import('./watcher.service.js');
 
 const testAccount: AccountConfig = {
   name: 'test',
@@ -156,7 +174,7 @@ describe('WatcherService', () => {
     if (!client) throw new Error('no ImapFlow client was constructed');
 
     // uidNext is 100, so lastSeenUid seeds to 99 and the range is "100:*".
-    client.handlers.exists({ path: 'INBOX', count: 2, prevCount: 1 });
+    client.handlers.exists!({ path: 'INBOX', count: 2, prevCount: 1 });
     await vi.waitFor(() => expect(client.fetch).toHaveBeenCalled());
 
     // Without { uid: true } as the third argument ImapFlow reads "100:*" as a
@@ -193,7 +211,7 @@ describe('WatcherService', () => {
       })(),
     );
 
-    client.handlers.exists({ path: 'INBOX', count: 2, prevCount: 1 });
+    client.handlers.exists!({ path: 'INBOX', count: 2, prevCount: 1 });
     await vi.waitFor(() => expect(eventBus.emit).toHaveBeenCalled());
 
     expect(eventBus.emit).toHaveBeenCalledWith(
@@ -214,7 +232,7 @@ describe('WatcherService', () => {
     const client = instances.at(-1);
     if (!client) throw new Error('no ImapFlow client was constructed');
 
-    client.handlers.expunge({ path: 'INBOX', seq: 4, uid: 88 });
+    client.handlers.expunge!({ path: 'INBOX', seq: 4, uid: 88 });
 
     expect(eventBus.emit).toHaveBeenCalledWith('email:expunge', {
       account: 'test',
@@ -234,7 +252,7 @@ describe('WatcherService', () => {
     const client = instances.at(-1);
     if (!client) throw new Error('no ImapFlow client was constructed');
 
-    client.handlers.flags({ path: 'INBOX', seq: 7, uid: 91, flags: new Set(['\\Seen']) });
+    client.handlers.flags!({ path: 'INBOX', seq: 7, uid: 91, flags: new Set(['\\Seen']) });
 
     expect(eventBus.emit).toHaveBeenCalledWith('email:flags', {
       account: 'test',
@@ -255,7 +273,7 @@ describe('WatcherService', () => {
 
     // Without a UID a consumer cannot key the change — but swallowing the
     // event would leave it believing its cached flags are still valid.
-    client.handlers.flags({ path: 'INBOX', seq: 7, flags: new Set(['\\Seen']) });
+    client.handlers.flags!({ path: 'INBOX', seq: 7, flags: new Set(['\\Seen']) });
 
     expect(eventBus.emit).toHaveBeenCalledWith('email:flags', {
       account: 'test',
@@ -281,9 +299,9 @@ describe('WatcherService', () => {
     await watcher.start();
     const status = watcher.getStatus();
     expect(status).toHaveLength(1);
-    expect(status[0].account).toBe('test');
-    expect(status[0].folder).toBe('INBOX');
-    expect(status[0].connected).toBe(true);
+    expect(status[0]!.account).toBe('test');
+    expect(status[0]!.folder).toBe('INBOX');
+    expect(status[0]!.connected).toBe(true);
     await watcher.stop();
   });
 

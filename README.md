@@ -47,7 +47,7 @@ Built on the MCP TypeScript SDK v2 (spec revision 2026-07-28), it serves over **
 
 - All connections use TLS/STARTTLS encryption
 - Passwords are never logged; audit trail records operations without credentials
-- Token-bucket rate limiter prevents abuse (configurable per account)
+- Token-bucket rate limiter prevents abuse (one bucket per account, sharing a global `rate_limit`)
 - OAuth2 XOAUTH2 authentication for Gmail and Microsoft 365 _(experimental)_
 - Attachment downloads capped at 5 MB with base64 encoding
 
@@ -77,6 +77,18 @@ npm install -g @codefuturist/email-mcp
 # or
 pnpm add -g @codefuturist/email-mcp
 ```
+
+### Homebrew (native binary)
+
+The prebuilt, dependency-free binary — no Node.js at runtime — from the
+[codefuturist tap](https://github.com/codefuturist/homebrew-tap):
+
+```bash
+brew install codefuturist/tap/email-mcp
+```
+
+Published as a cask on every stable release; works on macOS (arm64 + x64) and
+on Linuxbrew ≥ 4.3 (binary-only casks).
 
 ### Native binary (Bun)
 
@@ -158,6 +170,8 @@ docker build -t ghcr.io/codefuturist/email-mcp .
 
 ```bash
 # Add an email account interactively (recommended)
+# On macOS and Linux this offers to store the password in the OS keychain,
+# so config.toml only carries a `keychain:<account>` reference.
 email-mcp account add
 
 # Or use the legacy alias
@@ -180,7 +194,7 @@ email-mcp test personal   # specific account
 
 The snippets below use the default **stdio** transport, best for local desktop clients. For networked or remote access over **Streamable HTTP**, see [Streamable HTTP (networked)](#streamable-http-networked) below.
 
-**Recommended — use the guided installer** (auto-detects Claude Desktop, VS Code, Cursor, Windsurf):
+**Recommended — use the guided installer** (auto-detects Claude Desktop, Cursor, Windsurf; for VS Code use the manual snippet below):
 
 ```bash
 email-mcp install
@@ -335,8 +349,17 @@ Run the server in a container — mount your config directory read-only:
 ```bash
 docker run --rm -i \
   -v ~/.config/email-mcp:/home/node/.config/email-mcp:ro \
+  -v email-mcp-state:/home/node/.local/state/email-mcp \
+  -v email-mcp-cache:/home/node/.cache/email-mcp \
   ghcr.io/codefuturist/email-mcp
 ```
+
+The config mount can stay read-only, but **state and cache must be persisted**.
+The image declares both as volumes, so Docker keeps them in anonymous volumes
+if you omit the flags — naming them, as above, is what makes them survive a
+`docker run --rm`. State holds the scheduled-email queue: without it, a restart
+drops every email scheduled but not yet sent. Cache holds the local mirror,
+which is regenerable, so losing that only costs a re-sync.
 
 For MCP client configuration (e.g. Claude Desktop):
 
@@ -348,6 +371,8 @@ For MCP client configuration (e.g. Claude Desktop):
       "args": [
         "run", "--rm", "-i",
         "-v", "~/.config/email-mcp:/home/node/.config/email-mcp:ro",
+        "-v", "email-mcp-state:/home/node/.local/state/email-mcp",
+        "-v", "email-mcp-cache:/home/node/.cache/email-mcp",
         "ghcr.io/codefuturist/email-mcp"
       ]
     }
@@ -498,7 +523,8 @@ Commands:
   install status            Show registration status for detected clients
   install remove            Unregister email-mcp from MCP clients
   config show               Show config (passwords masked)
-  config edit [section]     Interactive settings editor (general, server, watcher, verification, cache, hooks, alerts)
+  config edit [section]     Interactive settings editor (general, server, send, attachments,
+                            scheduler, watcher, verification, cache, hooks, alerts)
   config validate           Check syntax, schema, typo'd keys, and cross-setting consistency
   completion zsh|bash|fish  Print shell completion script (accounts and sections complete dynamically)
   config path               Print config file path
@@ -510,6 +536,7 @@ Commands:
   scheduler status          Show scheduler installation status
   cache status [--json]     Show cache size, contents, coverage and freshness
   cache clear [--account N] Delete cached mail/attachments and free the disk space
+                            (--json supported by status, clear and verify)
   cache verify              Check the cache for corruption and reclaim orphaned files
   update [--check|--yes]    Self-update the binary to the latest GitHub release
   help                      Show help
@@ -532,6 +559,60 @@ Completions cover every command, subcommand, and flag — and complete **account
 names from your config** (`email-mcp test <TAB>`, `account edit <TAB>`) and
 **settings sections** (`config edit <TAB>`) dynamically.
 
+### Checking logs
+
+The background daemon logs to `$XDG_STATE_HOME/email-mcp/server.log`. View it
+with a tail/follow/filter viewer — no need to find the file:
+
+```bash
+email-mcp logs                 # last 40 lines (colored by level)
+email-mcp logs -n 200          # more lines
+email-mcp logs -f              # live follow (Ctrl-C to stop)
+email-mcp logs --level warn    # only WARN and ERROR (continuation lines kept)
+email-mcp logs --grep imap     # only lines matching a substring
+email-mcp logs -f --level error  # watch for errors as they happen
+```
+
+`email-mcp server logs` is an alias with the same options. Color auto-disables
+when piped or under `NO_COLOR`; on a systemd host, `journalctl --user -u
+email-mcp` is also available.
+
+### Reading and sending mail from the CLI
+
+Beyond running as an MCP server, `email-mcp` is a usable mail client in its own
+right — no MCP client and no coding required. Commands default to your first
+configured account (pass `--account <name>` to pick another), print clean,
+colored tables (color auto-disables when piped or under `NO_COLOR`), and tab
+complete (see [Shell completion](#shell-completion)).
+
+```bash
+email-mcp list                       # recent INBOX messages (● unread, ★ flagged, 📎 attachment)
+email-mcp list --unread --limit 50   # filters
+email-mcp list --mailbox Archive --search invoice
+email-mcp read 42                    # full message (headers, body, attachment names + sizes)
+email-mcp read 42 --mark-read
+email-mcp search "from bank"         # IMAP search
+email-mcp mailboxes                  # folders with unread/total counts
+email-mcp flag 42                    # flag / --off to unflag
+email-mcp attach 42 report.pdf ~/Downloads   # save an attachment
+email-mcp delete 42 --yes            # delete (asks to confirm without --yes)
+
+email-mcp reply 42 --body "on it" --all
+email-mcp send --to a@b.c,d@e.f --subject "Hi" --body "..." --attach ./file.pdf
+```
+
+Every command accepts `--help`; the read commands (`list`, `read`, `search`,
+`mailboxes`) accept `--json` for machine-readable output you can pipe to `jq`:
+
+```bash
+email-mcp list --json | jq '.items[] | {id, subject, from: .from.address}'
+email-mcp read 42 --json | jq .attachments
+```
+
+Attachment sizes on send/reply are checked against the configured limit before
+anything leaves your machine (see [Storing account secrets](#storing-account-secrets)
+for keeping credentials out of plaintext).
+
 ### Configuration
 
 Located at `$XDG_CONFIG_HOME/email-mcp/config.toml` (default: `~/.config/email-mcp/config.toml`). Validate it with `email-mcp config validate` (TOML syntax, schema, typo'd keys with did-you-mean, cross-setting consistency; exit 1 on errors — CI-friendly) and edit it interactively with `email-mcp config edit [section]` — every save validates first and backs up the previous file to `config.toml.bak`. Note: programmatic saves rewrite the file without TOML comments (the backup keeps them).
@@ -542,6 +623,7 @@ rate_limit = 10  # max emails per minute per account
 
 [settings.send]
 max_attachment_mb = 25  # global cap on the base64-encoded attachment total
+save_to_sent = false    # file a copy of each sent message in the IMAP Sent folder
 
 [settings.attachments]
 auto_download = true  # save attachments locally when calendar events are created from emails
@@ -663,6 +745,9 @@ For single-account setups (overrides config file):
 | `MCP_EMAIL_SMTP_POOL_MAX_CONNECTIONS` | `1` | Max pooled SMTP connections |
 | `MCP_EMAIL_SMTP_POOL_MAX_MESSAGES` | `100` | Max messages per pooled connection |
 | `MCP_EMAIL_RATE_LIMIT` | `10` | Max sends per minute |
+| `MCP_EMAIL_SEND_SAVE_TO_SENT` | `false` | `true` appends a copy of each sent message to the IMAP Sent folder |
+| `MCP_EMAIL_READ_ONLY` | `false` | `true` unregisters the mailbox-write tools (send, move, delete, labels, bulk). Calendar/Reminders writes, clipboard copy and config-writing tools stay available — it is a mailbox guard, not a global one. |
+| `MCP_EMAIL_SCHEDULER_SENT_RETENTION_DAYS` | `90` | Days of sent-email history to keep; `0` keeps everything |
 
 ### Local Cache
 
@@ -1008,7 +1093,7 @@ harmless copy → read-back → clear round-trip).
 
 ### Tools (52)
 
-> **Structured output:** `list_emails`, `search_emails`, `get_email_status`, and `list_mailboxes` also return machine-readable results (`outputSchema` + `structuredContent`) alongside the human-readable text, for clients that consume typed tool output.
+> **Structured output:** `list_emails`, `search_emails`, `get_email_status`, `list_mailboxes`, and `get_verification_code` also return machine-readable results (`outputSchema` + `structuredContent`) alongside the human-readable text, for clients that consume typed tool output.
 
 #### Email bodies: HTML and other formats
 
@@ -1055,6 +1140,16 @@ Other formats behave as follows:
 - **Attached messages** (`message/rfc822`) — never mistaken for the body, but
   used as the body when the message carries no other text (forward-as-attachment,
   digests).
+
+**Sent-folder copies.** SMTP delivers mail; it does not file it. Gmail and
+Outlook capture sent mail server-side, so `[settings.send] save_to_sent`
+defaults to **false** — enabling it on those providers would give you two
+copies of everything. Turn it on for an IMAP host that does not capture sends
+itself. The copy carries the same `Message-ID` the server accepted, is flagged
+`\Seen`, and lands in the folder the server marks `\Sent` (or a folder named
+`Sent`, created if absent). It omits `Bcc`, which the MIME composer strips
+unconditionally. A failure to file never fails the send — the mail has already
+left, and saying otherwise would invite a duplicate send.
 
 Outbound HTML (`html: true`) is sent as `multipart/alternative` with a
 generated plain-text alternative. Forwards quote the original as converted
@@ -1134,16 +1229,18 @@ text; pass `html: true` to `forward_email` to also carry the original HTML.
 | `check_clipboard_setup` | Diagnose clipboard integration (platform tools, concealed-write support) with optional round-trip test |
 | `configure_verification` | Update verification-catching settings at runtime (incl. starting/stopping the catcher), optional persist to config file |
 
-#### Calendar & Reminders (6)
+#### Calendar & Reminders (8)
 
 | Tool | Description |
 |------|-------------|
 | `extract_calendar` | Extract ICS/iCalendar events from an email |
 | `analyze_email_for_scheduling` | Analyze an email to detect events and reminder-worthy content |
-| `add_to_calendar` | Add an email event to the local calendar (macOS/Linux); event notes link back to the source email |
+| `add_to_calendar` | Add an email event to the local calendar (macOS Calendar.app; on Linux hands the .ics to xdg-open); event notes link back to the source email |
 | `create_reminder` | Create a reminder in macOS Reminders.app from an email; reminder notes link back to the source email |
-| `list_calendars` | List all available local calendars |
-| `check_calendar_permissions` | Check whether the local calendar is accessible |
+| `list_calendars` | List all available local calendars (macOS Calendar.app; elsewhere a single placeholder) |
+| `check_calendar_permissions` | Check whether the local calendar is accessible (macOS probes for real; elsewhere always reports accessible) |
+| `list_events` | List events from the local calendar in a date range (macOS only; returns empty elsewhere) |
+| `list_reminders` | List reminders from Reminders.app (macOS only) |
 
 ### Prompts (7)
 
@@ -1164,7 +1261,7 @@ text; pass `html: true` to `forward_email` to also carry the original HTML.
 | Accounts | `email://accounts` | List of configured accounts |
 | Mailboxes | `email://{account}/mailboxes` | Folder tree for an account |
 | Unread | `email://{account}/unread` | Unread email summary |
-| Templates | `email://templates` | Available email templates |
+| Templates | `email://templates/{name}` | One email template by name; the resource lists the available names |
 | Stats | `email://{account}/stats` | Email statistics snapshot |
 | Scheduled | `email://scheduled` | Pending scheduled emails |
 
@@ -1172,14 +1269,14 @@ text; pass `html: true` to `forward_email` to also carry the original HTML.
 
 | Provider | Domains |
 |----------|---------|
-| Gmail | gmail.com |
-| Outlook / Hotmail | outlook.com, hotmail.com, live.com |
-| Yahoo Mail | yahoo.com, ymail.com |
+| Gmail | gmail.com, googlemail.com |
+| Outlook / Hotmail | outlook.com, hotmail.com, live.com, outlook.de, outlook.co.uk |
+| Yahoo Mail | yahoo.com, yahoo.co.uk, yahoo.de, ymail.com |
 | iCloud | icloud.com, me.com, mac.com |
-| Fastmail | fastmail.com |
-| ProtonMail Bridge | proton.me, protonmail.com |
-| Zoho Mail | zoho.com |
-| GMX | gmx.com, gmx.de, gmx.net |
+| Fastmail | fastmail.com, fastmail.fm |
+| ProtonMail Bridge | proton.me, protonmail.com, protonmail.ch, pm.me |
+| Zoho Mail | zoho.com, zohomail.com |
+| GMX | gmx.com, gmx.de, gmx.net, gmx.at, gmx.ch |
 
 ### Architecture
 
@@ -1194,12 +1291,17 @@ src/
 │   ├── test.ts            — Connection tester
 │   ├── config-commands.ts — Config management (show, edit, path, init)
 │   ├── install-commands.ts — MCP client registration (install, status, remove)
-│   ├── providers.ts       — Provider auto-detection + OAuth2 endpoints (experimental)
+│   ├── cache-commands.ts  — Local-mirror CLI (status, clear, verify)
 │   └── scheduler.ts       — Scheduler CLI
 ├── config/                — Configuration layer
 │   ├── xdg.ts             — XDG Base Directory paths
 │   ├── schema.ts          — Zod validation schemas
+│   ├── providers.ts       — Provider auto-detection + OAuth2 endpoints (experimental)
 │   └── loader.ts          — Config loader (TOML + env vars)
+├── cache/                 — Local SQLite mirror
+│   ├── schema.ts          — Mirror schema + migrations
+│   ├── store.ts           — Read/write API over the mirror
+│   └── sync-engine.ts     — Background reconcile + body backfill
 ├── connections/
 │   └── manager.ts         — Lazy persistent IMAP/SMTP with OAuth2 (experimental)
 ├── services/              — Business logic
@@ -1247,7 +1349,7 @@ pnpm start       # run
 ```bash
 pnpm test              # unit tests
 pnpm test:integration  # against a throwaway GreenMail server (Docker required)
-pnpm smoke             # every MCP tool against a real configured account
+pnpm smoke             # most MCP tools against a real configured account (see caveats below)
 ```
 
 The integration suite runs each tool against a throwaway GreenMail server

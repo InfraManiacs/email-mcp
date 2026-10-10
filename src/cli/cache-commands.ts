@@ -52,6 +52,7 @@ export function parseCacheArgs(argv: string[]): CacheArgs {
 
   for (; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === undefined) continue;
     if (arg === '--help' || arg === '-h') args.help = true;
     else if (arg === '--json') args.json = true;
     else if (arg === '--yes' || arg === '-y') args.yes = true;

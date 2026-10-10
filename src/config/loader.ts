@@ -86,9 +86,16 @@ function loadFromEnv(): RawAppConfig | null {
       },
       send: {
         max_attachment_mb: parseInt(process.env.MCP_EMAIL_SEND_MAX_ATTACHMENT_MB ?? '25', 10),
+        save_to_sent: process.env.MCP_EMAIL_SEND_SAVE_TO_SENT === 'true',
       },
       attachments: {
         auto_download: process.env.MCP_EMAIL_ATTACHMENTS_AUTO_DOWNLOAD !== 'false',
+      },
+      scheduler: {
+        sent_retention_days: parseInt(
+          process.env.MCP_EMAIL_SCHEDULER_SENT_RETENTION_DAYS ?? '90',
+          10,
+        ),
       },
       cache: {
         // Opt-out rather than opt-in: the mirror is a pure win for reads and
@@ -330,9 +337,13 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       },
       send: {
         maxAttachmentMb: raw.settings.send.max_attachment_mb,
+        saveToSent: raw.settings.send.save_to_sent,
       },
       attachments: {
         autoDownload: raw.settings.attachments.auto_download,
+      },
+      scheduler: {
+        sentRetentionDays: raw.settings.scheduler.sent_retention_days,
       },
       cache: {
         enabled: raw.settings.cache.enabled,
@@ -449,6 +460,22 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
 /**
  * Save configuration to a TOML file.
  */
+/**
+ * Write the commented starter config.
+ *
+ * Not expressible through saveConfig: that serialises a config object, which
+ * would drop every explanatory comment the template exists for. The
+ * permissions matter as much as the content — the command's own next
+ * instruction is to edit this file and add an account password, so it must not
+ * be born world-readable.
+ */
+export async function writeConfigTemplate(filePath: string = CONFIG_FILE): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await fs.writeFile(filePath, generateTemplate(), { encoding: 'utf-8', mode: 0o600 });
+  // writeFile leaves the mode of an existing file alone, so tighten it.
+  await fs.chmod(filePath, 0o600);
+}
+
 export async function saveConfig(
   config: RawAppConfig,
   filePath: string = CONFIG_FILE,
@@ -518,7 +545,20 @@ export function generateTemplate(): string {
 
 [settings]
 rate_limit = 10  # max emails per minute per account
-read_only = false  # set to true to disable all write operations
+read_only = false  # set to true to disable the mailbox-write tools
+
+# Outbound. save_to_sent APPENDs a copy of each sent message to the IMAP Sent
+# folder. Off by default: Gmail and Outlook file sent mail themselves, so
+# enabling it there means two copies of everything. The filed copy omits Bcc.
+# [settings.send]
+# max_attachment_mb = 25
+# save_to_sent = false
+
+# Scheduled sends. The queue keeps one JSON file per sent email under
+# $XDG_STATE_HOME/email-mcp/scheduled/sent/; retention bounds how far back
+# that history reaches, pruned by age when the queue is next checked.
+# [settings.scheduler]
+# sent_retention_days = 90  # 0 keeps every sent entry forever
 
 # Local mirror — keeps a SQLite copy of mail under $XDG_CACHE_HOME/email-mcp
 # so reads are fast and still work while offline. On by default; the mirror is

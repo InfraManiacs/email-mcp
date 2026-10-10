@@ -8,6 +8,7 @@
 # Project-specific (inline):
 #   builds                     – Bun native binaries, all common OS/arch targets
 #   archives                   – tar.gz (zip on Windows), target-derived names
+#   homebrew_casks             – Homebrew cask → codefuturist/homebrew-tap
 #   dockers_v2                 – Dual-variant (Debian + Alpine) multi-arch images
 #   changelog                  – GitHub-generated release notes with filters
 #
@@ -21,6 +22,12 @@ project_name: email-mcp
 includes:
   - from_file:
       path: config/goreleaser/base.yaml
+
+# Project overrides for base.yaml's variables (merged per-key; the base
+# defaults license to MIT and leaves description empty).
+variables:
+  license: LGPL-3.0-or-later
+  description: "IMAP/SMTP email MCP server — 52 tools, IMAP IDLE push, multi-account, AI triage"
 
 # goreleaser's default ./dist collides with the tsc output directory —
 # `--clean` would wipe the compiled server. Keep release artifacts in build/.
@@ -92,6 +99,55 @@ archives:
       - README*
       - LICENSE*
       - CHANGELOG*
+
+# ── Homebrew cask ────────────────────────────────────────────────────────────
+# Publishes a cask to codefuturist/homebrew-tap on every stable release.
+# Ships only the compiled Bun binary from the darwin archives — no Node.js
+# (or any other) runtime dependency. A cask, not a `brews` formula: `brews`
+# is deprecated and fails `goreleaser check` (git-patrol stays on it only for
+# its private-repo download strategy, which this public repo doesn't need).
+# The postflight hook drops the Gatekeeper quarantine bit — the Bun binaries
+# are not signed/notarized, so without it macOS blocks the staged binary.
+# Scoped to ids: [default] to keep musl's duplicate linux archives out of
+# scope (casks only consume the darwin ones anyway).
+#
+# Install: brew install codefuturist/tap/email-mcp
+# (the generated cask carries on_linux stanzas too — binary-only casks work
+# on Linuxbrew with Homebrew ≥ 4.3; older installs fall back to the tarballs)
+# Requires HOMEBREW_TAP_TOKEN (PAT with write access to the tap repo).
+homebrew_casks:
+  - name: email-mcp
+    ids: [default]
+    directory: Casks
+    binaries: [email-mcp]
+    description: "{{ .Var.description }}"
+    homepage: "{{ .Var.homepage }}"
+
+    repository:
+      owner: "{{ .Var.tap_owner }}"
+      name: "{{ .Var.tap_repo }}"
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+
+    commit_author:
+      name: "{{ .Var.author_name }}"
+      email: "{{ .Var.author_email }}"
+
+    commit_msg_template: "chore(brew): update {{ .ProjectName }} cask to {{ .Tag }}"
+
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/email-mcp"]
+          end
+
+    caveats: |
+      email-mcp reads its configuration from ~/.config/email-mcp/.
+      Run `email-mcp --help` for transport options (stdio is the default).
+
+    # Don't push prerelease casks to the tap.
+    skip_upload: auto
 
 # ── Docker images (project-specific) ────────────────────────────────────────
 # Two variants pushed to dual registries (GHCR + Docker Hub) with custom tag

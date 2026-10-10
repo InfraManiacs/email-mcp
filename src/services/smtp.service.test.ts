@@ -140,7 +140,7 @@ describe('SmtpService', () => {
       // nodemailer 10 removed text:'auto', so the service generates the
       // text/plain alternative itself — HTML mail goes out as
       // multipart/alternative, not as a single text/html part.
-      const call = transport.sendMail.mock.calls[0][0];
+      const call = transport.sendMail.mock.calls[0]![0];
       expect(call.html).toBe('<h1>Hello</h1>');
       expect(call.text).toBe('Hello');
     });
@@ -164,10 +164,100 @@ describe('SmtpService', () => {
 
       await service.sendDraft('test', 7);
 
-      const call = transport.sendMail.mock.calls[0][0];
+      const call = transport.sendMail.mock.calls[0]![0];
       expect(call.html).toBe('<p>drafted <b>text</b></p>');
       expect(call.text).toBe('drafted text');
     });
+  });
+});
+
+// SMTP delivers but files nothing. Gmail and Outlook capture sent mail
+// server-side, so doing this unasked would show those users two copies —
+// hence opt-in, and hence the default-off test below.
+describe('saving a copy to the Sent folder', () => {
+  function withImap(saveToSent: boolean) {
+    const transport = createMockTransport();
+    const connections = createMockConnectionManager(transport);
+    const imap = {
+      appendToSent: vi.fn().mockResolvedValue('Sent'),
+      fetchDraft: vi.fn(),
+      deleteDraft: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new SmtpService(
+      connections,
+      createMockRateLimiter(true),
+      imap as unknown as ImapService,
+      { saveToSent },
+    );
+    return { service, imap, transport };
+  }
+
+  const mail = { to: ['a@b.c'], subject: 'Quarterly', body: 'text' };
+
+  it('does not touch IMAP when the setting is off', async () => {
+    const { service, imap } = withImap(false);
+    await service.sendEmail('test', mail);
+    expect(imap.appendToSent).not.toHaveBeenCalled();
+  });
+
+  it('appends a copy carrying the Message-ID the server accepted', async () => {
+    const { service, imap } = withImap(true);
+
+    const result = await service.sendEmail('test', mail);
+
+    expect(imap.appendToSent).toHaveBeenCalledTimes(1);
+    const [account, raw] = imap.appendToSent.mock.calls[0]!;
+    expect(account).toBe('test');
+    const message = (raw as Buffer).toString('utf-8');
+    // The copy must be the same message, not a lookalike: same id, so a reply
+    // to it threads against what actually went out.
+    expect(message).toContain(result.messageId);
+    expect(message).toContain('Subject: Quarterly');
+    expect(message).toContain('a@b.c');
+  });
+
+  // Documented limitation, pinned so it cannot change silently: nodemailer's
+  // composer strips Bcc unconditionally — correct for the wire, and it also
+  // strips it from a custom `headers` entry, so a filed copy cannot carry the
+  // blind-copy list without hand-injecting a header into built bytes. That
+  // would add header-injection surface to the send path, which is not worth a
+  // convenience on an opt-in feature.
+  it('omits Bcc from the filed copy, as the composer strips it', async () => {
+    const { service, imap } = withImap(true);
+    await service.sendEmail('test', { ...mail, bcc: ['hidden@b.c'] });
+    const message = (imap.appendToSent.mock.calls[0]![1] as Buffer).toString('utf-8');
+    expect(message).not.toContain('hidden@b.c');
+    // The rest of the message is still the message that was sent.
+    expect(message).toContain('Subject: Quarterly');
+  });
+
+  // The mail has already left. Failing the call now would tell the user the
+  // send failed and invite a duplicate send.
+  it('reports the send as sent even when filing the copy fails', async () => {
+    const { service, imap } = withImap(true);
+    imap.appendToSent.mockRejectedValue(new Error('NO [TRYCREATE] no Sent folder'));
+
+    await expect(service.sendEmail('test', mail)).resolves.toMatchObject({ status: 'sent' });
+  });
+
+  it('files a copy for replies too', async () => {
+    const { service, imap } = withImap(true);
+    imap.fetchDraft = vi.fn();
+    const imapWithOriginal = imap as unknown as Record<string, unknown>;
+    imapWithOriginal.getEmail = vi.fn().mockResolvedValue({
+      subject: 'Question',
+      messageId: '<orig@x>',
+      from: { address: 'them@x.test' },
+      to: [{ address: 'test@example.com' }],
+      cc: [],
+      references: [],
+    });
+
+    await service.replyToEmail('test', { emailId: '7', body: 'answer' });
+
+    expect(imap.appendToSent).toHaveBeenCalledTimes(1);
+    const [, raw] = imap.appendToSent.mock.calls[0]!;
+    expect((raw as Buffer).toString('utf-8')).toContain('In-Reply-To: <orig@x>');
   });
 });
 
@@ -234,7 +324,7 @@ describe('outbound attachments', () => {
     const svc = service();
     await svc.sendEmail('test', { to: ['a@b.c'], subject: 's', body: 'b' });
 
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect('attachments' in payload).toBe(false);
   });
 
@@ -266,7 +356,7 @@ describe('outbound attachments', () => {
       'invoice.pdf',
       expect.any(Number),
     );
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect(payload.attachments).toEqual([
       {
         filename: 'invoice.pdf',
@@ -292,7 +382,7 @@ describe('outbound attachments', () => {
     const svc = service(imap);
     await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], body: 'FYI' });
 
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     // 165/169 real messages are HTML-only; the old text ?? html fallback
     // stuffed raw markup into a text/plain part.
     expect(payload.text).not.toContain('<p>');
@@ -319,7 +409,7 @@ describe('outbound attachments', () => {
     const svc = service(imap);
     await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], body: 'note', html: true });
 
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect(payload.html).toContain('note');
     expect(payload.html).toContain('<blockquote');
     expect(payload.html).toContain('<p>original rich content</p>');
@@ -346,7 +436,7 @@ describe('outbound attachments', () => {
     const svc = service(imap);
     await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'] });
 
-    const { text, subject } = transport.sendMail.mock.calls[0][0];
+    const { text, subject } = transport.sendMail.mock.calls[0]![0];
     const headerBlock = text.slice(0, text.indexOf('> '));
     expect(headerBlock).not.toMatch(/^From: ceo@bank\.test/m);
     expect(headerBlock).not.toMatch(/^To: victim@x\.test/m);
@@ -387,7 +477,7 @@ describe('outbound attachments', () => {
     const svc = service(imap);
     await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'] });
 
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect(payload.attachments).toHaveLength(1);
     expect(payload.attachments[0].filename).toBe('IMG_1234.jpg');
   });
@@ -424,7 +514,7 @@ describe('outbound attachments', () => {
 
     // An html forward embeds the original markup verbatim, so the parts its
     // <img src="cid:..."> points at have to travel with it or the images break.
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect(payload.attachments).toEqual([
       expect.objectContaining({ cid: 'logo@x', contentDisposition: 'inline' }),
     ]);
@@ -458,7 +548,7 @@ describe('outbound attachments', () => {
     // Nothing references it once the body is plain text — re-attaching would
     // turn layout images into stray files.
     expect(imap.downloadAttachment).not.toHaveBeenCalled();
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect('attachments' in payload).toBe(false);
   });
 
@@ -479,7 +569,7 @@ describe('outbound attachments', () => {
     await svc.forwardEmail('test', { emailId: '1', to: ['a@b.c'], includeAttachments: false });
 
     expect(imap.downloadAttachment).not.toHaveBeenCalled();
-    const payload = transport.sendMail.mock.calls[0][0];
+    const payload = transport.sendMail.mock.calls[0]![0];
     expect('attachments' in payload).toBe(false);
   });
 });

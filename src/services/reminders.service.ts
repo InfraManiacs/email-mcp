@@ -163,7 +163,7 @@ function buildReminderAppleScript(input: ReminderInput, confirm: boolean): strin
       dlgParts.push(`\u26A0\uFE0F Priority: ${pLabel}`);
     }
 
-    lines.push(`set dialogText to "${escapeAS(dlgParts[0])}"`);
+    lines.push(`set dialogText to "${escapeAS(dlgParts[0] ?? '')}"`);
     dlgParts.slice(1).forEach((dl) => {
       lines.push(`set dialogText to dialogText & return & "${escapeAS(dl)}"`);
     });

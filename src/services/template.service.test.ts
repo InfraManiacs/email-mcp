@@ -127,7 +127,7 @@ describe('TemplateService', () => {
 
     const templates = await service.listTemplates();
     expect(templates).toHaveLength(1);
-    expect(templates[0].name).toBe('greeting');
+    expect(templates[0]!.name).toBe('greeting');
   });
 
   it('listTemplates() returns empty array when directory does not exist', async () => {

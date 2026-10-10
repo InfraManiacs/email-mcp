@@ -210,7 +210,7 @@ describe('AppConfigFileSchema', () => {
 describe('send settings', () => {
   it('defaults max_attachment_mb to 25 when settings.send is absent', () => {
     const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
-    expect(result.settings.send).toEqual({ max_attachment_mb: 25 });
+    expect(result.settings.send).toEqual({ max_attachment_mb: 25, save_to_sent: false });
   });
 
   it('accepts an explicit max_attachment_mb', () => {
@@ -225,12 +225,12 @@ describe('send settings', () => {
     const result = AppConfigFileSchema.parse({
       accounts: [validAccount({ max_attachment_mb: 40 })],
     });
-    expect(result.accounts[0].max_attachment_mb).toBe(40);
+    expect(result.accounts[0]!.max_attachment_mb).toBe(40);
   });
 
   it('leaves the per-account max_attachment_mb unset by default', () => {
     const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
-    expect(result.accounts[0].max_attachment_mb).toBeUndefined();
+    expect(result.accounts[0]!.max_attachment_mb).toBeUndefined();
   });
 
   it('rejects a non-positive per-account max_attachment_mb', () => {

@@ -17,5 +17,9 @@ export {
   seedThread,
   waitForDelivery,
 } from './seed.js';
-export { createTestServices, type TestServices } from './services.js';
+export {
+  createTestServices,
+  createTestServicesWith,
+  type TestServices,
+} from './services.js';
 export { TmpFiles } from './tmpfiles.js';

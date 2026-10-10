@@ -56,10 +56,11 @@ function resolveAccount(config: AppConfig, requested?: string): string {
     }
     return requested;
   }
-  if (config.accounts.length === 0) {
+  const [first] = config.accounts;
+  if (!first) {
     throw new Error('No accounts configured. Run `email-mcp account add` first.');
   }
-  return config.accounts[0].name;
+  return first.name;
 }
 
 export default async function runOpenCommand(argv: string[]): Promise<void> {

@@ -27,6 +27,10 @@ function createTransport(user = 'test') {
     port: smtpPort,
     secure: false,
     auth: { user, pass: user },
+    // Integration-only: this seeds mail into the throwaway GreenMail container
+    // (localhost, self-signed), never a real server. Not reachable from
+    // production code.
+    // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
     tls: { rejectUnauthorized: false },
   });
 }

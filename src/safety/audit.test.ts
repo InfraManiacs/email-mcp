@@ -14,7 +14,7 @@ describe('Audit Logger', () => {
   it('logs an entry with tool, account, and result', async () => {
     await audit.log('send_email', 'personal', { to: ['a@b.com'] }, 'ok');
     expect(mockFs.appendFile).toHaveBeenCalledOnce();
-    const logLine = mockFs.appendFile.mock.calls[0][1] as string;
+    const logLine = mockFs.appendFile.mock.calls[0]![1] as string;
     const entry = JSON.parse(logLine);
     expect(entry.tool).toBe('send_email');
     expect(entry.account).toBe('personal');
@@ -24,7 +24,7 @@ describe('Audit Logger', () => {
 
   it('redacts password field', async () => {
     await audit.log('send_email', 'x', { password: 'secret123', to: ['a@b.com'] }, 'ok');
-    const logLine = mockFs.appendFile.mock.calls[0][1] as string;
+    const logLine = mockFs.appendFile.mock.calls[0]![1] as string;
     const entry = JSON.parse(logLine);
     expect(entry.params.password).toBe('[REDACTED]');
     expect(entry.params.to).toEqual(['a@b.com']);
@@ -43,7 +43,7 @@ describe('Audit Logger', () => {
       },
       'ok',
     );
-    const logLine = mockFs.appendFile.mock.calls[0][1] as string;
+    const logLine = mockFs.appendFile.mock.calls[0]![1] as string;
     const entry = JSON.parse(logLine);
     expect(entry.params.body).toBe('[REDACTED]');
     expect(entry.params.bodyText).toBe('[REDACTED]');
@@ -54,7 +54,7 @@ describe('Audit Logger', () => {
 
   it('redacts nested sensitive fields', async () => {
     await audit.log('test', 'x', { nested: { password: 'abc', safe: 'ok' } }, 'ok');
-    const logLine = mockFs.appendFile.mock.calls[0][1] as string;
+    const logLine = mockFs.appendFile.mock.calls[0]![1] as string;
     const entry = JSON.parse(logLine);
     expect(entry.params.nested.password).toBe('[REDACTED]');
     expect(entry.params.nested.safe).toBe('ok');
@@ -62,7 +62,7 @@ describe('Audit Logger', () => {
 
   it('includes error field when provided', async () => {
     await audit.log('send_email', 'x', {}, 'error', 'Connection failed');
-    const logLine = mockFs.appendFile.mock.calls[0][1] as string;
+    const logLine = mockFs.appendFile.mock.calls[0]![1] as string;
     const entry = JSON.parse(logLine);
     expect(entry.result).toBe('error');
     expect(entry.error).toBe('Connection failed');
@@ -70,7 +70,7 @@ describe('Audit Logger', () => {
 
   it('does not include error field when not provided', async () => {
     await audit.log('send_email', 'x', {}, 'ok');
-    const logLine = mockFs.appendFile.mock.calls[0][1] as string;
+    const logLine = mockFs.appendFile.mock.calls[0]![1] as string;
     const entry = JSON.parse(logLine);
     expect(entry.error).toBeUndefined();
   });

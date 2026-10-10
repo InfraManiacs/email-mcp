@@ -27,7 +27,13 @@ import type { RawAccountConfig, RawAppConfig } from '../config/schema.js';
 import ConnectionManager from '../connections/manager.js';
 import type { AccountConfig } from '../types/index.js';
 import ensureInteractive, { assertNotCancel, CancelledError } from './guard.js';
-import { KEYCHAIN_SERVICE, keychainRefFor, runKeychainStore } from './keychain-store.js';
+import {
+  KEYCHAIN_SERVICE,
+  keychainRefFor,
+  keychainSupported,
+  runKeychainStore,
+  storeSecretNonInteractive,
+} from './keychain-store.js';
 import { migrateAccountSecret } from './secret-migrate.js';
 
 // ---------------------------------------------------------------------------
@@ -443,6 +449,47 @@ async function listAccounts(): Promise<void> {
 /**
  * Interactive wizard to add a new email account.
  */
+/**
+ * Offer to put the password in the OS keychain instead of config.toml.
+ *
+ * Returns what belongs in the `password` field: a `keychain:<name>` reference
+ * when the secret was stored, otherwise the plaintext the user typed.
+ * `account set-secret` could already do this, but only after the fact and only
+ * for a user who discovered it — so every account this wizard created began
+ * life with its password in a file.
+ *
+ * The secret is handed over non-interactively because this process already
+ * holds it; asking the user to retype it into the OS prompt buys nothing here.
+ * On Linux that path is argv-clean (stdin); on macOS the value sits in the
+ * child's argv for the few milliseconds it runs, which is the same trade
+ * `migrate-secret` documents and makes for the same reason: a brief argv
+ * exposure replaces a permanent plaintext copy on disk.
+ */
+async function offerKeychainStorage(accountName: string, password: string): Promise<string> {
+  if (!keychainSupported()) return password;
+
+  const useKeychain = await confirm({
+    message: 'Store the password in the OS keychain instead of config.toml?',
+    initialValue: true,
+  });
+  if (isCancel(useKeychain) || !useKeychain) return password;
+
+  try {
+    await storeSecretNonInteractive(accountName, password);
+  } catch (err) {
+    // Never lose the account over this: fall back to the file, which
+    // saveConfig writes owner-only.
+    log.warning(
+      `Could not store the secret (${err instanceof Error ? err.message : String(err)}). ` +
+        'Keeping it in config.toml, which is written owner-only (0600).',
+    );
+    return password;
+  }
+
+  log.success('Password stored in the OS keychain; config.toml only references it.');
+  return keychainRefFor(accountName);
+}
+
 async function addAccount(): Promise<void> {
   ensureInteractive();
   intro('email-mcp › Add Account');
@@ -478,8 +525,9 @@ async function addAccount(): Promise<void> {
   const ok = await testConnections(testAccount);
   if (!ok) return;
 
-  // 5. Build and save
-  const newAccount = buildRawAccount(identity, creds, server);
+  // 5. Offer to keep the password out of config.toml, then build and save
+  const credential = await offerKeychainStorage(identity.name, creds.password);
+  const newAccount = buildRawAccount(identity, { ...creds, password: credential }, server);
   const config: RawAppConfig = existingConfig
     ? {
         ...existingConfig,
@@ -489,8 +537,9 @@ async function addAccount(): Promise<void> {
         settings: {
           rate_limit: 10,
           read_only: false,
-          send: { max_attachment_mb: 25 },
+          send: { max_attachment_mb: 25, save_to_sent: false },
           attachments: { auto_download: true },
+          scheduler: { sent_retention_days: 90 },
           server: {
             host: '127.0.0.1',
             port: 8080,
@@ -514,7 +563,10 @@ async function addAccount(): Promise<void> {
           cache: {
             enabled: true,
             mailboxes: ['INBOX'],
-            window_days: 90,
+            // 0, matching the schema default: a bounded window leaves the
+            // mirror holding a slice, and a slice cannot answer "how many
+            // messages are in this mailbox", so every listing goes live.
+            window_days: 0,
             body_messages: 500,
             max_size_mb: 500,
             sync_interval: 300,
@@ -599,7 +651,7 @@ async function editAccount(nameArg?: string): Promise<void> {
     }
   } else if (accounts.length === 1) {
     accountIndex = 0;
-    log.info(`Editing account "${accounts[0].name}".`);
+    log.info(`Editing account "${accounts[0]?.name}".`);
   } else {
     const chosen = await select({
       message: 'Which account do you want to edit?',
@@ -614,6 +666,10 @@ async function editAccount(nameArg?: string): Promise<void> {
   }
 
   const current = accounts[accountIndex];
+  if (!current) {
+    cancel('Account not found.');
+    return;
+  }
 
   // Field selector — let user choose what to edit
   const fields = await select({
@@ -775,6 +831,10 @@ async function deleteAccount(nameArg?: string): Promise<void> {
   }
 
   const target = accounts[accountIndex];
+  if (!target) {
+    cancel('Account not found.');
+    return;
+  }
 
   // Require explicit confirmation
   const confirmed = await confirm({

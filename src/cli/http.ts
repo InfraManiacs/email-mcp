@@ -95,9 +95,20 @@ export function parseOptions(
       case '--insecure':
         opts.insecure = true;
         break;
-      default:
-        // Ignore unknown flags (keeps forward-compatibility).
+      // runHttp handles these before parsing, but `server start` forwards
+      // anything it does not recognise here, so they must not hard-error.
+      case '--help':
+      case '-h':
         break;
+      default:
+        // Ignoring them cost more than the forward-compatibility it bought: a
+        // typo'd --token left a networked email server with no authentication,
+        // and a typo'd --insecure refused to bind for an unexplained reason.
+        throw new Error(
+          `Unknown option "${arg}" for \`email-mcp http\`. ` +
+            'Valid options: --host, --port, --path, --token, --allowed-hosts, --insecure. ' +
+            'Run `email-mcp http --help` for details.',
+        );
     }
   }
 
@@ -137,9 +148,8 @@ Examples:
 
 export default async function runHttp(argv: string[]): Promise<void> {
   // Before anything with side effects: buildServices() starts background
-  // services and parseOptions() ignores unknown flags, so without this check
-  // `email-mcp http --help` used to boot the full server (and die with
-  // EADDRINUSE if the daemon was already running).
+  // services, so without this check `email-mcp http --help` used to boot the
+  // full server (and die with EADDRINUSE if the daemon was already running).
   if (argv.includes('--help') || argv.includes('-h')) {
     printHttpUsage();
     return;

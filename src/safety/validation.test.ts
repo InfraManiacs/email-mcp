@@ -1,4 +1,5 @@
 import {
+  safeAttachmentFilename,
   sanitizeMailboxName,
   sanitizeSearchQuery,
   sanitizeTemplateVariable,
@@ -6,6 +7,55 @@ import {
   validateLabelName,
   validateWebhookUrl,
 } from './validation.js';
+
+// The name comes from the sender's Content-Disposition header, so anyone who
+// can email the user controls it. Written through path.join unchanged it
+// escapes the destination directory outright.
+describe('safeAttachmentFilename', () => {
+  it('drops a traversal prefix, keeping only the final segment', () => {
+    expect(safeAttachmentFilename('../../../../Users/colin/.zshrc')).toBe('zshrc');
+    expect(safeAttachmentFilename('/etc/passwd')).toBe('passwd');
+  });
+
+  it('drops Windows-style separators, which a POSIX basename would keep', () => {
+    expect(safeAttachmentFilename('..\\..\\evil.exe')).toBe('evil.exe');
+  });
+
+  it('falls back when nothing usable survives', () => {
+    expect(safeAttachmentFilename('..')).toBe('attachment');
+    expect(safeAttachmentFilename('.')).toBe('attachment');
+    expect(safeAttachmentFilename('')).toBe('attachment');
+    expect(safeAttachmentFilename('///')).toBe('attachment');
+  });
+
+  it('strips leading dots so an attachment cannot pose as a config file', () => {
+    // `attach <id> <name> .` defaults to the directory the user ran it from,
+    // where a file named ".zshrc" needs no traversal to do damage.
+    expect(safeAttachmentFilename('.zshrc')).toBe('zshrc');
+    expect(safeAttachmentFilename('..bashrc')).toBe('bashrc');
+  });
+
+  it('strips control characters', () => {
+    const name = `re${String.fromCharCode(0)}port${String.fromCharCode(31)}.pdf`;
+    expect(safeAttachmentFilename(name)).toBe('report.pdf');
+  });
+
+  it('strips the trailing dots and spaces Windows silently discards', () => {
+    expect(safeAttachmentFilename('report.pdf. ')).toBe('report.pdf');
+  });
+
+  it('leaves an ordinary name alone, interior dots included', () => {
+    expect(safeAttachmentFilename('Invoice 2026-01.pdf')).toBe('Invoice 2026-01.pdf');
+    expect(safeAttachmentFilename('archive.tar.gz')).toBe('archive.tar.gz');
+    expect(safeAttachmentFilename('Bestätigung.pdf')).toBe('Bestätigung.pdf');
+  });
+
+  it('caps a name that would exceed the filesystem limit', () => {
+    const out = safeAttachmentFilename(`${'a'.repeat(400)}.pdf`);
+    expect(out.length).toBeLessThanOrEqual(200);
+    expect(Buffer.byteLength(out, 'utf-8')).toBeLessThan(255);
+  });
+});
 
 describe('sanitizeMailboxName', () => {
   it('returns a valid trimmed name', () => {

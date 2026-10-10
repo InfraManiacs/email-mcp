@@ -15,6 +15,7 @@ import {
   AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
+  SchedulerConfigSchema,
   SendConfigSchema,
   ServerConfigSchema,
   SettingsSchema,
@@ -27,6 +28,7 @@ export type SectionId =
   | 'server'
   | 'send'
   | 'attachments'
+  | 'scheduler'
   | 'watcher'
   | 'verification'
   | 'cache'
@@ -77,6 +79,7 @@ function onOff(value: unknown): string {
 const generalShape = SettingsSchema.shape;
 const sendShape = SendConfigSchema.shape;
 const attachmentsShape = AttachmentsConfigSchema.shape;
+const schedulerShape = SchedulerConfigSchema.shape;
 const serverShape = ServerConfigSchema.shape;
 const watcherShape = WatcherConfigSchema.shape;
 const verificationShape = VerificationConfigSchema.shape;
@@ -100,7 +103,7 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
       },
       {
         key: 'read_only',
-        label: 'Read-only mode (disables all write tools)',
+        label: 'Read-only mode (disables the mailbox-write tools)',
         kind: 'boolean',
         schema: generalShape.read_only,
       },
@@ -268,6 +271,12 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
       `attachment cap ${raw.settings.send.max_attachment_mb} MB (base64-encoded total)`,
     fields: [
       {
+        key: 'save_to_sent',
+        label: 'File a copy of each sent message in the IMAP Sent folder',
+        kind: 'boolean',
+        schema: sendShape.save_to_sent,
+      },
+      {
         key: 'max_attachment_mb',
         label: 'Max attachment total per message, MB (base64-encoded; 1+)',
         kind: 'int',
@@ -287,6 +296,23 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
         label: 'Save attachments locally when creating calendar events from emails',
         kind: 'boolean',
         schema: attachmentsShape.auto_download,
+      },
+    ],
+  },
+  {
+    id: 'scheduler',
+    label: 'Scheduler (send history retention)',
+    resolve: (raw) => raw.settings.scheduler as unknown as Record<string, unknown>,
+    summarize: (raw) =>
+      raw.settings.scheduler.sent_retention_days === 0
+        ? 'sent history kept forever'
+        : `sent history pruned after ${raw.settings.scheduler.sent_retention_days} days`,
+    fields: [
+      {
+        key: 'sent_retention_days',
+        label: 'Days of sent-email history to keep (0 = forever)',
+        kind: 'int',
+        schema: schedulerShape.sent_retention_days,
       },
     ],
   },

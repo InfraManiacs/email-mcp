@@ -9,6 +9,7 @@ import {
   loadRawConfig,
   saveConfig,
   saveConfigValidated,
+  writeConfigTemplate,
 } from './loader.js';
 
 const MINIMAL_TOML = `
@@ -77,10 +78,10 @@ describe('Config Loader', () => {
       const config = await loadConfig(configPath);
 
       expect(config.accounts).toHaveLength(1);
-      expect(config.accounts[0].name).toBe('test');
-      expect(config.accounts[0].email).toBe('test@example.com');
-      expect(config.accounts[0].imap.host).toBe('imap.example.com');
-      expect(config.accounts[0].smtp.host).toBe('smtp.example.com');
+      expect(config.accounts[0]!.name).toBe('test');
+      expect(config.accounts[0]!.email).toBe('test@example.com');
+      expect(config.accounts[0]!.imap.host).toBe('imap.example.com');
+      expect(config.accounts[0]!.smtp.host).toBe('smtp.example.com');
     });
 
     it('throws when config file does not exist', async () => {
@@ -149,8 +150,8 @@ read_only = true
 
       const config = await loadConfig(configPath);
 
-      expect(config.accounts[0].imap.verifySsl).toBe(false);
-      expect(config.accounts[0].smtp.verifySsl).toBe(false);
+      expect(config.accounts[0]!.imap.verifySsl).toBe(false);
+      expect(config.accounts[0]!.smtp.verifySsl).toBe(false);
       expect(config.settings.rateLimit).toBe(5);
       expect(config.settings.readOnly).toBe(true);
     });
@@ -162,12 +163,12 @@ read_only = true
       const config = await loadConfig(configPath);
 
       // Account defaults
-      expect(config.accounts[0].imap.port).toBe(993);
-      expect(config.accounts[0].imap.tls).toBe(true);
-      expect(config.accounts[0].imap.verifySsl).toBe(true);
-      expect(config.accounts[0].smtp.port).toBe(465);
-      expect(config.accounts[0].smtp.pool?.enabled).toBe(true);
-      expect(config.accounts[0].smtp.pool?.maxConnections).toBe(1);
+      expect(config.accounts[0]!.imap.port).toBe(993);
+      expect(config.accounts[0]!.imap.tls).toBe(true);
+      expect(config.accounts[0]!.imap.verifySsl).toBe(true);
+      expect(config.accounts[0]!.smtp.port).toBe(465);
+      expect(config.accounts[0]!.smtp.pool?.enabled).toBe(true);
+      expect(config.accounts[0]!.smtp.pool?.maxConnections).toBe(1);
 
       // Settings defaults
       expect(config.settings.rateLimit).toBe(10);
@@ -193,9 +194,9 @@ read_only = true
       const config = await loadConfig(path.join(tmpDir, 'nonexistent.toml'));
 
       expect(config.accounts).toHaveLength(1);
-      expect(config.accounts[0].email).toBe('env@example.com');
-      expect(config.accounts[0].imap.host).toBe('imap.env.com');
-      expect(config.accounts[0].smtp.host).toBe('smtp.env.com');
+      expect(config.accounts[0]!.email).toBe('env@example.com');
+      expect(config.accounts[0]!.imap.host).toBe('imap.env.com');
+      expect(config.accounts[0]!.smtp.host).toBe('smtp.env.com');
     });
 
     it('reads read_only from MCP_EMAIL_READ_ONLY', async () => {
@@ -330,9 +331,39 @@ link_action = "copy"
       await saveConfig(rawConfig as unknown as Parameters<typeof saveConfig>[0], configPath);
 
       const reloaded = await loadConfig(configPath);
-      expect(reloaded.accounts[0].name).toBe('saved-test');
-      expect(reloaded.accounts[0].email).toBe('saved@example.com');
-      expect(reloaded.accounts[0].imap.host).toBe('imap.saved.com');
+      expect(reloaded.accounts[0]!.name).toBe('saved-test');
+      expect(reloaded.accounts[0]!.email).toBe('saved@example.com');
+      expect(reloaded.accounts[0]!.imap.host).toBe('imap.saved.com');
+    });
+
+    // `config init` used to write the template with plain writeFile, so it
+    // landed at the process umask (commonly 0644) — and the very next step the
+    // command prints is "edit the file to add your email accounts", i.e. put
+    // a password in a world-readable file.
+    it('writes the template with owner-only (0600) permissions', async () => {
+      const configPath = path.join(tmpDir, 'init', 'template.toml');
+
+      await writeConfigTemplate(configPath);
+
+      const mode = (await fs.stat(configPath)).mode & 0o777;
+      expect(mode).toBe(0o600);
+      const dirMode = (await fs.stat(path.dirname(configPath))).mode & 0o777;
+      expect(dirMode).toBe(0o700);
+    });
+
+    it('tightens an already-loose template file', async () => {
+      const configPath = path.join(tmpDir, 'loose.toml');
+      await fs.writeFile(configPath, 'stale', { mode: 0o644 });
+
+      await writeConfigTemplate(configPath);
+
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    });
+
+    it('writes the generated template content', async () => {
+      const configPath = path.join(tmpDir, 'content.toml');
+      await writeConfigTemplate(configPath);
+      expect(await fs.readFile(configPath, 'utf-8')).toBe(generateTemplate());
     });
 
     it('writes the config file with owner-only (0600) permissions', async () => {
@@ -496,11 +527,13 @@ describe('send settings mapping', () => {
     const configPath = path.join(tmpDir, 'config.toml');
     await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
     const config = await loadConfig(configPath);
-    expect(config.settings.send).toEqual({ maxAttachmentMb: 25 });
+    // save_to_sent defaults off: Gmail/Outlook file sent mail themselves, so
+    // enabling it by default would show those users two copies.
+    expect(config.settings.send).toEqual({ maxAttachmentMb: 25, saveToSent: false });
 
     await fs.writeFile(
       configPath,
-      MINIMAL_TOML + '\n[settings.send]\nmax_attachment_mb = 10\n',
+      `${MINIMAL_TOML}\n[settings.send]\nmax_attachment_mb = 10\n`,
       'utf-8',
     );
     const custom = await loadConfig(configPath);
@@ -515,7 +548,7 @@ describe('send settings mapping', () => {
       'utf-8',
     );
     const config = await loadConfig(configPath);
-    expect(config.accounts[0].maxAttachmentMb).toBe(40);
+    expect(config.accounts[0]!.maxAttachmentMb).toBe(40);
   });
 
   it('maps [settings.attachments] auto_download to camelCase and defaults to true', async () => {
@@ -526,7 +559,7 @@ describe('send settings mapping', () => {
 
     await fs.writeFile(
       configPath,
-      MINIMAL_TOML + '\n[settings.attachments]\nauto_download = false\n',
+      `${MINIMAL_TOML}\n[settings.attachments]\nauto_download = false\n`,
       'utf-8',
     );
     const custom = await loadConfig(configPath);
@@ -587,13 +620,13 @@ host = "smtp.example.com"
     await fs.writeFile(configPath, toml, 'utf-8');
 
     const config = await loadConfig(configPath);
-    expect(config.accounts[0].password).toBe('resolved-from-env');
+    expect(config.accounts[0]!.password).toBe('resolved-from-env');
   });
 
   it('leaves a plaintext password untouched (backward compatible)', async () => {
     const configPath = path.join(tmpDir, 'plain.toml');
     await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
     const config = await loadConfig(configPath);
-    expect(config.accounts[0].password).toBe('secret');
+    expect(config.accounts[0]!.password).toBe('secret');
   });
 });

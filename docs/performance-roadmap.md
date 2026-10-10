@@ -45,10 +45,10 @@ Performance for an Email MCP server operates across **three distinct layers**, e
 | ~~Client-side pagination~~ | **Done for cached mailboxes** — SQL `LIMIT`/`OFFSET`; the live fallback path still slices in memory | High — page 50 costs the same as page 1 |
 | No IMAP command pipelining control | Relies on ImapFlow auto-pipelining (good) but fetches extra data | Low — ImapFlow handles this well already |
 | ~~No selective MIME part fetching~~ | **Done** — `selectBodyParts` picks the text parts to download; cached bodies need no fetch at all | Medium |
-| No signature/quote stripping | `format="stripped"` removes quoted replies and signatures | Medium — wastes tokens on repeated content |
+| ~~No signature/quote stripping~~ — shipped: `reply-chain.ts`, `format="stripped"` | `format="stripped"` removes quoted replies and signatures | Medium — wastes tokens on repeated content |
 | No inbox preview line | `EmailMeta.preview` is populated only for messages whose body is cached; the old 256-byte source window could not reach the body and was removed | Low — would need RFC 8970 `PREVIEW` support |
 | Two body downloads per message | `getEmail()` fetches both the plain and HTML parts on a cache miss | Low-Medium — one extra round trip buys a usable `format="full"` and better link extraction |
-| No IMAP IDLE for push | Only poll-based; no real-time arrival notifications | Low — not critical for MCP request/response model |
+| ~~No IMAP IDLE for push~~ — shipped: `watcher.service.ts` | Only poll-based; no real-time arrival notifications | Low — not critical for MCP request/response model |
 | No connection keepalive (NOOP) | Connections may timeout during idle periods | Low-Medium — ImapFlow may handle internally |
 | No batch flag operations | One-at-a-time for mark/move/delete | Low — current usage patterns are single-message |
 | `has_attachment` filter is client-side | Post-filter after SEARCH (IMAP limitation) | Low — unavoidable IMAP protocol limitation |

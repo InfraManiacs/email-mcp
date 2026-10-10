@@ -51,6 +51,9 @@ export const CALENDAR_STATE_FILE = path.join(xdg.state, 'calendar-processed.json
 /** JSON state file tracking which emails the verification catcher already scanned */
 export const VERIFICATION_STATE_FILE = path.join(xdg.state, 'verification-processed.json');
 
+/** JSON state file holding the IDLE watcher's last-seen UID per account/folder */
+export const WATCHER_STATE_FILE = path.join(xdg.state, 'watcher-watermarks.json');
+
 /** JSON record of the detached HTTP server started by `email-mcp server start` */
 export const DAEMON_STATE_FILE = path.join(xdg.state, 'daemon.json');
 

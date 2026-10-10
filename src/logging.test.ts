@@ -27,7 +27,7 @@ describe('mcpLog', () => {
     expect(writes[0]).toContain('INFO');
     expect(writes[0]).toContain('[server]');
     expect(writes[0]).toContain('Email MCP server started');
-    expect(writes[0].endsWith('\n')).toBe(true);
+    expect(writes[0]!.endsWith('\n')).toBe(true);
   });
 
   it('uppercases the level and tags the logger', async () => {

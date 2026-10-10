@@ -2,7 +2,67 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { prepareAttachments } from './attachments.js';
+import { describeAttachments, prepareAttachments } from './attachments.js';
+
+// download_attachment's own description tells the model to get partIds from
+// get_email, and partId is the ONLY selector that works for inline cid images:
+// those usually carry no name parameter, so extractAttachments falls back to
+// 'unnamed' and several of them collide. Until this rendered partId, the
+// documented workflow could not be followed at all.
+describe('describeAttachments', () => {
+  it('names the part id so download_attachment can address it', () => {
+    expect(
+      describeAttachments([
+        { filename: 'report.pdf', mimeType: 'application/pdf', size: 2048, partId: '2' },
+      ]),
+    ).toBe('report.pdf (application/pdf, 2 KB, partId 2)');
+  });
+
+  it('distinguishes several unnamed inline images by part id and cid', () => {
+    const line = describeAttachments([
+      {
+        filename: 'unnamed',
+        mimeType: 'image/png',
+        size: 900,
+        partId: '2',
+        contentId: 'logo@x',
+        inline: true,
+      },
+      {
+        filename: 'unnamed',
+        mimeType: 'image/jpeg',
+        size: 1024,
+        partId: '3',
+        contentId: 'hero@x',
+        inline: true,
+      },
+    ]);
+    expect(line).toContain('partId 2');
+    expect(line).toContain('partId 3');
+    expect(line).toContain('cid:logo@x');
+    expect(line).toContain('cid:hero@x');
+    expect(line).toContain('inline');
+  });
+
+  it('omits the part id when the server supplied none', () => {
+    expect(describeAttachments([{ filename: 'a.txt', mimeType: 'text/plain', size: 10 }])).toBe(
+      'a.txt (text/plain, 10 B)',
+    );
+  });
+
+  it('joins several attachments with a comma', () => {
+    expect(
+      describeAttachments([
+        { filename: 'a.pdf', mimeType: 'application/pdf', size: 10, partId: '2' },
+        { filename: 'b.pdf', mimeType: 'application/pdf', size: 20, partId: '3' },
+      ]),
+    ).toBe('a.pdf (application/pdf, 10 B, partId 2), b.pdf (application/pdf, 20 B, partId 3)');
+  });
+
+  it('returns an empty string for no attachments', () => {
+    expect(describeAttachments([])).toBe('');
+  });
+});
 
 describe('prepareAttachments', () => {
   let dir: string;

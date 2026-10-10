@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { COMMANDS } from './completion.js';
+import { mailCommandRows } from './email-help.js';
 
 /**
  * Guards the completion spec (COMMANDS) against drift from the real CLI
@@ -21,7 +22,7 @@ const TOP_LEVEL_ALIASES = new Set(['help', 'setup']); // setup has its own COMMA
 const ACCOUNT_ALIASES = new Set(['ls', 'new', 'rm', 'remove', 'set-password']);
 
 function caseLabels(source: string): string[] {
-  return [...source.matchAll(/case '([a-z][a-z-]*)':/g)].map((m) => m[1]);
+  return [...source.matchAll(/case '([a-z][a-z-]*)':/g)].map((m) => m[1]!);
 }
 
 describe('completion spec stays in sync with the dispatch', () => {
@@ -46,6 +47,32 @@ describe('completion spec stays in sync with the dispatch', () => {
     const real = caseLabels(read('../main.ts')).filter((c) => !TOP_LEVEL_ALIASES.has(c));
     const completed = new Set(COMMANDS.map((c) => c.name));
     const missing = [...new Set(real)].filter((c) => !completed.has(c));
+    expect(missing).toEqual([]);
+  });
+
+  /**
+   * Completion is not the only hand-maintained listing: `help` is a third
+   * source of truth, and the nine mail commands shipped in completion while
+   * being absent from it. Help is a template literal evaluated at import
+   * time and main.ts runs the CLI on import, so assert against its source
+   * the same way the checks above do.
+   */
+  it('every top-level command is listed in the help output', () => {
+    const source = read('../main.ts');
+    const help = /^const HELP = `([\s\S]*?)`\.trim\(\);$/m.exec(source)?.[1];
+    expect(help, 'HELP template literal in main.ts').toBeDefined();
+
+    // Mail rows are interpolated from email-help.ts; substitute them in.
+    const rendered = (help as string).replace(/\$\{mailCommandRows\(\d*\)\}/g, mailCommandRows(12));
+    const listed = new Set(
+      rendered
+        .split('\n')
+        .map((line) => /^ {2}([a-z][a-z-]*)\s{2,}\S/.exec(line)?.[1])
+        .filter((name): name is string => name !== undefined),
+    );
+
+    const real = caseLabels(source).filter((c) => !TOP_LEVEL_ALIASES.has(c));
+    const missing = [...new Set(real)].filter((c) => !listed.has(c));
     expect(missing).toEqual([]);
   });
 });

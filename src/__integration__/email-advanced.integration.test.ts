@@ -33,7 +33,7 @@ describe('Advanced Email Operations', () => {
       });
       expect(list.items.length).toBeGreaterThanOrEqual(1);
 
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       const attachment = await services.imapService.downloadAttachment(
         TEST_ACCOUNT_NAME,
@@ -65,7 +65,7 @@ describe('Advanced Email Operations', () => {
       if (list.items.length > 0) {
         const attachment = await services.imapService.downloadAttachment(
           TEST_ACCOUNT_NAME,
-          list.items[0].id,
+          list.items[0]!.id,
           'INBOX',
           'image.png',
         );
@@ -106,7 +106,7 @@ describe('Advanced Email Operations', () => {
       if (list.items.length > 0) {
         const result = await services.imapService.findEmailFolder(
           TEST_ACCOUNT_NAME,
-          list.items[0].id,
+          list.items[0]!.id,
           'INBOX',
         );
 

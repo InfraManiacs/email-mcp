@@ -96,7 +96,7 @@ export function parseChecksums(text: string): Map<string, string> {
   const sums = new Map<string, string>();
   for (const line of text.split('\n')) {
     const match = line.match(/^([0-9a-f]{64})\s+\*?(\S+)\s*$/i);
-    if (match) sums.set(match[2], match[1].toLowerCase());
+    if (match?.[1] && match[2]) sums.set(match[2], match[1].toLowerCase());
   }
   return sums;
 }

@@ -74,7 +74,7 @@ describe('Email Read Operations', () => {
       });
 
       expect(result.items.length).toBeGreaterThanOrEqual(1);
-      expect(result.items[0].subject).toContain('Alice');
+      expect(result.items[0]!.subject).toContain('Alice');
     });
   });
 
@@ -85,7 +85,7 @@ describe('Email Read Operations', () => {
   describe('getEmail', () => {
     it('should fetch full email content', async () => {
       const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, { pageSize: 1 });
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       const email = await services.imapService.getEmail(TEST_ACCOUNT_NAME, emailId);
 
@@ -185,7 +185,7 @@ describe('Email Read Operations', () => {
   describe('getEmailFlags', () => {
     it('should return read/flag/label state', async () => {
       const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, { pageSize: 1 });
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       const flags = await services.imapService.getEmailFlags(TEST_ACCOUNT_NAME, emailId);
 
