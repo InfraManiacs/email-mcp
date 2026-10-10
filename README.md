@@ -943,13 +943,21 @@ markup.
 
 Bodies are capped by default — 10 000 characters for `get_email`, 5 000 per
 message for `get_emails` and `get_thread` — and a hint reports how much was
-left out. Pass `maxLength: 0` for no cap. A single body part is read up to
-512 KB.
+left out. Pass `maxLength: 0` for no cap. Each side of the body (text, HTML) is
+read up to 512 KB, shared across its parts.
 
 Other formats behave as follows:
 
 - **`multipart/alternative`** — both halves are fetched, so `bodyText` and
-  `bodyHtml` are both available.
+  `bodyHtml` are both available. A plain part too small to hold the same
+  content as its HTML sibling is treated as a "view this in an HTML reader"
+  placeholder and skipped.
+- **`multipart/mixed` with several text parts** — concatenated in order, so a
+  note split either side of an inline image (Apple Mail) or a per-message
+  digest section is not truncated to its first part.
+- **`text/plain; format=flowed`** (RFC 3676) — soft line wraps are undone, so
+  paragraphs read as paragraphs rather than hard-wrapped at 72 columns;
+  `DelSp` and space-stuffing are honoured.
 - **Inline (`cid:`) images** — listed as attachments with `partId`,
   `contentId`, and `inline`, and downloadable via `download_attachment`'s
   `partId`. To embed one when sending, pass
