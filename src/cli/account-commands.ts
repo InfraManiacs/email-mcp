@@ -26,6 +26,7 @@ import type { RawAccountConfig, RawAppConfig } from '../config/schema.js';
 import ConnectionManager from '../connections/manager.js';
 import type { AccountConfig } from '../types/index.js';
 import ensureInteractive, { assertNotCancel, CancelledError } from './guard.js';
+import { KEYCHAIN_SERVICE, keychainRefFor, runKeychainStore } from './keychain-store.js';
 import { detectProvider } from './providers.js';
 
 // ---------------------------------------------------------------------------
@@ -793,6 +794,45 @@ async function deleteAccount(nameArg?: string): Promise<void> {
   outro('Done!');
 }
 
+/**
+ * Store an account's secret in the macOS Keychain and print the config line to
+ * use instead of a plaintext password. The secret is typed into security's own
+ * prompt (see keychain-store.ts) — it never reaches this process or argv.
+ */
+async function setSecret(name?: string): Promise<void> {
+  if (!name) {
+    console.error('Usage: email-mcp account set-secret <account-name>');
+    process.exitCode = 1;
+    return;
+  }
+  if (process.platform !== 'darwin') {
+    console.error(
+      'set-secret uses the macOS Keychain (the "security" CLI) and only runs on macOS.\n' +
+        'On other platforms, store the secret in an environment variable and set\n' +
+        `  password = "env:MY_VAR"\nin the account config instead.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Storing the secret for account "${name}" in the macOS Keychain`);
+  console.log(
+    `(service "${KEYCHAIN_SERVICE}"). You will be prompted by macOS — nothing is echoed.\n`,
+  );
+  try {
+    await runKeychainStore(name);
+  } catch (err) {
+    console.error(
+      `Failed to store the secret: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`\n✅ Stored. In your config.toml, set this account's credential to:\n`);
+  console.log(`  password = "${keychainRefFor(name)}"\n`);
+  console.log('Then remove any plaintext password line for this account.');
+}
+
 // ---------------------------------------------------------------------------
 // Usage + dispatch
 // ---------------------------------------------------------------------------
@@ -805,12 +845,14 @@ Subcommands:
   add               Add a new email account interactively
   edit [name]       Edit an existing account
   delete [name]     Remove an account
+  set-secret <name> Store the account's secret in the macOS Keychain (no plaintext)
 
 Examples:
   email-mcp account list
   email-mcp account add
   email-mcp account edit personal
   email-mcp account delete work
+  email-mcp account set-secret personal
 `);
 }
 
@@ -832,6 +874,10 @@ export default async function runAccountCommand(subcommand?: string, arg?: strin
       case 'rm':
       case 'remove':
         await deleteAccount(arg);
+        return;
+      case 'set-secret':
+      case 'set-password':
+        await setSecret(arg);
         return;
       default:
         printAccountUsage();

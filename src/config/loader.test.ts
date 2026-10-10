@@ -297,6 +297,48 @@ link_action = "copy"
       expect(reloaded.accounts[0].email).toBe('saved@example.com');
       expect(reloaded.accounts[0].imap.host).toBe('imap.saved.com');
     });
+
+    it('writes the config file with owner-only (0600) permissions', async () => {
+      const configPath = path.join(tmpDir, 'perms.toml');
+      const rawConfig = {
+        accounts: [
+          {
+            name: 'perm-test',
+            email: 'perm@example.com',
+            password: 'super-secret',
+            imap: { host: 'imap.perm.com' },
+            smtp: { host: 'smtp.perm.com' },
+          },
+        ],
+      };
+
+      await saveConfig(rawConfig as unknown as Parameters<typeof saveConfig>[0], configPath);
+
+      const mode = (await fs.stat(configPath)).mode & 0o777;
+      expect(mode).toBe(0o600);
+    });
+
+    it('tightens an already-loose existing config to 0600 on save', async () => {
+      const configPath = path.join(tmpDir, 'loose.toml');
+      await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
+      await fs.chmod(configPath, 0o644);
+
+      const rawConfig = {
+        accounts: [
+          {
+            name: 'loose-test',
+            email: 'loose@example.com',
+            password: 'secret',
+            imap: { host: 'imap.loose.com' },
+            smtp: { host: 'smtp.loose.com' },
+          },
+        ],
+      };
+      await saveConfig(rawConfig as unknown as Parameters<typeof saveConfig>[0], configPath);
+
+      const mode = (await fs.stat(configPath)).mode & 0o777;
+      expect(mode).toBe(0o600);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -438,5 +480,45 @@ describe('send settings mapping', () => {
     const config = await loadConfig(path.join(tmpDir, 'nonexistent.toml'));
 
     expect(config.settings.send.maxAttachmentMb).toBe(5);
+  });
+});
+
+describe('secret resolution on load', () => {
+  let tmpDir: string;
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sec-'));
+  });
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    delete process.env.EMAIL_SECRET_TEST_PW;
+  });
+
+  it('resolves an env: password reference when loading a TOML config', async () => {
+    process.env.EMAIL_SECRET_TEST_PW = 'resolved-from-env';
+    const toml = `
+[[accounts]]
+name = "acct"
+email = "a@example.com"
+username = "a"
+password = "env:EMAIL_SECRET_TEST_PW"
+
+[accounts.imap]
+host = "imap.example.com"
+
+[accounts.smtp]
+host = "smtp.example.com"
+`;
+    const configPath = path.join(tmpDir, 'config.toml');
+    await fs.writeFile(configPath, toml, 'utf-8');
+
+    const config = await loadConfig(configPath);
+    expect(config.accounts[0].password).toBe('resolved-from-env');
+  });
+
+  it('leaves a plaintext password untouched (backward compatible)', async () => {
+    const configPath = path.join(tmpDir, 'plain.toml');
+    await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
+    const config = await loadConfig(configPath);
+    expect(config.accounts[0].password).toBe('secret');
   });
 });

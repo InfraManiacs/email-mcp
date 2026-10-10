@@ -11,6 +11,7 @@ import { parse as parseTOML, stringify as stringifyTOML } from 'smol-toml';
 import type { AccountConfig, AppConfig, HookRule, OAuth2Config } from '../types/index.js';
 import type { RawAccountConfig, RawAppConfig } from './schema.js';
 import { AppConfigFileSchema } from './schema.js';
+import { resolveSecret } from './secret-resolver.js';
 import { CONFIG_FILE, xdg } from './xdg.js';
 
 // ---------------------------------------------------------------------------
@@ -347,19 +348,47 @@ export async function loadRawConfig(configPath?: string): Promise<RawAppConfig> 
  * Load and validate configuration from env vars or TOML file.
  * Throws on validation errors.
  */
+
+/**
+ * Resolve indirect secret references (keychain:/env:) on every account after
+ * normalization. Plaintext values pass through unchanged, so this is a no-op
+ * for existing configs. Kept out of normalizeAccount (which stays pure/sync)
+ * and applied as one awaited pass.
+ */
+async function resolveAccountSecrets(accounts: AccountConfig[]): Promise<AccountConfig[]> {
+  return Promise.all(
+    accounts.map(async (account) => {
+      const resolved: AccountConfig = { ...account };
+      if (account.password !== undefined) {
+        resolved.password = await resolveSecret(account.password);
+      }
+      if (account.oauth2) {
+        resolved.oauth2 = {
+          ...account.oauth2,
+          clientSecret: await resolveSecret(account.oauth2.clientSecret),
+          refreshToken: await resolveSecret(account.oauth2.refreshToken),
+        };
+      }
+      return resolved;
+    }),
+  );
+}
+
 export async function loadConfig(configPath?: string): Promise<AppConfig> {
   // 1. Try environment variables first
   const envConfig = loadFromEnv();
   if (envConfig) {
     const validated = AppConfigFileSchema.parse(envConfig);
-    return normalizeConfig(validated);
+    const normalized = normalizeConfig(validated);
+    return { ...normalized, accounts: await resolveAccountSecrets(normalized.accounts) };
   }
 
   // 2. Fall back to TOML config file
   const fileConfig = await loadFromFile(configPath);
   if (fileConfig) {
     const validated = AppConfigFileSchema.parse(fileConfig);
-    return normalizeConfig(validated);
+    const normalized = normalizeConfig(validated);
+    return { ...normalized, accounts: await resolveAccountSecrets(normalized.accounts) };
   }
 
   throw new Error(
@@ -380,7 +409,11 @@ export async function saveConfig(
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
   const toml = stringifyTOML(config as Record<string, unknown>);
-  await fs.writeFile(filePath, toml, 'utf-8');
+  // The config holds account credentials — write owner-only and tighten any
+  // pre-existing loose file (writeFile does not change the mode of a file that
+  // already exists, so chmod explicitly after).
+  await fs.writeFile(filePath, toml, { encoding: 'utf-8', mode: 0o600 });
+  await fs.chmod(filePath, 0o600);
 }
 
 export interface SaveResult {
@@ -417,7 +450,8 @@ export async function saveConfigValidated(
     const previous = await fs.readFile(filePath, 'utf-8');
     const bak = `${filePath}.bak`;
     const bakExisted = await configExists(bak);
-    await fs.writeFile(bak, previous, 'utf-8');
+    await fs.writeFile(bak, previous, { encoding: 'utf-8', mode: 0o600 });
+    await fs.chmod(bak, 0o600);
     backupPath = bak;
     commentsLost = !bakExisted && /^\s*#/m.test(previous);
   } catch {

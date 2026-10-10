@@ -539,7 +539,7 @@ rate_limit = 10  # max emails per minute per account
 name = "personal"
 email = "you@gmail.com"
 full_name = "Your Name"
-password = "your-app-password"
+password = "keychain:personal"  # or "env:VAR", or a plaintext app password
 
 [accounts.imap]
 host = "imap.gmail.com"
@@ -558,6 +558,39 @@ enabled = true
 max_connections = 1
 max_messages = 100
 ```
+
+#### Storing account secrets
+
+The `password` field (and OAuth2 `client_secret` / `refresh_token`) accepts an
+indirection so credentials need not sit in the file as plaintext:
+
+| Value | Resolved from |
+|---|---|
+| `keychain:<account>` | macOS Keychain, generic-password item, service `email-mcp`, account `<account>` |
+| `keychain:<service>/<account>` | macOS Keychain with an explicit service name |
+| `env:<VAR>` | the environment variable `<VAR>` (use on Linux, or with an age/SOPS-sourced env) |
+| any other string | used literally (plaintext — backward compatible) |
+
+The config file itself is always written `0600` (owner-only), and so is its
+`.bak`.
+
+**macOS Keychain (multi-account):** store each account's secret once —
+
+```bash
+email-mcp account set-secret personal   # prompts via macOS; nothing is echoed or placed in argv
+```
+
+then set `password = "keychain:personal"`. Each account is a separate Keychain
+item under the shared `email-mcp` service, so multiple accounts coexist.
+Secrets are read back at startup over the `security` CLI; only the service and
+account names are ever passed as arguments — the secret travels on stdout only.
+
+At rest the secret lives in your **login keychain**, encrypted and unlocked by
+your macOS login (Touch ID at the login level). A running `email-mcp` daemon
+reads it once at startup; it does **not** prompt for Touch ID on every IMAP
+reconnect — per-access biometric prompts are deliberately not used for an
+unattended background service. (True per-access Touch ID would require the
+data-protection keychain and a native helper.)
 
 #### OAuth2 _(experimental)_
 
