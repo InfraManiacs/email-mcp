@@ -537,7 +537,7 @@ async function addAccount(): Promise<void> {
         settings: {
           rate_limit: 10,
           read_only: false,
-          send: { max_attachment_mb: 25 },
+          send: { max_attachment_mb: 25, save_to_sent: false },
           attachments: { auto_download: true },
           scheduler: { sent_retention_days: 90 },
           server: {

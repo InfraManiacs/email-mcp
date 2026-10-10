@@ -228,6 +228,15 @@ export const ServerConfigSchema = z.object({
  */
 export const SendConfigSchema = z.object({
   max_attachment_mb: z.number().int().min(1).default(25),
+  /**
+   * APPEND a copy of every sent message to the IMAP Sent folder.
+   *
+   * Off by default and deliberately so: Gmail and Outlook file sent mail
+   * server-side, so enabling it there shows two copies of everything. Turn it
+   * on for an IMAP host that does not capture sends itself. The filed copy
+   * omits Bcc, which nodemailer's composer strips unconditionally.
+   */
+  save_to_sent: z.boolean().default(false),
 });
 
 /**
@@ -280,7 +289,7 @@ export const SettingsSchema = z.object({
       }) as z.infer<typeof VerificationConfigSchema>,
   ),
   send: SendConfigSchema.default(
-    () => ({ max_attachment_mb: 25 }) as z.infer<typeof SendConfigSchema>,
+    () => ({ max_attachment_mb: 25, save_to_sent: false }) as z.infer<typeof SendConfigSchema>,
   ),
   attachments: AttachmentsConfigSchema.default(
     () => ({ auto_download: true }) as z.infer<typeof AttachmentsConfigSchema>,
@@ -357,7 +366,7 @@ export const AppConfigFileSchema = z.object({
           sender_allowlist: [],
           sender_denylist: [],
         },
-        send: { max_attachment_mb: 25 },
+        send: { max_attachment_mb: 25, save_to_sent: false },
         attachments: { auto_download: true },
         scheduler: { sent_retention_days: 90 },
         cache: {

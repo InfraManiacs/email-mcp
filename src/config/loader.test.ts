@@ -527,7 +527,9 @@ describe('send settings mapping', () => {
     const configPath = path.join(tmpDir, 'config.toml');
     await fs.writeFile(configPath, MINIMAL_TOML, 'utf-8');
     const config = await loadConfig(configPath);
-    expect(config.settings.send).toEqual({ maxAttachmentMb: 25 });
+    // save_to_sent defaults off: Gmail/Outlook file sent mail themselves, so
+    // enabling it by default would show those users two copies.
+    expect(config.settings.send).toEqual({ maxAttachmentMb: 25, saveToSent: false });
 
     await fs.writeFile(
       configPath,

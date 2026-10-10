@@ -1431,6 +1431,42 @@ export default class ImapService {
     return { email, mailbox: draftsPath };
   }
 
+  /**
+   * APPEND an already-sent message to the account's Sent folder.
+   *
+   * SMTP delivers; it does not file a copy. Providers that capture sent mail
+   * server-side (Gmail, Outlook) make this unnecessary — and doing it anyway
+   * would show the user two copies — so the caller decides, behind an opt-in
+   * setting, and this method only carries it out.
+   *
+   * @returns the folder the copy landed in.
+   */
+  async appendToSent(accountName: string, raw: Buffer): Promise<string> {
+    const client = await this.connections.getImapClient(accountName);
+    const mailboxes = await client.list();
+
+    // Prefer the folder the server designates; otherwise one plainly named
+    // "Sent", whatever its case.
+    const designated = mailboxes.find((mb) => mb.specialUse === '\\Sent');
+    const byName = mailboxes.find((mb) => mb.path.toLowerCase() === 'sent');
+    const sentPath = designated?.path ?? byName?.path;
+
+    if (sentPath === undefined) {
+      // Not every server ships one, and APPEND to a missing mailbox is
+      // rejected — which the caller swallows so that a completed send is never
+      // reported as failed, meaning the copy would disappear without a word.
+      // Creating it is what a mail client does, and the user opted in.
+      await imapCommand('Creating the "Sent" mailbox', () => client.mailboxCreate('Sent'));
+    }
+    const target = sentPath ?? 'Sent';
+
+    // \Seen: the user wrote it, so it is not unread mail.
+    await imapCommand(`Appending a sent copy to "${target}"`, () =>
+      client.append(target, raw, ['\\Seen']),
+    );
+    return target;
+  }
+
   /** Delete a draft after it has been sent. */
   async deleteDraft(accountName: string, emailId: number, mailbox: string): Promise<void> {
     const client = await this.connections.getImapClient(accountName);

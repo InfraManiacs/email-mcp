@@ -854,6 +854,50 @@ describe('ImapService', () => {
       expect(message).toContain('References: <root@x>\r\n <orig@x>');
     });
 
+    it('appends a sent copy to the \\Sent special-use folder, flagged seen', async () => {
+      client.list.mockResolvedValue([
+        { path: 'INBOX', specialUse: '\\Inbox' },
+        { path: '[Gmail]/Sent Mail', specialUse: '\\Sent' },
+      ]);
+
+      const path = await service.appendToSent('test', Buffer.from('raw message'));
+
+      expect(path).toBe('[Gmail]/Sent Mail');
+      expect(client.append).toHaveBeenCalledWith('[Gmail]/Sent Mail', expect.any(Buffer), [
+        '\\Seen',
+      ]);
+    });
+
+    it('falls back to "Sent" when no folder advertises the special use', async () => {
+      client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }, { path: 'Sent' }]);
+
+      const path = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(path).toBe('Sent');
+      expect(client.mailboxCreate).not.toHaveBeenCalled();
+    });
+
+    // Not every server ships one — GreenMail does not — and APPEND to a
+    // missing mailbox is rejected, which the caller swallows so a completed
+    // send is never reported as failed. The copy would vanish without a word.
+    it('creates the Sent folder when the server has none', async () => {
+      client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }]);
+
+      const path = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(client.mailboxCreate).toHaveBeenCalledWith('Sent');
+      expect(path).toBe('Sent');
+      expect(client.append).toHaveBeenCalledWith('Sent', expect.any(Buffer), ['\\Seen']);
+    });
+
+    it('does not create anything when the special-use folder exists', async () => {
+      client.list.mockResolvedValue([{ path: '[Gmail]/Sent Mail', specialUse: '\\Sent' }]);
+
+      await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(client.mailboxCreate).not.toHaveBeenCalled();
+    });
+
     it('refuses header values carrying a line break', async () => {
       client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
 

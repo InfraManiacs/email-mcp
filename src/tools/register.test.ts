@@ -42,7 +42,7 @@ import registerVerificationTools from './verification.tool.js';
 function createConfig(readOnly: boolean): AppConfig {
   return {
     settings: {
-      send: { maxAttachmentMb: 25 },
+      send: { maxAttachmentMb: 25, saveToSent: false },
       attachments: { autoDownload: true },
       scheduler: { sentRetentionDays: 90 },
       rateLimit: 10,

@@ -623,6 +623,7 @@ rate_limit = 10  # max emails per minute per account
 
 [settings.send]
 max_attachment_mb = 25  # global cap on the base64-encoded attachment total
+save_to_sent = false    # file a copy of each sent message in the IMAP Sent folder
 
 [settings.attachments]
 auto_download = true  # save attachments locally when calendar events are created from emails
@@ -744,6 +745,7 @@ For single-account setups (overrides config file):
 | `MCP_EMAIL_SMTP_POOL_MAX_CONNECTIONS` | `1` | Max pooled SMTP connections |
 | `MCP_EMAIL_SMTP_POOL_MAX_MESSAGES` | `100` | Max messages per pooled connection |
 | `MCP_EMAIL_RATE_LIMIT` | `10` | Max sends per minute |
+| `MCP_EMAIL_SEND_SAVE_TO_SENT` | `false` | `true` appends a copy of each sent message to the IMAP Sent folder |
 | `MCP_EMAIL_READ_ONLY` | `false` | `true` unregisters the mailbox-write tools (send, move, delete, labels, bulk). Calendar/Reminders writes, clipboard copy and config-writing tools stay available — it is a mailbox guard, not a global one. |
 | `MCP_EMAIL_SCHEDULER_SENT_RETENTION_DAYS` | `90` | Days of sent-email history to keep; `0` keeps everything |
 
@@ -1138,6 +1140,16 @@ Other formats behave as follows:
 - **Attached messages** (`message/rfc822`) — never mistaken for the body, but
   used as the body when the message carries no other text (forward-as-attachment,
   digests).
+
+**Sent-folder copies.** SMTP delivers mail; it does not file it. Gmail and
+Outlook capture sent mail server-side, so `[settings.send] save_to_sent`
+defaults to **false** — enabling it on those providers would give you two
+copies of everything. Turn it on for an IMAP host that does not capture sends
+itself. The copy carries the same `Message-ID` the server accepted, is flagged
+`\Seen`, and lands in the folder the server marks `\Sent` (or a folder named
+`Sent`, created if absent). It omits `Bcc`, which the MIME composer strips
+unconditionally. A failure to file never fails the send — the mail has already
+left, and saying otherwise would invite a duplicate send.
 
 Outbound HTML (`html: true`) is sent as `multipart/alternative` with a
 generated plain-text alternative. Forwards quote the original as converted

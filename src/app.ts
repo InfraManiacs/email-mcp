@@ -101,7 +101,9 @@ export async function buildServices(): Promise<AppServices> {
   }
 
   const mailReadService = new MailReadService(imapService, cacheStore, syncEngine, {}, blobStore);
-  const smtpService = new SmtpService(connections, rateLimiter, imapService);
+  const smtpService = new SmtpService(connections, rateLimiter, imapService, {
+    saveToSent: config.settings.send.saveToSent,
+  });
   const templateService = new TemplateService();
   const calendarService = new CalendarService();
   const localCalendarService = new LocalCalendarService();

@@ -168,6 +168,8 @@ export interface VerificationConfig {
 
 /** Outbound send settings — see SendConfigSchema for the cap rationale. */
 export interface SendConfig {
+  /** APPEND a copy of each sent message to the IMAP Sent folder (opt-in). */
+  saveToSent: boolean;
   maxAttachmentMb: number;
 }
 

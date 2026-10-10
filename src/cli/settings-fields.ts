@@ -271,6 +271,12 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
       `attachment cap ${raw.settings.send.max_attachment_mb} MB (base64-encoded total)`,
     fields: [
       {
+        key: 'save_to_sent',
+        label: 'File a copy of each sent message in the IMAP Sent folder',
+        kind: 'boolean',
+        schema: sendShape.save_to_sent,
+      },
+      {
         key: 'max_attachment_mb',
         label: 'Max attachment total per message, MB (base64-encoded; 1+)',
         kind: 'int',

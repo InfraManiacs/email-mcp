@@ -210,7 +210,7 @@ describe('AppConfigFileSchema', () => {
 describe('send settings', () => {
   it('defaults max_attachment_mb to 25 when settings.send is absent', () => {
     const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
-    expect(result.settings.send).toEqual({ max_attachment_mb: 25 });
+    expect(result.settings.send).toEqual({ max_attachment_mb: 25, save_to_sent: false });
   });
 
   it('accepts an explicit max_attachment_mb', () => {

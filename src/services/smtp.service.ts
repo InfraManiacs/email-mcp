@@ -4,7 +4,10 @@
  * No MCP dependency — fully unit-testable.
  */
 
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
+
 import type { IConnectionManager } from '../connections/types.js';
+import { mcpLog } from '../logging.js';
 import type RateLimiter from '../safety/rate-limiter.js';
 import { sanitizeTemplateVariable } from '../safety/validation.js';
 import type { SendResult } from '../types/index.js';
@@ -37,11 +40,58 @@ function toTransportAttachment({ filename, path, cid, contentType }: PreparedAtt
 }
 
 export default class SmtpService {
+  private readonly saveToSent: boolean;
+
   constructor(
     private connections: IConnectionManager,
     private rateLimiter: RateLimiter,
     private imapService: ImapService,
-  ) {}
+    options: { saveToSent?: boolean } = {},
+  ) {
+    this.saveToSent = options.saveToSent ?? false;
+  }
+
+  /**
+   * File a copy of a just-sent message in the Sent folder.
+   *
+   * SMTP delivers; it files nothing. Gmail and Outlook capture sent mail
+   * server-side, so this is opt-in: doing it unasked would give those users
+   * two copies of everything they send.
+   *
+   * The copy is composed from the same mail options that were just sent,
+   * carrying the Message-ID the transport reported, so a later reply threads
+   * against the message that actually went out. It is deliberately NOT sent as
+   * `raw`: nodemailer does not derive an envelope from raw headers (it reports
+   * `{from: false, to: []}`), so composing once and sending the bytes would
+   * put recipient resolution — the single most dangerous thing in this file —
+   * on an untested path. The bytes therefore differ from the wire copy only in
+   * MIME boundary strings, which no reader cares about.
+   *
+   * Never throws. The mail has already left; reporting a failure here would
+   * tell the user the send failed and invite a duplicate send.
+   */
+  private async fileCopyInSent(
+    accountName: string,
+    mail: Record<string, unknown>,
+    messageId: string | undefined,
+  ): Promise<void> {
+    if (!this.saveToSent) return;
+
+    try {
+      const raw = await new MailComposer({ ...mail, ...(messageId ? { messageId } : {}) })
+        .compile()
+        .build();
+      await this.imapService.appendToSent(accountName, raw);
+    } catch (err) {
+      await mcpLog(
+        'warning',
+        'smtp',
+        `sent, but could not file a copy in the Sent folder: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Send email
@@ -67,7 +117,7 @@ export default class SmtpService {
     const account = this.connections.getAccount(accountName);
     const transport = await this.connections.getSmtpTransport(accountName);
 
-    const result = await transport.sendMail({
+    const mail = {
       from: account.fullName ? `"${account.fullName}" <${account.email}>` : account.email,
       to: options.to.join(', '),
       cc: options.cc?.join(', '),
@@ -83,7 +133,10 @@ export default class SmtpService {
       ...(options.attachments?.length
         ? { attachments: options.attachments.map(toTransportAttachment) }
         : {}),
-    });
+    };
+
+    const result = await transport.sendMail(mail);
+    await this.fileCopyInSent(accountName, mail, result.messageId);
 
     return {
       messageId: result.messageId ?? '',
@@ -139,7 +192,7 @@ export default class SmtpService {
 
     const transport = await this.connections.getSmtpTransport(accountName);
 
-    const result = await transport.sendMail({
+    const mail = {
       from: account.fullName ? `"${account.fullName}" <${account.email}>` : account.email,
       to: to.join(', '),
       cc: cc.length > 0 ? cc.join(', ') : undefined,
@@ -152,7 +205,10 @@ export default class SmtpService {
       ...(options.attachments?.length
         ? { attachments: options.attachments.map(toTransportAttachment) }
         : {}),
-    });
+    };
+
+    const result = await transport.sendMail(mail);
+    await this.fileCopyInSent(accountName, mail, result.messageId);
 
     return {
       messageId: result.messageId ?? '',
@@ -271,7 +327,7 @@ export default class SmtpService {
 
     const transport = await this.connections.getSmtpTransport(accountName);
 
-    const result = await transport.sendMail({
+    const mail = {
       from: account.fullName ? `"${account.fullName}" <${account.email}>` : account.email,
       to: options.to.join(', '),
       cc: options.cc?.join(', '),
@@ -279,7 +335,10 @@ export default class SmtpService {
       text: textBody,
       ...(htmlBody ? { html: htmlBody } : {}),
       ...(attachments.length ? { attachments } : {}),
-    });
+    };
+
+    const result = await transport.sendMail(mail);
+    await this.fileCopyInSent(accountName, mail, result.messageId);
 
     return {
       messageId: result.messageId ?? '',
@@ -320,7 +379,7 @@ export default class SmtpService {
     const to = draft.to.map((a) => a.address).join(', ');
     const cc = draft.cc?.map((a) => a.address).join(', ');
 
-    const result = await transport.sendMail({
+    const mail = {
       from: account.fullName ? `"${account.fullName}" <${account.email}>` : account.email,
       to,
       cc,
@@ -330,7 +389,10 @@ export default class SmtpService {
       ...(draft.bodyHtml
         ? { html: draft.bodyHtml, text: draft.bodyText ?? stripHtml(draft.bodyHtml) }
         : { text: draft.bodyText ?? '' }),
-    });
+    };
+
+    const result = await transport.sendMail(mail);
+    await this.fileCopyInSent(accountName, mail, result.messageId);
 
     // Delete the draft after successful send
     await this.imapService.deleteDraft(accountName, draftId, draftsPath);

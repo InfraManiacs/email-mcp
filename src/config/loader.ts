@@ -86,6 +86,7 @@ function loadFromEnv(): RawAppConfig | null {
       },
       send: {
         max_attachment_mb: parseInt(process.env.MCP_EMAIL_SEND_MAX_ATTACHMENT_MB ?? '25', 10),
+        save_to_sent: process.env.MCP_EMAIL_SEND_SAVE_TO_SENT === 'true',
       },
       attachments: {
         auto_download: process.env.MCP_EMAIL_ATTACHMENTS_AUTO_DOWNLOAD !== 'false',
@@ -336,6 +337,7 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       },
       send: {
         maxAttachmentMb: raw.settings.send.max_attachment_mb,
+        saveToSent: raw.settings.send.save_to_sent,
       },
       attachments: {
         autoDownload: raw.settings.attachments.auto_download,
@@ -544,6 +546,13 @@ export function generateTemplate(): string {
 [settings]
 rate_limit = 10  # max emails per minute per account
 read_only = false  # set to true to disable the mailbox-write tools
+
+# Outbound. save_to_sent APPENDs a copy of each sent message to the IMAP Sent
+# folder. Off by default: Gmail and Outlook file sent mail themselves, so
+# enabling it there means two copies of everything. The filed copy omits Bcc.
+# [settings.send]
+# max_attachment_mb = 25
+# save_to_sent = false
 
 # Scheduled sends. The queue keeps one JSON file per sent email under
 # $XDG_STATE_HOME/email-mcp/scheduled/sent/; retention bounds how far back
