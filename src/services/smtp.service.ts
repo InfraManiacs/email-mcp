@@ -36,6 +36,9 @@ export default class SmtpService {
       bcc?: string[];
       html?: boolean;
       attachments?: PreparedAttachment[];
+      /** Threading headers — a scheduled reply keeps its place in the thread. */
+      inReplyTo?: string;
+      references?: string[];
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -49,6 +52,8 @@ export default class SmtpService {
       cc: options.cc?.join(', '),
       bcc: options.bcc?.join(', '),
       subject: options.subject,
+      ...(options.inReplyTo ? { inReplyTo: options.inReplyTo } : {}),
+      ...(options.references?.length ? { references: options.references.join(' ') } : {}),
       // nodemailer 10 removed text:'auto' — generate the plain alternative
       // here so HTML mail goes out as multipart/alternative, not single-part.
       ...(options.html

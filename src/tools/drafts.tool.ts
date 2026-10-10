@@ -35,10 +35,16 @@ export default function registerDraftTools(
         bcc: z.array(z.string().email()).optional().describe('BCC recipients'),
         html: z.boolean().default(false).describe('Send as HTML (default: plain text)'),
         in_reply_to: z.string().optional().describe('Message-ID for threading (from get_email)'),
+        references: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Full References chain for threading (original references plus its Message-ID)',
+          ),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    async ({ account, to, subject, body, cc, bcc, html, in_reply_to: inReplyTo }) => {
+    async ({ account, to, subject, body, cc, bcc, html, in_reply_to: inReplyTo, references }) => {
       try {
         const result = await imapService.saveDraft(account, {
           to,
@@ -48,6 +54,7 @@ export default function registerDraftTools(
           bcc,
           html,
           inReplyTo,
+          references,
         });
 
         await audit.log('save_draft', account, { to, subject }, 'ok');

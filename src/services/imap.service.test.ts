@@ -603,6 +603,30 @@ describe('ImapService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // saveDraft
+  // -----------------------------------------------------------------------
+
+  describe('saveDraft', () => {
+    it('writes In-Reply-To and a folded References header', async () => {
+      client.list.mockResolvedValue([{ path: 'Drafts', specialUse: '\\Drafts' }]);
+
+      await service.saveDraft('test', {
+        to: ['a@b.c'],
+        subject: 'Re: hi',
+        body: 'draft body',
+        inReplyTo: '<orig@x>',
+        references: ['<root@x>', '<orig@x>'],
+      });
+
+      const [, raw] = client.append.mock.calls[0];
+      const message = (raw as Buffer).toString('utf-8');
+      expect(message).toContain('In-Reply-To: <orig@x>');
+      // Folded onto continuation lines — valid RFC 5322 and never overlong.
+      expect(message).toContain('References: <root@x>\r\n <orig@x>');
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // downloadAttachment
   // -----------------------------------------------------------------------
 

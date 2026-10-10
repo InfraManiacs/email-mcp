@@ -112,6 +112,23 @@ describe('SmtpService', () => {
       );
     });
 
+    it('passes threading headers to the transport when given', async () => {
+      await service.sendEmail('test', {
+        to: ['a@example.com'],
+        subject: 'Re: thread',
+        body: 'scheduled reply',
+        inReplyTo: '<orig@x>',
+        references: ['<root@x>', '<orig@x>'],
+      });
+
+      expect(transport.sendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inReplyTo: '<orig@x>',
+          references: '<root@x> <orig@x>',
+        }),
+      );
+    });
+
     it('sends HTML with a generated plain-text alternative', async () => {
       await service.sendEmail('test', {
         to: ['a@example.com'],

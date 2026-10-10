@@ -1133,6 +1133,7 @@ export default class ImapService {
       bcc?: string[];
       html?: boolean;
       inReplyTo?: string;
+      references?: string[];
     },
   ): Promise<{ id: number; mailbox: string }> {
     const client = await this.connections.getImapClient(accountName);
@@ -1155,6 +1156,11 @@ export default class ImapService {
     if (options.cc?.length) headers.push(`Cc: ${options.cc.join(', ')}`);
     if (options.bcc?.length) headers.push(`Bcc: ${options.bcc.join(', ')}`);
     if (options.inReplyTo) headers.push(`In-Reply-To: ${options.inReplyTo}`);
+    if (options.references?.length) {
+      // One message-id per continuation line: valid RFC 5322 folding that can
+      // never produce an overlong header line.
+      headers.push(`References: ${options.references.join('\r\n ')}`);
+    }
 
     const contentType = options.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8';
     headers.push(`Content-Type: ${contentType}`);
