@@ -163,6 +163,20 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'list':
+    case 'read':
+    case 'search':
+    case 'mailboxes':
+    case 'flag':
+    case 'delete':
+    case 'attach':
+    case 'reply':
+    case 'send': {
+      const { default: runEmailCommand } = await import('./cli/email-commands.js');
+      await runEmailCommand(command, process.argv.slice(3));
+      break;
+    }
+
     case 'test': {
       const { default: runTest } = await import('./cli/test.js');
       await runTest(process.argv[3]);

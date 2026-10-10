@@ -78,6 +78,18 @@ npm install -g @codefuturist/email-mcp
 pnpm add -g @codefuturist/email-mcp
 ```
 
+### Homebrew (native binary)
+
+The prebuilt, dependency-free binary — no Node.js at runtime — from the
+[codefuturist tap](https://github.com/codefuturist/homebrew-tap):
+
+```bash
+brew install codefuturist/tap/email-mcp
+```
+
+Published as a cask on every stable release; works on macOS (arm64 + x64) and
+on Linuxbrew ≥ 4.3 (binary-only casks).
+
 ### Native binary (Bun)
 
 A dependency-free single binary (minified + bytecode-precompiled, ~32 ms cold
@@ -526,6 +538,34 @@ email-mcp completion fish > ~/.config/fish/completions/email-mcp.fish
 Completions cover every command, subcommand, and flag — and complete **account
 names from your config** (`email-mcp test <TAB>`, `account edit <TAB>`) and
 **settings sections** (`config edit <TAB>`) dynamically.
+
+### Reading and sending mail from the CLI
+
+Beyond running as an MCP server, `email-mcp` is a usable mail client in its own
+right — no MCP client and no coding required. Commands default to your first
+configured account (pass `--account <name>` to pick another), print clean,
+colored tables (color auto-disables when piped or under `NO_COLOR`), and tab
+complete (see [Shell completion](#shell-completion)).
+
+```bash
+email-mcp list                       # recent INBOX messages (● unread, ★ flagged, 📎 attachment)
+email-mcp list --unread --limit 50   # filters
+email-mcp list --mailbox Archive --search invoice
+email-mcp read 42                    # full message (headers, body, attachment names + sizes)
+email-mcp read 42 --mark-read
+email-mcp search "from bank"         # IMAP search
+email-mcp mailboxes                  # folders with unread/total counts
+email-mcp flag 42                    # flag / --off to unflag
+email-mcp attach 42 report.pdf ~/Downloads   # save an attachment
+email-mcp delete 42 --yes            # delete (asks to confirm without --yes)
+
+email-mcp reply 42 --body "on it" --all
+email-mcp send --to a@b.c,d@e.f --subject "Hi" --body "..." --attach ./file.pdf
+```
+
+Attachment sizes on send/reply are checked against the configured limit before
+anything leaves your machine (see [Storing account secrets](#storing-account-secrets)
+for keeping credentials out of plaintext).
 
 ### Configuration
 
