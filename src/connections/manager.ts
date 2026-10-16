@@ -83,6 +83,39 @@ export default class ConnectionManager implements IConnectionManager {
   // IMAP
   // -------------------------------------------------------------------------
 
+  /**
+   * ImapFlow is an EventEmitter; Node's default behaviour for an unhandled
+   * 'error' is to throw, which on a cached, long-lived connection crashes the
+   * whole process — an idle socket timeout or the server hanging up become
+   * uncatchable. 'close' needs the same handling: a client that closes
+   * cleanly is just as dead as one that errored, and the next caller must not
+   * be handed the same stale object.
+   *
+   * `invalidateIfCurrent` guards the one race this introduces: an old
+   * client's socket can keep tearing down after `getImapClient` has already
+   * replaced it in the map, so a trailing event from the old object must not
+   * evict the new one that took its place.
+   */
+  private registerImapLifecycle(accountName: string, client: ImapFlow): void {
+    const invalidateIfCurrent = (): void => {
+      if (this.imapClients.get(accountName) === client) {
+        this.imapClients.delete(accountName);
+        // Same signal the usable===false path sends: anything derived from
+        // this connection — capability probes, cached UIDVALIDITY,
+        // label-strategy memos — is now suspect.
+        eventBus.emit('imap:reconnect', { account: accountName });
+      }
+    };
+
+    client.on('error', (err: Error) => {
+      invalidateIfCurrent();
+      mcpLog('warning', 'imap', `IMAP connection lost for "${accountName}": ${err.message}`).catch(
+        () => undefined,
+      );
+    });
+    client.on('close', invalidateIfCurrent);
+  }
+
   async getImapClient(accountName: string): Promise<ImapFlow> {
     const existing = this.imapClients.get(accountName);
     if (existing?.usable) {
@@ -126,6 +159,7 @@ export default class ConnectionManager implements IConnectionManager {
       logger: false,
     });
 
+    this.registerImapLifecycle(accountName, client);
     await withAuthGuidance(account, 'IMAP', () => client.connect());
     await assertImapUpgraded(client, account);
     await mcpLog(
@@ -257,6 +291,11 @@ export default class ConnectionManager implements IConnectionManager {
         auth,
         logger: false,
       });
+      // This connection is short-lived (closed in the `finally` below), but
+      // it is still an EventEmitter: a stray socket error between awaits
+      // would otherwise crash the process running `email-mcp test` instead
+      // of being reported as the probe failure it is.
+      client.on('error', () => undefined);
       await client.connect();
       await assertImapUpgraded(client, account);
 
