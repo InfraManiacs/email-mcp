@@ -39,6 +39,7 @@ Built on the MCP TypeScript SDK v2 (spec revision 2026-07-28), it serves over **
 - [Install](#install)
 - [Usage](#usage)
 - [API](#api)
+- [Roadmap](#roadmap)
 - [Maintainers](#maintainers)
 - [Contributing](#contributing)
 - [License](#license)
@@ -1430,6 +1431,21 @@ src/
 ├── safety/                — Audit trail and rate limiter
 └── types/                 — Shared TypeScript types
 ```
+
+## Roadmap
+
+Ideas raised but deliberately not built yet, kept here so they aren't lost or
+quietly re-proposed:
+
+- **AgentMail as an alternative provider.** [AgentMail](https://agentmail.to)
+  offers API-key-only, programmatic `@agentmail.to` inboxes — no IMAP/SMTP
+  host/port/TLS/credential setup, useful for spinning up throwaway
+  agent-owned addresses. It would be additive (a second provider alongside
+  real IMAP/SMTP accounts, not a replacement), but is a product/architecture
+  decision — a new vendor dependency and tool surface — rather than a bug fix
+  or gap-fill, so it's parked here rather than auto-built. Revisit if there's
+  real demand for agent-provisioned inboxes rather than access to existing
+  mailboxes.
 
 ## Maintainers
 
