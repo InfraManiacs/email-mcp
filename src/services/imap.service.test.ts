@@ -232,6 +232,75 @@ describe('ImapService', () => {
       expect(result.items[0]!.bulk).toBeUndefined();
     });
 
+    it('does not request bodyParts when preview is not requested', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({ uid: 77, envelope: { subject: 'Hi' }, flags: [] }),
+      );
+
+      await service.listEmails('test', { mailbox: 'INBOX' });
+
+      const [, query] = client.fetch.mock.calls[0]!;
+      expect(query.bodyParts).toBeUndefined();
+    });
+
+    it('decodes a body preview when requested, for a simple single-part message', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({
+          uid: 77,
+          envelope: { subject: 'Hi' },
+          flags: [],
+          bodyStructure: { type: 'text/plain', encoding: '8bit', parameters: { charset: 'utf-8' } },
+          bodyParts: new Map([['1', Buffer.from('The actual message body text.')]]),
+        }),
+      );
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX', preview: true });
+
+      const [, query] = client.fetch.mock.calls[0]!;
+      expect(query.bodyParts).toEqual([{ key: '1', start: 0, maxLength: 1500 }]);
+      expect(result.items[0]!.preview).toBe('The actual message body text.');
+    });
+
+    // Roughly 4% of real messages: section 1 is itself a multipart, so the
+    // text sits at 1.1 — which needs its own fetch, since asking for a
+    // section a message does not have fails the whole batch on Gmail.
+    it('fetches the nested 1.1 part in a second pass when section 1 is itself a multipart', async () => {
+      client.search.mockResolvedValue([77]);
+      const nestedStructure = {
+        type: 'multipart/alternative',
+        childNodes: [
+          { part: '1.1', type: 'text/plain', encoding: '8bit', parameters: { charset: 'utf-8' } },
+          { part: '1.2', type: 'text/html' },
+        ],
+      };
+      let callCount = 0;
+      client.fetch.mockImplementation(() => {
+        callCount += 1;
+        if (callCount === 1) {
+          return (async function* firstPass() {
+            yield {
+              uid: 77,
+              envelope: { subject: 'Hi' },
+              flags: [],
+              bodyStructure: nestedStructure,
+            };
+          })();
+        }
+        return (async function* secondPass() {
+          yield { uid: 77, bodyParts: new Map([['1.1', Buffer.from('Nested plain text body.')]]) };
+        })();
+      });
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX', preview: true });
+
+      expect(client.fetch).toHaveBeenCalledTimes(2);
+      const [, secondQuery] = client.fetch.mock.calls[1]!;
+      expect(secondQuery.bodyParts).toEqual([{ key: '1.1', start: 0, maxLength: 1500 }]);
+      expect(result.items[0]!.preview).toBe('Nested plain text body.');
+    });
+
     it('rejects a message with no UID rather than falling back to its sequence number', async () => {
       client.search.mockResolvedValue([5]);
       // A server that answers a UID FETCH without a UID is violating the

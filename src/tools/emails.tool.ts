@@ -87,6 +87,12 @@ export default function registerEmailsTools(
           .optional()
           .describe('Filter: true=has attachments, false=no attachments'),
         answered: z.boolean().optional().describe('Filter: true=replied, false=not yet replied'),
+        preview: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Include a ~200 character body preview per message. Off by default: it fetches extra bytes per message and lengthens the output.',
+          ),
       }),
       outputSchema: emailListOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false },
@@ -105,6 +111,7 @@ export default function registerEmailsTools(
           flagged: params.flagged,
           hasAttachment: params.has_attachment,
           answered: params.answered,
+          preview: params.preview,
         });
 
         if (result.items.length === 0) {
@@ -465,6 +472,12 @@ export default function registerEmailsTools(
         larger_than: z.coerce.number().optional().describe('Minimum email size in KB'),
         smaller_than: z.coerce.number().optional().describe('Maximum email size in KB'),
         answered: z.boolean().optional().describe('Filter: true=replied, false=not replied'),
+        preview: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Include a ~200 character body preview per message. Off by default: it fetches extra bytes per message and lengthens the output.',
+          ),
       }),
       outputSchema: emailListOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false },
@@ -480,6 +493,7 @@ export default function registerEmailsTools(
           largerThan: params.larger_than,
           smallerThan: params.smaller_than,
           answered: params.answered,
+          preview: params.preview,
         });
 
         if (result.items.length === 0) {
