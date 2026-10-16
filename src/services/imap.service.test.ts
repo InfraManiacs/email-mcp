@@ -192,6 +192,46 @@ describe('ImapService', () => {
       expect(query.source).toBeUndefined();
     });
 
+    it('requests the bulk-classification header fields and marks a newsletter', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({
+          uid: 77,
+          envelope: { subject: 'Weekly digest' },
+          flags: [],
+          headers: Buffer.from('List-Unsubscribe: <https://example.com/u/abc>\r\n\r\n'),
+        }),
+      );
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX' });
+
+      const [, query] = client.fetch.mock.calls[0]!;
+      expect(query.headers).toEqual([
+        'list-unsubscribe',
+        'list-unsubscribe-post',
+        'list-id',
+        'precedence',
+        'auto-submitted',
+      ]);
+      expect(result.items[0]!.bulk).toMatchObject({ kind: 'newsletter' });
+    });
+
+    it('leaves bulk undefined for personal mail', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({
+          uid: 77,
+          envelope: { subject: 'Lunch?' },
+          flags: [],
+          headers: Buffer.from('\r\n'),
+        }),
+      );
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX' });
+
+      expect(result.items[0]!.bulk).toBeUndefined();
+    });
+
     it('rejects a message with no UID rather than falling back to its sequence number', async () => {
       client.search.mockResolvedValue([5]);
       // A server that answers a UID FETCH without a UID is violating the
@@ -290,6 +330,22 @@ describe('ImapService', () => {
         source: Buffer.from('Subject: Nested\r\n\r\nfallback body\r\n', 'utf-8'),
       });
       client.download = vi.fn();
+    });
+
+    it('classifies bulk mail from the full header set', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Nested', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: nestedStructure,
+        source: Buffer.from('Subject: Nested\r\n\r\nfallback body\r\n', 'utf-8'),
+        headers: Buffer.from('Precedence: bulk\r\n\r\n'),
+      });
+      client.download.mockResolvedValue(downloadYielding('x'));
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bulk).toMatchObject({ kind: 'automated' });
     });
 
     it('downloads the real text/plain part, not hardcoded part "1"', async () => {
