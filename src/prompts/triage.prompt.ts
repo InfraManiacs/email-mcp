@@ -37,9 +37,10 @@ export default function registerTriagePrompt(server: McpServer): void {
 Follow these steps:
 1. Call list_emails with account="${account}", mailbox="${mailbox}", seen=false, pageSize=${limitNum} to get unread emails.
 2. For each email, read the subject and sender to classify it into ONE of these categories.
-   Trust the 📰 newsletter / 🤖 automated marker when present — it is derived from the
-   message's own RFC headers, so it is authoritative and needs no second-guessing.
-   Mail with no marker is person-to-person.
+   The 📰 newsletter / 🤖 automated marker is a useful signal, derived from the message's own
+   RFC headers — but those headers are sender-asserted, not verified, so weigh the marker
+   alongside subject and sender rather than treating it as a final verdict. A missing marker
+   means the sender did not set these headers; it is not proof the mail is from a real person.
    🔴 **Urgent** — Requires immediate attention (time-sensitive, from important contacts, contains deadlines)
    🟡 **Needs Response** — Requires a reply but not time-critical
    🔵 **FYI** — Informational, no action needed (newsletters, notifications, CC'd emails)
