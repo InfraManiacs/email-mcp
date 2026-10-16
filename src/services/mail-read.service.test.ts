@@ -515,8 +515,25 @@ describe('MailReadService (cached search)', () => {
     await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', to: 'x@example.com' });
     await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', largerThan: 10 });
     await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', smallerThan: 10 });
+    await service.searchEmails('work', 'Invoice', { mailbox: 'INBOX', from: 'a@example.com' });
+    await service.searchEmails('work', 'Invoice', {
+      mailbox: 'INBOX',
+      since: '2026-05-01T00:00:00Z',
+    });
+    await service.searchEmails('work', 'Invoice', {
+      mailbox: 'INBOX',
+      before: '2026-05-01T00:00:00Z',
+    });
+    await service.searchEmails('work', 'Invoice', {
+      mailbox: 'INBOX',
+      sentSince: '2026-05-01T00:00:00Z',
+    });
+    await service.searchEmails('work', 'Invoice', {
+      mailbox: 'INBOX',
+      sentBefore: '2026-05-01T00:00:00Z',
+    });
 
-    expect(imap.searchEmails).toHaveBeenCalledTimes(3);
+    expect(imap.searchEmails).toHaveBeenCalledTimes(8);
   });
 
   it('pages cached search results', async () => {

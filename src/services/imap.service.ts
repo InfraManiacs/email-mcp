@@ -823,7 +823,12 @@ export default class ImapService {
       mailbox?: string;
       page?: number;
       pageSize?: number;
+      from?: string;
       to?: string;
+      since?: string;
+      before?: string;
+      sentSince?: string;
+      sentBefore?: string;
       hasAttachment?: boolean;
       largerThan?: number;
       smallerThan?: number;
@@ -838,6 +843,29 @@ export default class ImapService {
     const pageSize = options.pageSize ?? 20;
     const sanitizedQuery = query ? sanitizeSearchQuery(query) : '';
 
+    // Reject "no query and no filters" — IMAP would return the entire mailbox,
+    // which silently turns search_emails into list_emails. Force callers to be
+    // explicit; if they really want everything they should call list_emails.
+    const hasAnyFilter =
+      !!sanitizedQuery ||
+      !!options.from ||
+      !!options.to ||
+      !!options.since ||
+      !!options.before ||
+      !!options.sentSince ||
+      !!options.sentBefore ||
+      options.hasAttachment !== undefined ||
+      options.largerThan !== undefined ||
+      options.smallerThan !== undefined ||
+      options.answered !== undefined;
+    if (!hasAnyFilter) {
+      throw new Error(
+        'search_emails requires at least one of: query, from, to, since, before, sent_since, ' +
+          'sent_before, has_attachment, larger_than, smaller_than, answered. Use list_emails to ' +
+          'browse a mailbox without filters.',
+      );
+    }
+
     const lock = await ImapService.lockMailbox(client, mailbox);
     try {
       // Build search criteria — base query OR across subject/from/body
@@ -848,8 +876,23 @@ export default class ImapService {
       // Build additional filters as AND conditions
       const andConditions: Record<string, unknown>[] = [baseCriteria];
 
+      if (options.from) {
+        andConditions.push({ from: options.from });
+      }
       if (options.to) {
         andConditions.push({ to: options.to });
+      }
+      if (options.since) {
+        andConditions.push({ since: new Date(options.since) });
+      }
+      if (options.before) {
+        andConditions.push({ before: new Date(options.before) });
+      }
+      if (options.sentSince) {
+        andConditions.push({ sentSince: new Date(options.sentSince) });
+      }
+      if (options.sentBefore) {
+        andConditions.push({ sentBefore: new Date(options.sentBefore) });
       }
       if (options.largerThan !== undefined) {
         andConditions.push({ larger: options.largerThan * 1024 });
@@ -875,7 +918,12 @@ export default class ImapService {
       // results. Skipped when structured filters are active — the cache
       // cannot evaluate them, so a union would leak non-matching messages.
       const structuredFiltersActive =
+        options.from !== undefined ||
         options.to !== undefined ||
+        options.since !== undefined ||
+        options.before !== undefined ||
+        options.sentSince !== undefined ||
+        options.sentBefore !== undefined ||
         options.largerThan !== undefined ||
         options.smallerThan !== undefined ||
         options.answered !== undefined;

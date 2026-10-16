@@ -534,13 +534,20 @@ export default class MailReadService {
     options: Parameters<ImapService['searchEmails']>[2] = {},
   ): Promise<CachedList> {
     const store = this.store;
-    // `to`, `largerThan` and `smallerThan` have no mirrored counterpart — the
-    // mirror indexes neither recipients nor message size, so these always go
-    // live rather than silently dropping the filter.
+    // `to`, `largerThan`, `smallerThan`, `from`, `since`, `before`,
+    // `sentSince` and `sentBefore` have no mirrored counterpart in the FTS
+    // match branch below (which only post-filters on answered/hasAttachment)
+    // — the mirror indexes neither recipients, size, sender, nor either date,
+    // so these always go live rather than silently dropping the filter.
     const unsupported =
       options.to !== undefined ||
       options.largerThan !== undefined ||
-      options.smallerThan !== undefined;
+      options.smallerThan !== undefined ||
+      options.from !== undefined ||
+      options.since !== undefined ||
+      options.before !== undefined ||
+      options.sentSince !== undefined ||
+      options.sentBefore !== undefined;
     if (!store || unsupported) return this.imapService.searchEmails(account, query, options);
 
     const mailbox = options.mailbox ?? 'INBOX';
