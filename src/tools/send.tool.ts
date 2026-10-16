@@ -154,7 +154,8 @@ export default function registerSendTools(
     {
       title: 'Reply email',
       description:
-        'Reply to an email with proper threading (In-Reply-To & References headers). Use get_email first to read the original.',
+        'Reply to an email with proper threading (In-Reply-To & References headers). Use get_email first to read the original. ' +
+        'The original message is quoted below the reply by default (Thunderbird/Outlook style) — set quoteOriginal=false for the bare body only.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID to reply to (from list_emails or get_email)'),
@@ -162,6 +163,15 @@ export default function registerSendTools(
         body: z.string().describe('Reply body content'),
         replyAll: z.boolean().default(false).describe('Reply to all recipients'),
         html: z.boolean().default(false).describe('Send as HTML'),
+        quoteOriginal: z
+          .boolean()
+          .default(true)
+          .describe(
+            'Append the original message as a quoted block below the reply ' +
+              '(Thunderbird/Outlook style: "On DATE, NAME wrote:" + > prefix for ' +
+              'text replies, or <blockquote type="cite"> for HTML). Disable to ' +
+              'send the bare reply body only.',
+          ),
         attachments: z
           .array(attachmentInputSchema)
           .optional()
