@@ -1,6 +1,7 @@
 import {
   buildPreview,
   decodeCharset,
+  decodeEntities,
   decodeTransferEncoding,
   findPreviewPart,
   PREVIEW_LENGTH,
@@ -201,6 +202,30 @@ describe('findPreviewPart', () => {
   it('returns undefined for a missing structure', () => {
     expect(findPreviewPart(undefined)).toBeUndefined();
     expect(findPreviewPart(null)).toBeUndefined();
+  });
+});
+
+describe('decodeEntities', () => {
+  it('decodes a normal numeric entity', () => {
+    expect(decodeEntities('caf&#233;')).toBe('café');
+  });
+
+  // Message bodies are sender-controlled. String.fromCodePoint throws a
+  // RangeError on a value past the Unicode range or a lone surrogate half,
+  // which would otherwise crash the whole listing fetch over one message.
+  it('leaves an out-of-range decimal entity untouched rather than throwing', () => {
+    expect(() => decodeEntities('&#99999999999999;')).not.toThrow();
+    expect(decodeEntities('&#99999999999999;')).toBe('&#99999999999999;');
+  });
+
+  it('leaves an out-of-range hex entity untouched rather than throwing', () => {
+    expect(() => decodeEntities('&#xFFFFFFFF;')).not.toThrow();
+    expect(decodeEntities('&#xFFFFFFFF;')).toBe('&#xFFFFFFFF;');
+  });
+
+  it('leaves a lone surrogate-half entity untouched rather than throwing', () => {
+    expect(() => decodeEntities('&#xD800;')).not.toThrow();
+    expect(decodeEntities('&#xD800;')).toBe('&#xD800;');
   });
 });
 

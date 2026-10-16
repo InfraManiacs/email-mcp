@@ -140,6 +140,16 @@ const NAMED_ENTITIES: Record<string, string> = {
 };
 
 /**
+ * A codepoint `String.fromCodePoint` would throw on (past the Unicode range),
+ * or a lone surrogate half — valid as a call, but ill-formed UTF-16 on its
+ * own. Message bodies are sender-controlled, so a numeric entity carrying
+ * either must not crash the decode.
+ */
+function isUnsafeCodePoint(code: number): boolean {
+  return !Number.isFinite(code) || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
+}
+
+/**
  * Decode HTML entities and drop zero-width padding.
  *
  * Applied to plain-text parts too: senders put entities in them, and a preview
@@ -147,8 +157,14 @@ const NAMED_ENTITIES: Record<string, string> = {
  */
 export function decodeEntities(text: string): string {
   return text
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (match: string, code: string) => {
+      const point = Number(code);
+      return isUnsafeCodePoint(point) ? match : String.fromCodePoint(point);
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (match: string, code: string) => {
+      const point = parseInt(code, 16);
+      return isUnsafeCodePoint(point) ? match : String.fromCodePoint(point);
+    })
     .replace(
       /&([a-z]+);/gi,
       (match: string, name: string) => NAMED_ENTITIES[name.toLowerCase()] ?? match,
