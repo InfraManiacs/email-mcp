@@ -88,14 +88,14 @@ export default function registerVerificationTools(
           .optional()
           .describe('Account name from list_accounts (omit to scan all accounts)'),
         mailbox: z.string().default('INBOX').describe('Mailbox to scan (default: INBOX)'),
-        lookback_minutes: z
+        lookback_minutes: z.coerce
           .number()
           .int()
           .min(1)
           .max(240)
           .default(15)
           .describe('How far back to scan (default: 15)'),
-        wait_seconds: z
+        wait_seconds: z.coerce
           .number()
           .int()
           .min(0)
@@ -348,14 +348,14 @@ export default function registerVerificationTools(
           .enum(['open', 'copy'])
           .optional()
           .describe('Caught links: offer to open in the browser, or copy like a code'),
-        clear_after_seconds: z
+        clear_after_seconds: z.coerce
           .number()
           .int()
           .min(0)
           .max(3600)
           .optional()
           .describe('Auto-clear clipboard after N seconds (0 = never)'),
-        max_age_minutes: z
+        max_age_minutes: z.coerce
           .number()
           .int()
           .min(1)

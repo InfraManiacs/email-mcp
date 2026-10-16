@@ -69,8 +69,8 @@ export default function registerEmailsTools(
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         mailbox: z.string().default('INBOX').describe('Mailbox path (default: INBOX)'),
-        page: z.number().int().min(1).default(1).describe('Page number'),
-        pageSize: z.number().int().min(1).max(100).default(20).describe('Results per page'),
+        page: z.coerce.number().int().min(1).default(1).describe('Page number'),
+        pageSize: z.coerce.number().int().min(1).max(100).default(20).describe('Results per page'),
         since: z.string().optional().describe('Show emails after this date (ISO 8601)'),
         before: z.string().optional().describe('Show emails before this date (ISO 8601)'),
         from: z.string().optional().describe('Filter by sender address or name'),
@@ -176,7 +176,7 @@ export default function registerEmailsTools(
           .describe(
             'Body format: text=readable text with markdown links (default), stripped=text without quoted replies or signatures, full=raw body part',
           ),
-        maxLength: z
+        maxLength: z.coerce
           .number()
           .int()
           .min(0)
@@ -282,7 +282,7 @@ export default function registerEmailsTools(
           .describe(
             'Body format (default: text — HTML converted to readable text with markdown links). Use stripped to also remove quoted replies.',
           ),
-        maxLength: z
+        maxLength: z.coerce
           .number()
           .int()
           .min(0)
@@ -439,15 +439,15 @@ export default function registerEmailsTools(
           .default('')
           .describe('Search keyword (omit or leave empty to use filters only)'),
         mailbox: z.string().default('INBOX').describe('Mailbox path (default: INBOX)'),
-        page: z.number().int().min(1).default(1).describe('Page number'),
-        pageSize: z.number().int().min(1).max(100).default(20).describe('Results per page'),
+        page: z.coerce.number().int().min(1).default(1).describe('Page number'),
+        pageSize: z.coerce.number().int().min(1).max(100).default(20).describe('Results per page'),
         to: z.string().optional().describe('Filter by recipient address'),
         has_attachment: z
           .boolean()
           .optional()
           .describe('Filter: true=has attachments, false=no attachments'),
-        larger_than: z.number().optional().describe('Minimum email size in KB'),
-        smaller_than: z.number().optional().describe('Maximum email size in KB'),
+        larger_than: z.coerce.number().optional().describe('Minimum email size in KB'),
+        smaller_than: z.coerce.number().optional().describe('Maximum email size in KB'),
         answered: z.boolean().optional().describe('Filter: true=replied, false=not replied'),
       }),
       outputSchema: emailListOutputSchema,

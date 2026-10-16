@@ -39,7 +39,7 @@ export default function registerThreadTools(
           .describe(
             'Body format: text=readable text with markdown links (default), stripped=text without quoted replies or signatures, full=raw body part',
           ),
-        maxLength: z
+        maxLength: z.coerce
           .number()
           .int()
           .min(0)

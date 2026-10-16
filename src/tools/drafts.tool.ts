@@ -102,7 +102,10 @@ export default function registerDraftTools(
         'Send an existing draft email and remove it from Drafts. The draft is fetched, sent via SMTP, then deleted. Use list_emails with the Drafts mailbox to find draft IDs.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
-        id: z.number().int().describe('Draft email UID (from list_emails on Drafts mailbox)'),
+        id: z.coerce
+          .number()
+          .int()
+          .describe('Draft email UID (from list_emails on Drafts mailbox)'),
         mailbox: z.string().optional().describe('Drafts folder path (auto-detected if omitted)'),
       }),
       annotations: { readOnlyHint: false, destructiveHint: true },
