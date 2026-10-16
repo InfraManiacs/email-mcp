@@ -15,6 +15,7 @@ import {
   DEFAULT_MULTI_BODY_MAX,
   DEFAULT_SINGLE_BODY_MAX,
 } from '../utils/body-format.js';
+import { formatBulk } from '../utils/bulk-headers.js';
 import { emailListOutputSchema, emailStatusOutputSchema } from './schemas.js';
 
 // ---------------------------------------------------------------------------
@@ -33,8 +34,10 @@ function formatEmailMeta(email: EmailMeta): string {
 
   const from = email.from.name ? `${email.from.name} <${email.from.address}>` : email.from.address;
   const labelStr = email.labels.length > 0 ? `\n  🏷️ ${email.labels.join(', ')}` : '';
+  const bulk = formatBulk(email.bulk);
+  const bulkStr = bulk ? `\n  ${bulk}` : '';
 
-  return `[${email.id}] ${flags} ${email.subject}\n  From: ${from} | ${email.date}${labelStr}${email.preview ? `\n  ${email.preview}` : ''}`;
+  return `[${email.id}] ${flags} ${email.subject}\n  From: ${from} | ${email.date}${labelStr}${bulkStr}${email.preview ? `\n  ${email.preview}` : ''}`;
 }
 
 /** Renders the current read/flag/label state as a concise status line. */
@@ -63,6 +66,8 @@ export default function registerEmailsTools(
       description:
         'List emails in a mailbox with optional filters. Returns paginated results with metadata ' +
         '(read/unread 🔵, flagged ⭐, replied ↩️, attachments 📎, labels 🏷️). ' +
+        'List or machine-generated mail is marked 📰 newsletter / 🤖 automated from its RFC headers, ' +
+        'with the unsubscribe URI when the sender offers one — personal mail carries no marker. ' +
         'Use get_email to fetch full body content. ' +
         'ProtonMail note: labels are represented as IMAP folders — use list_labels to discover them, ' +
         'then list_emails with mailbox="Labels/X" to find labeled emails.',
@@ -165,7 +170,9 @@ export default function registerEmailsTools(
         'format: text (default) = HTML converted to readable text with [markdown](links); ' +
         'stripped = text minus quoted replies and signatures; full = raw body part (HTML mail returns raw HTML). ' +
         `Body is capped at ${DEFAULT_SINGLE_BODY_MAX} chars by default — pass maxLength (0 = unlimited) to change. ` +
-        'Set markRead=true only when you want to explicitly mark the email as read.',
+        'Set markRead=true only when you want to explicitly mark the email as read. ' +
+        'A Bulk: line appears for list or machine-generated mail (📰 newsletter / 🤖 automated), ' +
+        'derived from RFC headers, with the unsubscribe URI when the sender offers one.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID from list_emails or search_emails'),
@@ -213,6 +220,11 @@ export default function registerEmailsTools(
         // `emailId`; "ID" alone leaves the caller guessing which identifier
         // get_thread's `message_id` wants.
         parts.push(`Message-ID: ${email.messageId}`);
+
+        const bulk = formatBulk(email.bulk);
+        if (bulk) {
+          parts.push(`Bulk:   ${bulk}`);
+        }
 
         if (email.inReplyTo) {
           parts.push(`Reply:  ${email.inReplyTo}`);
@@ -267,7 +279,8 @@ export default function registerEmailsTools(
         'Fetch the full content of multiple emails in a single call (max 20). ' +
         'More efficient than calling get_email repeatedly when triaging or summarising several emails. ' +
         'Does NOT mark emails as seen. ' +
-        'Defaults to format="text" (HTML stripped) for compact, AI-friendly output.',
+        'Defaults to format="text" (HTML stripped) for compact, AI-friendly output. ' +
+        'Each message carries the same 📰 newsletter / 🤖 automated marker as get_email.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         ids: z
@@ -316,6 +329,7 @@ export default function registerEmailsTools(
           );
           const attachLine =
             email.attachments.length > 0 ? `📎 ${describeAttachments(email.attachments)}` : '';
+          const bulkLine = formatBulk(email.bulk);
 
           results.push(
             [
@@ -323,6 +337,7 @@ export default function registerEmailsTools(
               `Status: ${formatEmailStatus(email)}`,
               `From:   ${from}`,
               `Date:   ${email.date}`,
+              bulkLine ? `Bulk:   ${bulkLine}` : '',
               attachLine,
               '',
               body,
@@ -430,7 +445,8 @@ export default function registerEmailsTools(
         'Q3-report.pdf). ' +
         'Omit query (or pass an empty string) to use it as a pure filter — e.g. find all emails ' +
         'with attachments from a specific recipient without a keyword. ' +
-        'Supports additional filters for recipient, attachments, size, and reply status.',
+        'Supports additional filters for recipient, attachments, size, and reply status. ' +
+        'Results carry the same 📰 newsletter / 🤖 automated markers as list_emails.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         query: z

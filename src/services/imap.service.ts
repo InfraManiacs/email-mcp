@@ -32,6 +32,7 @@ import type {
   SentCopyResult,
 } from '../types/index.js';
 import { unflowFormatFlowed } from '../utils/body-format.js';
+import { BULK_HEADER_FIELDS, classifyBulk } from '../utils/bulk-headers.js';
 import { stripHtml } from '../utils/html.js';
 import { imapCommand } from '../utils/imap-error.js';
 import type { ReconnectEvent } from './event-bus.js';
@@ -110,6 +111,7 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
     // `preview` stays optional in EmailMeta for a future RFC 8970 PREVIEW
     // implementation; the old 256-byte source window never reached past real
     // header blocks, so it was always undefined anyway.
+    bulk: Buffer.isBuffer(msg.headers) ? classifyBulk(parseHeaders(msg.headers)) : undefined,
   };
 }
 
@@ -340,6 +342,10 @@ async function messageToEmail(
     attachments: extractAttachments(msg.bodyStructure),
     headers,
     deliveryStatus,
+    // Recomputed from the full header set rather than reusing meta.bulk: a
+    // single/thread fetch carries every header, so this is strictly more
+    // complete than the targeted HEADER.FIELDS subset a listing fetch uses.
+    bulk: classifyBulk(headers),
   };
 }
 
@@ -620,6 +626,9 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
+          // Targeted field fetch for bulk-mail classification — cheap enough
+          // to run over a whole page; see classifyBulk.
+          headers: BULK_HEADER_FIELDS,
         },
         { uid: true },
       )) {
@@ -874,6 +883,9 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
+          // Targeted field fetch for bulk-mail classification — cheap enough
+          // to run over a whole page; see classifyBulk.
+          headers: BULK_HEADER_FIELDS,
         },
         { uid: true },
       )) {
