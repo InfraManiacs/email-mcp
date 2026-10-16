@@ -42,6 +42,7 @@ function validateTemplate(raw: Record<string, unknown>, filename: string): Email
     subject,
     body,
     variables,
+    html: raw.html === true,
   } as EmailTemplate;
 }
 
@@ -51,7 +52,7 @@ function validateTemplate(raw: Record<string, unknown>, filename: string): Email
 function substituteVariables(text: string, variables: Record<string, string>): string {
   return text.replace(/\{\{(\w+)\}\}/g, (match, varName: string) => {
     if (varName in variables) {
-      return variables[varName];
+      return variables[varName] ?? match;
     }
     return match; // Leave unresolved placeholders as-is
   });
@@ -116,26 +117,19 @@ export default class TemplateService {
   async applyTemplate(
     name: string,
     variables: Record<string, string>,
-    html = false,
-  ): Promise<{ subject: string; body: string }> {
+  ): Promise<{ subject: string; body: string; html: boolean }> {
     const template = await this.getTemplate(name);
+    const html = template.html ?? false;
+    // In an HTML template a variable is data, not markup — escape it so a
+    // value like "<Ada & Co>" cannot inject tags into the rendered body.
     const sanitized = Object.fromEntries(
       Object.entries(variables).map(([k, v]) => [k, sanitizeTemplateVariable(v, html)]),
     );
 
-    // Warn about missing variables
-    const missing = template.variables.filter((v) => !(v in sanitized));
-    if (missing.length > 0) {
-      const composed = {
-        subject: substituteVariables(template.subject, sanitized),
-        body: substituteVariables(template.body, sanitized),
-      };
-      return composed;
-    }
-
     return {
       subject: substituteVariables(template.subject, sanitized),
       body: substituteVariables(template.body, sanitized),
+      html,
     };
   }
 

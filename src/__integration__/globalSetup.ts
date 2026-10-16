@@ -1,6 +1,16 @@
 import type { StartedTestContainer } from 'testcontainers';
 import { GenericContainer, Wait } from 'testcontainers';
-import type { GlobalSetupContext } from 'vitest/node';
+import type { ProvidedContext } from 'vitest';
+
+/**
+ * vitest 5 dropped the exported `GlobalSetupContext` type from `vitest/node`;
+ * the global-setup function still receives an object with a `provide` method.
+ * Typing it via the augmented `ProvidedContext` keeps `provide(key, value)`
+ * key/value-checked.
+ */
+interface GlobalSetupContext {
+  provide: <K extends keyof ProvidedContext>(key: K, value: ProvidedContext[K]) => void;
+}
 
 const GREENMAIL_IMAGE = 'greenmail/standalone:2.1.8';
 const SMTP_PORT = 3025;
@@ -19,7 +29,7 @@ export async function setup({ provide }: GlobalSetupContext) {
       GREENMAIL_OPTS: [
         '-Dgreenmail.setup.test.all',
         '-Dgreenmail.hostname=0.0.0.0',
-        '-Dgreenmail.users=test:test@localhost,bob:bob@localhost,alice:alice@localhost,sender:sender@localhost',
+        '-Dgreenmail.users=test:test@localhost,bob:bob@localhost,alice:alice@localhost,sender:sender@localhost,attsender:attpw@example.test,attrecipient:attpw@example.test',
       ].join(' '),
     })
     .withWaitStrategy(Wait.forListeningPorts())

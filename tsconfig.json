@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "lib": ["ES2022"],
-    "moduleResolution": "bundler",
+    "target": "ES2024",
+    "module": "nodenext",
+    "lib": ["ES2024"],
+    "moduleResolution": "nodenext",
+    "types": ["node"],
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
@@ -20,7 +21,9 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["vitest/globals"]
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/__integration__"]

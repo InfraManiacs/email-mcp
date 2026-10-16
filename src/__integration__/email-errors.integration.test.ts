@@ -107,7 +107,7 @@ describe('Error Handling', () => {
         await expect(
           services.imapService.downloadAttachment(
             TEST_ACCOUNT_NAME,
-            list.items[0].id,
+            list.items[0]!.id,
             'INBOX',
             'nonexistent-file.xyz',
           ),

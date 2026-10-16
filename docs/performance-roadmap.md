@@ -1,7 +1,8 @@
 # Performance Improvements Roadmap
 
-> **Status**: Planning  
-> **Last Updated**: 2026-02-18
+> **Status**: Partially delivered — the caching and pagination items below are
+> implemented; see the "Local Cache" section of `README.md` for what shipped.  
+> **Last Updated**: 2026-10-10
 
 Performance for an Email MCP server operates across **three distinct layers**, each with different bottlenecks and optimization strategies. This roadmap identifies concrete improvements against the current implementation, ordered by impact.
 
@@ -26,8 +27,10 @@ Performance for an Email MCP server operates across **three distinct layers**, e
 | Lazy connection creation | ✅ Done | `manager.ts` — connects on first use per account |
 | Connection health checks | ✅ Done | `manager.ts` — checks `.usable` before reuse; SMTP `verify()` |
 | Auto-reconnect (basic) | ✅ Done | `manager.ts` — drops stale connections, recreates on failure |
-| Source preview truncation | ✅ Done | `imap.service.ts` — `maxLength: 256` for list operations |
-| Preview text capping | ✅ Done | `imap.service.ts` — 200 char preview limit |
+| Selective MIME part fetching | ✅ Done | `mime-structure.ts` — fetches only the text parts; attachments stay unfetched |
+| Body part size cap | ✅ Done | `imap.service.ts` — 512 KB per body part, drained and truncated |
+| Default body length caps | ✅ Done | `body-format.ts` — 10 000 chars (`get_email`) / 5 000 per message (bulk) |
+| Signature/quote stripping | ✅ Done | `reply-chain.ts` — `format="stripped"` |
 | Thread cap | ✅ Done | Thread reconstruction capped at 50 messages |
 | Contact extraction cap | ✅ Done | Caps at 500 recent messages for contact extraction |
 | Rate limiting (sends) | ✅ Done | `rate-limiter.ts` — token-bucket, 10/min/account |
@@ -38,12 +41,14 @@ Performance for an Email MCP server operates across **three distinct layers**, e
 | Gap | Current Behavior | Impact |
 |-----|-----------------|--------|
 | Conservative SMTP pool defaults | Pooling defaults to `max_connections=1`, `max_messages=100` | Low — tune for high-throughput workloads |
-| No ENVELOPE/BODYSTRUCTURE cache | Fresh SEARCH + FETCH every request | High — repeat listings pay full IMAP cost |
-| Client-side pagination | Fetches ALL matching UIDs, slices in memory | High — 10K-mailbox fetches all UIDs just to show page 1 |
+| ~~No ENVELOPE/BODYSTRUCTURE cache~~ | **Done** — SQLite mirror serves listings, search, threads, bodies and attachments; freshness via one STATUS probe | High — repeat listings no longer pay IMAP cost |
+| ~~Client-side pagination~~ | **Done for cached mailboxes** — SQL `LIMIT`/`OFFSET`; the live fallback path still slices in memory | High — page 50 costs the same as page 1 |
 | No IMAP command pipelining control | Relies on ImapFlow auto-pipelining (good) but fetches extra data | Low — ImapFlow handles this well already |
-| No selective MIME part fetching | Full source download for `getEmail()` | Medium — downloads HTML+attachments when only plain text needed |
-| No signature/quote stripping | Returns full body including signatures and quoted replies | Medium — wastes tokens on repeated content |
-| No IMAP IDLE for push | Only poll-based; no real-time arrival notifications | Low — not critical for MCP request/response model |
+| ~~No selective MIME part fetching~~ | **Done** — `selectBodyParts` picks the text parts to download; cached bodies need no fetch at all | Medium |
+| ~~No signature/quote stripping~~ — shipped: `reply-chain.ts`, `format="stripped"` | `format="stripped"` removes quoted replies and signatures | Medium — wastes tokens on repeated content |
+| No inbox preview line | `EmailMeta.preview` is populated only for messages whose body is cached; the old 256-byte source window could not reach the body and was removed | Low — would need RFC 8970 `PREVIEW` support |
+| Two body downloads per message | `getEmail()` fetches both the plain and HTML parts on a cache miss | Low-Medium — one extra round trip buys a usable `format="full"` and better link extraction |
+| ~~No IMAP IDLE for push~~ — shipped: `watcher.service.ts` | Only poll-based; no real-time arrival notifications | Low — not critical for MCP request/response model |
 | No connection keepalive (NOOP) | Connections may timeout during idle periods | Low-Medium — ImapFlow may handle internally |
 | No batch flag operations | One-at-a-time for mark/move/delete | Low — current usage patterns are single-message |
 | `has_attachment` filter is client-side | Post-filter after SEARCH (IMAP limitation) | Low — unavoidable IMAP protocol limitation |

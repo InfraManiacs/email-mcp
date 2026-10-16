@@ -15,6 +15,8 @@ interface SeedEmailOptions {
     filename: string;
     content: string | Buffer;
     contentType?: string;
+    /** Content-ID for inline (cid:) parts — nodemailer sets disposition inline. */
+    cid?: string;
   }[];
 }
 
@@ -25,6 +27,10 @@ function createTransport(user = 'test') {
     port: smtpPort,
     secure: false,
     auth: { user, pass: user },
+    // Integration-only: this seeds mail into the throwaway GreenMail container
+    // (localhost, self-signed), never a real server. Not reachable from
+    // production code.
+    // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
     tls: { rejectUnauthorized: false },
   });
 }
@@ -38,7 +44,9 @@ export async function seedEmail(options: SeedEmailOptions = {}) {
       from,
       to: options.to ?? 'test@localhost',
       subject: options.subject ?? 'Test Email',
-      text: options.text ?? 'Hello from integration tests',
+      // An html-only seed must stay single-part — injecting the default text
+      // would silently turn it into multipart/alternative.
+      text: options.text ?? (options.html ? undefined : 'Hello from integration tests'),
       html: options.html,
       cc: options.cc?.join(', '),
       bcc: options.bcc?.join(', '),

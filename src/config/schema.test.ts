@@ -127,6 +127,63 @@ describe('SettingsSchema', () => {
   });
 });
 
+describe('verification settings', () => {
+  const expectedDefaults = {
+    enabled: true,
+    auto_copy: true,
+    confirm_copy: false,
+    notify: true,
+    copy_links: true,
+    link_action: 'open',
+    clear_after_seconds: 60,
+    max_age_minutes: 10,
+    accounts: [],
+    sender_allowlist: [],
+    sender_denylist: [],
+  };
+
+  it('applies verification defaults via SettingsSchema', () => {
+    const result = SettingsSchema.parse({});
+    expect(result.verification).toEqual(expectedDefaults);
+  });
+
+  // Guards the duplicated default literal in AppConfigFileSchema — the two
+  // blocks must stay in lockstep.
+  it('applies verification defaults when settings is absent entirely', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.settings.verification).toEqual(expectedDefaults);
+  });
+
+  it('rejects clear_after_seconds beyond one hour', () => {
+    expect(() => SettingsSchema.parse({ verification: { clear_after_seconds: 3601 } })).toThrow();
+  });
+
+  it('rejects an unknown link_action', () => {
+    expect(() => SettingsSchema.parse({ verification: { link_action: 'paste' } })).toThrow();
+  });
+});
+
+describe('server settings', () => {
+  it('applies server defaults via SettingsSchema and AppConfigFileSchema', () => {
+    const expected = {
+      host: '127.0.0.1',
+      port: 8080,
+      path: '/mcp',
+      token: '',
+      allowed_hosts: [],
+    };
+    expect(SettingsSchema.parse({}).server).toEqual(expected);
+    expect(AppConfigFileSchema.parse({ accounts: [validAccount()] }).settings.server).toEqual(
+      expected,
+    );
+  });
+
+  it('rejects out-of-range ports', () => {
+    expect(() => SettingsSchema.parse({ server: { port: 0 } })).toThrow();
+    expect(() => SettingsSchema.parse({ server: { port: 65536 } })).toThrow();
+  });
+});
+
 describe('AppConfigFileSchema', () => {
   it('accepts valid config with one account', () => {
     const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
@@ -147,5 +204,76 @@ describe('AppConfigFileSchema', () => {
     expect(() =>
       AppConfigFileSchema.parse({ accounts: [validAccount({ email: 'bad' })] }),
     ).toThrow();
+  });
+});
+
+describe('send settings', () => {
+  it('defaults max_attachment_mb to 25 when settings.send is absent', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.settings.send).toEqual({ max_attachment_mb: 25, save_to_sent: false });
+  });
+
+  it('accepts an explicit max_attachment_mb', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount()],
+      settings: { send: { max_attachment_mb: 10 } },
+    });
+    expect(result.settings.send.max_attachment_mb).toBe(10);
+  });
+
+  it('accepts an optional per-account max_attachment_mb', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount({ max_attachment_mb: 40 })],
+    });
+    expect(result.accounts[0]!.max_attachment_mb).toBe(40);
+  });
+
+  it('leaves the per-account max_attachment_mb unset by default', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.accounts[0]!.max_attachment_mb).toBeUndefined();
+  });
+
+  it('rejects a non-positive per-account max_attachment_mb', () => {
+    expect(() =>
+      AppConfigFileSchema.parse({
+        accounts: [validAccount({ max_attachment_mb: 0 })],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('attachments settings', () => {
+  it('defaults auto_download to true when settings.attachments is absent', () => {
+    const result = AppConfigFileSchema.parse({ accounts: [validAccount()] });
+    expect(result.settings.attachments).toEqual({ auto_download: true });
+  });
+
+  it('accepts disabling auto_download', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount()],
+      settings: { attachments: { auto_download: false } },
+    });
+    expect(result.settings.attachments.auto_download).toBe(false);
+  });
+
+  it('rejects a non-positive max_attachment_mb', () => {
+    expect(() =>
+      AppConfigFileSchema.parse({
+        accounts: [validAccount()],
+        settings: { send: { max_attachment_mb: 0 } },
+      }),
+    ).toThrow();
+  });
+});
+
+describe('cache window default', () => {
+  it('mirrors the whole mailbox by default so cached listings are complete', () => {
+    const parsed = SettingsSchema.parse({});
+
+    // A bounded window makes the mirror a slice, and a slice cannot answer
+    // "how many messages are there" — the read path then has to go live for
+    // every listing, which defeats the cache. Envelopes are ~1 KB, so a full
+    // envelope mirror of a 9k-message mailbox costs ~9 MB of a 500 MB budget.
+    expect(parsed.cache.window_days).toBe(0);
   });
 });

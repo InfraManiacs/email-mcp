@@ -14,12 +14,10 @@ pre-commit:
       exclude: '*lock*'
       run: npx biome check --write {staged_files}
       stage_fixed: true
-    eslint:
-      glob: 'src/**/*.{ts,tsx,js,jsx}'
-      run: npx eslint --fix {staged_files}
-      stage_fixed: true
     typecheck:
-      run: npx tsc --noEmit
+      # tsconfig.test.json covers src + tests + __integration__ (the plain
+      # tsconfig excludes integration).
+      run: npx tsc --noEmit -p tsconfig.test.json
     actionlint:
       glob: '.github/workflows/*.{yml,yaml}'
       run: actionlint {staged_files}
@@ -47,3 +45,7 @@ pre-push:
       run: pnpm test
     check:
       run: pnpm check
+    knip:
+      # Dead-code / unused-dependency guard. Fails only on high-signal findings
+      # (unused files, deps, binaries); export-level findings are warnings.
+      run: pnpm knip

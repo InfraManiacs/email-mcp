@@ -209,7 +209,7 @@ function buildAppleScript(opts: JXAScriptOptions): string {
       `\uD83D\uDCC6 ${calName || 'Default Calendar'} \u00B7 \u23F0 ${alarmMinutes} min before`,
     );
 
-    lines.push(`set dialogText to "${escapeAS(dialogLines[0])}"`);
+    lines.push(`set dialogText to "${escapeAS(dialogLines[0] ?? '')}"`);
     dialogLines.slice(1).forEach((dl) => {
       lines.push(`set dialogText to dialogText & return & "${escapeAS(dl)}"`);
     });

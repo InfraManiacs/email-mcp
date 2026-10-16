@@ -7,18 +7,43 @@
  * - Graceful shutdown closes all connections
  */
 
-import { ImapFlow } from 'imapflow';
-import type { Transporter } from 'nodemailer';
+import type { ImapFlow } from 'imapflow';
+import type { TransportConfig, Transporter } from 'nodemailer';
 import nodemailer from 'nodemailer';
 import { mcpLog } from '../logging.js';
 
+import eventBus from '../services/event-bus.js';
 import type OAuthService from '../services/oauth.service.js';
 import type { AccountConfig } from '../types/index.js';
+import { authFailureHint, withAuthGuidance } from '../utils/auth-error.js';
+import { createImapClient } from '../utils/imap-client.js';
 import type { IConnectionManager } from './types.js';
 
 type SmtpAuth =
   | { user: string; pass?: string }
   | { type: string; user: string; accessToken: string };
+
+/**
+ * A `starttls = true` account demands an encrypted session on a plain port.
+ * imapflow upgrades opportunistically when the server offers STARTTLS, but it
+ * will also happily stay plaintext when the server does not — so the flag was
+ * silently unenforced (proven E2E against a no-STARTTLS server 2026-10-10).
+ * nodemailer's requireTLS covers SMTP; this is the IMAP counterpart.
+ */
+async function assertImapUpgraded(client: ImapFlow, account: AccountConfig): Promise<void> {
+  if (!account.imap.starttls || account.imap.tls) return;
+  const secured = (client as unknown as { secureConnection?: boolean }).secureConnection;
+  if (secured) return;
+  try {
+    await client.logout();
+  } catch {
+    client.close();
+  }
+  throw new Error(
+    `IMAP connection to ${account.imap.host}:${account.imap.port} stayed plaintext but ` +
+      `starttls = true requires an upgraded session — the server likely does not support STARTTLS.`,
+  );
+}
 
 export default class ConnectionManager implements IConnectionManager {
   private imapClients = new Map<string, ImapFlow>();
@@ -72,6 +97,11 @@ export default class ConnectionManager implements IConnectionManager {
       } catch {
         /* ignore */
       }
+      // Announce the replacement. A new connection may be talking to a
+      // different server, or to a mailbox that has been recreated since —
+      // so capability probes, per-account memos and any cached UIDVALIDITY
+      // derived from the old connection must be revalidated.
+      eventBus.emit('imap:reconnect', { account: accountName });
     }
 
     const account = this.getAccount(accountName);
@@ -85,7 +115,7 @@ export default class ConnectionManager implements IConnectionManager {
       auth = { user: account.username, pass: account.password };
     }
 
-    const client = new ImapFlow({
+    const client = createImapClient({
       host: account.imap.host,
       port: account.imap.port,
       secure: account.imap.tls,
@@ -96,7 +126,8 @@ export default class ConnectionManager implements IConnectionManager {
       logger: false,
     });
 
-    await client.connect();
+    await withAuthGuidance(account, 'IMAP', () => client.connect());
+    await assertImapUpgraded(client, account);
     await mcpLog(
       'info',
       'imap',
@@ -113,7 +144,7 @@ export default class ConnectionManager implements IConnectionManager {
   private static buildSmtpTransportOptions(
     account: AccountConfig,
     auth: SmtpAuth,
-  ): nodemailer.TransportOptions {
+  ): TransportConfig {
     const pool = account.smtp.pool ?? {
       enabled: true,
       maxConnections: 1,
@@ -137,7 +168,7 @@ export default class ConnectionManager implements IConnectionManager {
             maxMessages: pool.maxMessages,
           }
         : {}),
-    } as nodemailer.TransportOptions;
+    } as TransportConfig;
   }
 
   async getSmtpTransport(
@@ -178,7 +209,7 @@ export default class ConnectionManager implements IConnectionManager {
       ConnectionManager.buildSmtpTransportOptions(account, auth),
     );
 
-    await transport.verify();
+    await withAuthGuidance(account, 'SMTP', () => transport.verify());
     await mcpLog(
       'info',
       'smtp',
@@ -202,6 +233,8 @@ export default class ConnectionManager implements IConnectionManager {
   ): Promise<{
     success: boolean;
     error?: string;
+    /** What to do about a rejected credential, for the caller to render. */
+    hint?: string;
     details?: { messages: number; folders: number };
   }> {
     let client: ImapFlow | undefined;
@@ -214,7 +247,7 @@ export default class ConnectionManager implements IConnectionManager {
         auth = { user: account.username, pass: account.password };
       }
 
-      client = new ImapFlow({
+      client = createImapClient({
         host: account.imap.host,
         port: account.imap.port,
         secure: account.imap.tls,
@@ -225,6 +258,7 @@ export default class ConnectionManager implements IConnectionManager {
         logger: false,
       });
       await client.connect();
+      await assertImapUpgraded(client, account);
 
       const mailboxes = await client.list();
       let messageCount = 0;
@@ -233,15 +267,16 @@ export default class ConnectionManager implements IConnectionManager {
           messages: true,
           unseen: true,
         });
-        messageCount = inbox.messages ?? 0;
+        messageCount = inbox ? (inbox.messages ?? 0) : 0;
       } catch {
         // INBOX may not exist (e.g. Google Workspace uses "All Mail")
-        if (mailboxes.length > 0) {
+        const firstMailbox = mailboxes[0];
+        if (firstMailbox) {
           try {
-            const first = await client.status(mailboxes[0].path, {
+            const first = await client.status(firstMailbox.path, {
               messages: true,
             });
-            messageCount = first.messages ?? 0;
+            messageCount = first ? (first.messages ?? 0) : 0;
           } catch {
             /* ignore — connection still works */
           }
@@ -259,6 +294,7 @@ export default class ConnectionManager implements IConnectionManager {
       return {
         success: false,
         error: err instanceof Error ? err.message : String(err),
+        hint: authFailureHint(err, account),
       };
     } finally {
       if (client) {
@@ -274,7 +310,7 @@ export default class ConnectionManager implements IConnectionManager {
   static async testSmtp(
     account: AccountConfig,
     oauthService?: OAuthService,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; hint?: string }> {
     let transport: Transporter | undefined;
     try {
       let auth: SmtpAuth;
@@ -294,6 +330,7 @@ export default class ConnectionManager implements IConnectionManager {
       return {
         success: false,
         error: err instanceof Error ? err.message : String(err),
+        hint: authFailureHint(err, account),
       };
     } finally {
       transport?.close();

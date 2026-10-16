@@ -57,7 +57,7 @@ describe('Connection Modes', () => {
     it('should fetch full email content without encryption', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        const email = await services.imapService.getEmail(account.name, list.items[0].id);
+        const email = await services.imapService.getEmail(account.name, list.items[0]!.id);
         expect(email.subject).toBeTruthy();
       }
     });
@@ -65,8 +65,8 @@ describe('Connection Modes', () => {
     it('should set flags without encryption', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        await services.imapService.setFlags(account.name, list.items[0].id, 'INBOX', 'read');
-        const flags = await services.imapService.getEmailFlags(account.name, list.items[0].id);
+        await services.imapService.setFlags(account.name, list.items[0]!.id, 'INBOX', 'read');
+        const flags = await services.imapService.getEmailFlags(account.name, list.items[0]!.id);
         expect(flags.seen).toBe(true);
       }
     });
@@ -77,6 +77,14 @@ describe('Connection Modes', () => {
   // -------------------------------------------------------------------------
 
   describe('STARTTLS', () => {
+    // GreenMail advertises STARTTLS on neither its plain SMTP (:3025) nor its
+    // plain IMAP (:3143) port (verified against its CAPABILITY response). That
+    // makes it the ideal negative fixture: a `starttls = true` account MUST be
+    // refused rather than silently fall back to an unencrypted session. The
+    // positive "STARTTLS actually upgrades" path cannot be proven with
+    // GreenMail — encrypted-transport success is covered by the Implicit
+    // SSL/TLS block below (IMAPS/SMTPS), and by the live Proton Bridge account
+    // in production.
     let services: TestServices;
     const account = buildStarttlsAccount();
 
@@ -88,20 +96,11 @@ describe('Connection Modes', () => {
       await services.connections.closeAll();
     });
 
-    it('should connect via IMAP with STARTTLS', async () => {
-      const mailboxes = await services.imapService.listMailboxes(account.name);
-      expect(mailboxes.find((m) => m.path === 'INBOX')).toBeDefined();
+    it('refuses an IMAP connection that could not upgrade to TLS', async () => {
+      await expect(services.imapService.listMailboxes(account.name)).rejects.toThrow(/STARTTLS/i);
     });
 
-    it('should list emails via IMAP with STARTTLS', async () => {
-      const list = await services.imapService.listEmails(account.name);
-      expect(list.items).toBeInstanceOf(Array);
-    });
-
-    it('should send email via SMTP with STARTTLS', async () => {
-      // GreenMail's SMTP does not support the STARTTLS upgrade command.
-      // Verify the connection attempt produces the expected STARTTLS error
-      // rather than a generic connection failure.
+    it('refuses an SMTP send that could not upgrade to TLS', async () => {
       await expect(
         services.smtpService.sendEmail(account.name, {
           to: ['bob@localhost'],
@@ -111,21 +110,15 @@ describe('Connection Modes', () => {
       ).rejects.toThrow(/STARTTLS/i);
     });
 
-    it('should fetch full email content via STARTTLS', async () => {
-      const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
-      if (list.items.length > 0) {
-        const email = await services.imapService.getEmail(account.name, list.items[0].id);
-        expect(email.subject).toBeTruthy();
-      }
-    });
-
-    it('should set flags via STARTTLS', async () => {
-      const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
-      if (list.items.length > 0) {
-        await services.imapService.setFlags(account.name, list.items[0].id, 'INBOX', 'read');
-        const flags = await services.imapService.getEmailFlags(account.name, list.items[0].id);
-        expect(flags.seen).toBe(true);
-      }
+    it('never delivers mail when the SMTP upgrade is refused', async () => {
+      // A refused upgrade must fail closed — nothing should reach the mailbox.
+      await expect(
+        services.smtpService.sendEmail(account.name, {
+          to: ['bob@localhost'],
+          subject: 'STARTTLS must-not-deliver',
+          body: 'should never arrive',
+        }),
+      ).rejects.toThrow();
     });
   });
 
@@ -167,7 +160,7 @@ describe('Connection Modes', () => {
     it('should fetch full email content via IMAPS', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        const email = await services.imapService.getEmail(account.name, list.items[0].id);
+        const email = await services.imapService.getEmail(account.name, list.items[0]!.id);
         expect(email.subject).toBeTruthy();
       }
     });
@@ -175,8 +168,8 @@ describe('Connection Modes', () => {
     it('should set flags via IMAPS', async () => {
       const list = await services.imapService.listEmails(account.name, { pageSize: 1 });
       if (list.items.length > 0) {
-        await services.imapService.setFlags(account.name, list.items[0].id, 'INBOX', 'flag');
-        const flags = await services.imapService.getEmailFlags(account.name, list.items[0].id);
+        await services.imapService.setFlags(account.name, list.items[0]!.id, 'INBOX', 'flag');
+        const flags = await services.imapService.getEmailFlags(account.name, list.items[0]!.id);
         expect(flags.flagged).toBe(true);
       }
     });

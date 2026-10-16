@@ -2,7 +2,8 @@
  * MCP client installation subcommands.
  *
  * Manages registering / unregistering the email-mcp server with MCP host
- * applications such as Claude Desktop, VS Code, Cursor, and Windsurf.
+ * applications: Claude Desktop, Cursor, and Windsurf. VS Code is not
+ * auto-detected — the README documents a manual snippet for it.
  *
  * - install          — interactive wizard to register with detected MCP clients
  * - install status   — show which clients are configured

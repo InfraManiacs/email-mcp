@@ -57,7 +57,7 @@ describe('Email Label Operations', () => {
         subject: 'Label test email',
       });
       expect(list.items.length).toBeGreaterThanOrEqual(1);
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       // Add label
       await services.imapService.addLabel(TEST_ACCOUNT_NAME, emailId, 'INBOX', 'MyTag');

@@ -66,6 +66,8 @@ export interface AccountConfig {
   username: string;
   password?: string;
   oauth2?: OAuth2Config;
+  /** Optional per-account attachment cap (MB, base64-encoded total). */
+  maxAttachmentMb?: number;
   imap: ImapConfig;
   smtp: SmtpConfig;
 }
@@ -137,10 +139,70 @@ export interface HooksConfig {
   calendarConfirm?: boolean;
 }
 
+/** Streamable HTTP server binding — see ServerConfigSchema for precedence. */
+export interface ServerConfig {
+  host: string;
+  port: number;
+  path: string;
+  /** Bearer token; empty = no auth (loopback only). */
+  token: string;
+  allowedHosts: string[];
+}
+
+/** Verification-code / magic-link catching — see VerificationConfigSchema. */
+export interface VerificationConfig {
+  enabled: boolean;
+  autoCopy: boolean;
+  /** Ask with a native dialog before touching the clipboard (macOS). */
+  confirmCopy: boolean;
+  notify: boolean;
+  copyLinks: boolean;
+  /** Caught links: offer to open in the browser, or copy like a code. */
+  linkAction: 'open' | 'copy';
+  clearAfterSeconds: number;
+  maxAgeMinutes: number;
+  accounts: string[];
+  senderAllowlist: string[];
+  senderDenylist: string[];
+}
+
+/** Outbound send settings — see SendConfigSchema for the cap rationale. */
+export interface SendConfig {
+  /** APPEND a copy of each sent message to the IMAP Sent folder (opt-in). */
+  saveToSent: boolean;
+  maxAttachmentMb: number;
+}
+
+/** Inbound attachment handling — see AttachmentsConfigSchema for scope. */
+export interface AttachmentsConfig {
+  autoDownload: boolean;
+}
+
+/** Scheduler settings — see SchedulerConfigSchema for defaults and rationale. */
+export interface SchedulerConfig {
+  sentRetentionDays: number;
+}
+
+/** Local mirror settings — see CacheConfigSchema for defaults and rationale. */
+export interface CacheConfig {
+  enabled: boolean;
+  mailboxes: string[];
+  windowDays: number;
+  bodyMessages: number;
+  maxSizeMb: number;
+  syncInterval: number;
+}
+
 export interface AppConfig {
   settings: {
     rateLimit: number;
     readOnly: boolean;
+    server: ServerConfig;
+    verification: VerificationConfig;
+    send: SendConfig;
+    attachments: AttachmentsConfig;
+    scheduler: SchedulerConfig;
+    cache: CacheConfig;
     watcher: WatcherConfig;
     hooks: HooksConfig;
   };
@@ -155,8 +217,10 @@ export interface Mailbox {
   name: string;
   path: string;
   specialUse?: string;
-  totalMessages: number;
-  unseenMessages: number;
+  /** Undefined when the IMAP STATUS call failed — distinct from a genuinely empty mailbox. */
+  totalMessages?: number;
+  /** Undefined when the IMAP STATUS call failed — distinct from "nothing unread". */
+  unseenMessages?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +244,18 @@ export interface EmailMeta {
 export interface AttachmentMeta {
   filename: string;
   mimeType: string;
+  /** BODYSTRUCTURE octet count — the ENCODED size, so ~33% above the real
+   *  bytes for base64 parts. Treat as approximate. */
   size: number;
+  /** IMAP part path ("2", "1.2") — the unambiguous way to download this part. */
+  partId?: string;
+  /** Content-Transfer-Encoding as reported by the server ("base64", …). */
+  encoding?: string;
+  /** Content-ID without angle brackets; what HTML `cid:` references point at. */
+  contentId?: string;
+  /** True for parts shipped as inline content (cid images) rather than as
+   *  classic attachments. */
+  inline?: boolean;
 }
 
 export interface Email extends EmailMeta {
@@ -193,6 +268,12 @@ export interface Email extends EmailMeta {
   references?: string[];
   attachments: AttachmentMeta[];
   headers: Record<string, string>;
+  /**
+   * Machine-readable status of a bounce (multipart/report's
+   * message/delivery-status part): Action, Status, Diagnostic-Code. Separate
+   * from the body so it can never displace the human-readable explanation.
+   */
+  deliveryStatus?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +349,8 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   variables: string[];
+  /** When true, the body is HTML and variables are HTML-escaped on apply. */
+  html?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +362,8 @@ export interface ProviderConfig {
   domains: string[];
   imap: ImapConfig;
   smtp: SmtpConfig;
+  /** Documented total-message cap (MB, base64-encoded) this provider accepts. */
+  maxAttachmentMb?: number;
   notes?: string;
   oauth2?: {
     authUrl: string;
@@ -367,6 +452,17 @@ export interface ScheduledEmail {
   createdAt: string;
   status: 'pending' | 'sending' | 'sent' | 'failed';
   attempts: number;
+  /**
+   * When a runner claimed this entry. Lock staleness is measured from here,
+   * not from createdAt — a long-scheduled email is not a stale lock.
+   */
+  claimedAt?: string;
+  /**
+   * Set immediately before handing the message to SMTP. Its presence after a
+   * crash is what separates "never reached the server, safe to retry" from
+   * "may already be delivered, must not be resent blindly".
+   */
+  sendStartedAt?: string;
   lastError?: string;
   draftMessageId?: string;
   draftMailbox?: string;

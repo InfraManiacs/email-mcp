@@ -25,6 +25,7 @@ async function testAccount(account: AccountConfig): Promise<boolean> {
     );
   } else {
     spinner.stop(`IMAP  ✗ ${account.imap.host}:${account.imap.port} — ${imapResult.error}`);
+    if (imapResult.hint) log.warn(imapResult.hint);
     ok = false;
   }
 
@@ -35,6 +36,7 @@ async function testAccount(account: AccountConfig): Promise<boolean> {
     spinner.stop(`SMTP  ✓ ${account.smtp.host}:${account.smtp.port} — authenticated`);
   } else {
     spinner.stop(`SMTP  ✗ ${account.smtp.host}:${account.smtp.port} — ${smtpResult.error}`);
+    if (smtpResult.hint) log.warn(smtpResult.hint);
     ok = false;
   }
 

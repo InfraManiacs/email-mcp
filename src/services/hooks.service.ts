@@ -9,9 +9,10 @@
  * - Falls back to logging if sampling is unavailable
  */
 
-import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { Server } from '@modelcontextprotocol/server';
 import { mcpLog } from '../logging.js';
 import type { EmailMeta, HookRule, HooksConfig } from '../types/index.js';
+import { matchesPattern } from '../utils/glob.js';
 import type { NewEmailEvent } from './event-bus.js';
 import eventBus from './event-bus.js';
 import type ImapService from './imap.service.js';
@@ -51,43 +52,27 @@ interface RuleNoMatch {
 type StaticMatchOutcome = RuleMatchResult | RuleNoMatch;
 
 // ---------------------------------------------------------------------------
-// Pattern matching helpers
-// ---------------------------------------------------------------------------
-
-/** Convert a glob-like pattern (with `*` wildcards and `|` OR) to a RegExp. */
-function globToRegex(pattern: string): RegExp {
-  const parts = pattern
-    .split('|')
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const regexParts = parts.map((part) => {
-    const escaped = part.replace(/[.+?^${}()[\]\\]/g, '\\$&');
-    return escaped.replace(/\*/g, '.*');
-  });
-  return new RegExp(`^(?:${regexParts.join('|')})$`, 'i');
-}
-
-/** Test whether a value matches a glob pattern (case-insensitive). */
-function matchesPattern(pattern: string, value: string): boolean {
-  try {
-    return globToRegex(pattern).test(value);
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // HooksService
 // ---------------------------------------------------------------------------
 
 export default class HooksService {
   private config: HooksConfig;
 
+  /** Whether calendar-event creation may save email attachments locally. */
+  private readonly autoDownloadAttachments: boolean;
+
   private imapService: ImapService;
 
   private lowLevelServer: Server | null = null;
 
-  private samplingSupported = false;
+  /**
+   * Latches to `true` once a sampling request fails structurally (the client
+   * has no sampling capability, or is a 2026-07-28-era connection where the
+   * server→client request channel was removed — SEP-2577). Subsequent batches
+   * then skip straight to notify instead of re-attempting a doomed request.
+   * Transient failures do not latch.
+   */
+  private samplingUnavailable = false;
 
   private pendingEmails: BatchEmail[] = [];
 
@@ -97,8 +82,6 @@ export default class HooksService {
 
   private rateResetTimer: ReturnType<typeof setInterval> | null = null;
 
-  private started = false;
-
   private readonly resolvedSystemPrompt: string;
 
   private readonly notifier: NotifierService;
@@ -107,7 +90,21 @@ export default class HooksService {
 
   private static readonly MAX_SAMPLING_PER_MIN = 10;
 
-  constructor(config: HooksConfig, imapService: ImapService) {
+  /**
+   * Named handler so stop() can detach exactly this subscription. Other
+   * services (sync engine, verification catcher) share the same channel, so
+   * removeAllListeners here would silently unsubscribe them.
+   */
+  private readonly onNewEmailHandler = (event: NewEmailEvent): void => {
+    this.onNewEmail(event);
+  };
+
+  constructor(
+    config: HooksConfig,
+    imapService: ImapService,
+    opts: { autoDownloadAttachments: boolean } = { autoDownloadAttachments: true },
+  ) {
+    this.autoDownloadAttachments = opts.autoDownloadAttachments;
     this.config = config;
     this.imapService = imapService;
     this.notifier = new NotifierService(config.alerts);
@@ -130,28 +127,19 @@ export default class HooksService {
 
   /**
    * Start listening for email events.
-   * Call after MCP server is connected so we can access the low-level server.
+   *
+   * Pass the low-level MCP `Server` (from `mcpServer.server`) when one is
+   * available — it is used for resource-update notifications and, on legacy
+   * connections, opportunistic AI-triage sampling. Pass `null` for transports
+   * with no persistent connection (stateless HTTP), where notifications and
+   * sampling do not apply and triage degrades to notify.
    */
-  start(lowLevelServer: Server, clientCapabilities: { sampling?: boolean }): void {
+  start(lowLevelServer: Server | null): void {
     this.lowLevelServer = lowLevelServer;
-    this.samplingSupported = clientCapabilities.sampling === true;
-
-    if (this.started) {
-      // Client reconnected — server reference updated above, no need to re-register listeners.
-      mcpLog(
-        'info',
-        'hooks',
-        `Hooks reconnected: sampling=${this.samplingSupported ? 'yes' : 'no'}`,
-      ).catch(() => {});
-      return;
-    }
-    this.started = true;
 
     if (this.config.onNewEmail === 'none') return;
 
-    eventBus.on('email:new', (event: NewEmailEvent) => {
-      this.onNewEmail(event);
-    });
+    eventBus.on('email:new', this.onNewEmailHandler);
 
     // Rate limit reset every 60s
     this.rateResetTimer = setInterval(() => {
@@ -159,16 +147,18 @@ export default class HooksService {
     }, 60_000);
 
     const ruleCount = this.config.rules.length;
+    const triageMode =
+      this.config.onNewEmail === 'triage'
+        ? 'triage (sampling opportunistic)'
+        : this.config.onNewEmail;
     mcpLog(
       'info',
       'hooks',
-      `Hooks active: mode=${this.config.onNewEmail}, preset=${this.config.preset}, ` +
-        `rules=${ruleCount}, sampling=${this.samplingSupported ? 'yes' : 'no'}`,
+      `Hooks active: mode=${triageMode}, preset=${this.config.preset}, rules=${ruleCount}`,
     ).catch(() => {});
   }
 
   stop(): void {
-    this.started = false;
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
@@ -179,7 +169,7 @@ export default class HooksService {
       this.rateResetTimer = null;
     }
     this.notifier.stop();
-    eventBus.removeAllListeners('email:new');
+    eventBus.off('email:new', this.onNewEmailHandler);
   }
 
   // -------------------------------------------------------------------------
@@ -228,7 +218,7 @@ export default class HooksService {
 
     // AI triage for remaining emails
     if (needsTriage.length > 0) {
-      if (this.config.onNewEmail === 'triage' && this.samplingSupported) {
+      if (this.config.onNewEmail === 'triage' && !this.samplingUnavailable) {
         await this.triageBatch(needsTriage);
       } else {
         await this.notifyBatch(needsTriage);
@@ -293,18 +283,24 @@ export default class HooksService {
     // Apply flag
     if (actions.flag) {
       try {
-        await this.imapService.setFlags(email.account, email.mailbox, email.meta.id, 'flag');
-      } catch {
-        await mcpLog('warning', 'hooks', `Could not flag email ${email.meta.id}`);
+        await this.imapService.setFlags(email.account, email.meta.id, email.mailbox, 'flag');
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await mcpLog('warning', 'hooks', `Could not flag email ${email.meta.id}: ${errMsg}`);
       }
     }
 
     // Mark read
     if (actions.markRead) {
       try {
-        await this.imapService.setFlags(email.account, email.mailbox, email.meta.id, 'read');
-      } catch {
-        await mcpLog('warning', 'hooks', `Could not mark email ${email.meta.id} as read`);
+        await this.imapService.setFlags(email.account, email.meta.id, email.mailbox, 'read');
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await mcpLog(
+          'warning',
+          'hooks',
+          `Could not mark email ${email.meta.id} as read: ${errMsg}`,
+        );
       }
     }
 
@@ -415,7 +411,19 @@ export default class HooksService {
       await this.applyTriageResults(emails, triageResults);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      await mcpLog('warning', 'hooks', `Sampling failed: ${errMsg} — falling back to notify`);
+      // Latch off when the failure is structural (no sampling capability, or a
+      // 2026-07-28-era connection with no server→client request channel) so we
+      // stop re-attempting a doomed request every batch. Transient errors don't.
+      if (/sampl|capab|2026|not support|unsupported|method not found|-3260|-3204/i.test(errMsg)) {
+        this.samplingUnavailable = true;
+        await mcpLog(
+          'notice',
+          'hooks',
+          'AI triage sampling is unavailable on this client — switching to notify for this session',
+        );
+      } else {
+        await mcpLog('warning', 'hooks', `Sampling failed: ${errMsg} — falling back to notify`);
+      }
       await this.notifyBatch(emails);
     }
   }
@@ -463,9 +471,10 @@ export default class HooksService {
     // Auto-flag
     if (this.config.autoFlag && triage.flag) {
       try {
-        await this.imapService.setFlags(email.account, email.mailbox, email.meta.id, 'flag');
-      } catch {
-        await mcpLog('warning', 'hooks', `Could not flag email ${email.meta.id}`);
+        await this.imapService.setFlags(email.account, email.meta.id, email.mailbox, 'flag');
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await mcpLog('warning', 'hooks', `Could not flag email ${email.meta.id}: ${errMsg}`);
       }
     }
 
@@ -535,11 +544,12 @@ export default class HooksService {
         );
         if (icsContents.length > 0) {
           const events = calSvc.extractFromParts(icsContents);
-          if (events.length > 0) {
-            start = new Date(events[0].start);
-            end = new Date(events[0].end);
-            location = events[0].location;
-            icsUid = events[0].uid;
+          const event = events[0];
+          if (event) {
+            start = new Date(event.start);
+            end = new Date(event.end);
+            location = event.location;
+            icsUid = event.uid;
           }
         }
       } catch {
@@ -549,9 +559,9 @@ export default class HooksService {
       const meetingUrl = extractMeetingUrl(combined);
       const conference = extractConferenceDetails(bodyText !== '' ? bodyText : bodyHtml);
 
-      // Save attachments
+      // Save attachments (unless disabled via [settings.attachments] auto_download)
       let savedAttachments: Awaited<ReturnType<typeof this.imapService.saveEmailAttachments>> = [];
-      if (full.attachments.length > 0) {
+      if (this.autoDownloadAttachments && full.attachments.length > 0) {
         const destDir = path.join(
           CALENDAR_ATTACHMENTS_DIR,
           `${email.account}-${email.meta.id}`.replace(/[^a-zA-Z0-9-_]/g, '_'),

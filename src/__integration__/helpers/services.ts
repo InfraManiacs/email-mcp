@@ -11,9 +11,17 @@ export interface TestServices {
 }
 
 export function createTestServices(...accounts: AccountConfig[]): TestServices {
+  return createTestServicesWith({}, ...accounts);
+}
+
+/** Same, with send options — `saveToSent` is off by default in production. */
+export function createTestServicesWith(
+  sendOptions: { saveToSent?: boolean },
+  ...accounts: AccountConfig[]
+): TestServices {
   const connections = new ConnectionManager(accounts);
   const imapService = new ImapService(connections);
   const rateLimiter = new RateLimiter(100);
-  const smtpService = new SmtpService(connections, rateLimiter, imapService);
+  const smtpService = new SmtpService(connections, rateLimiter, imapService, sendOptions);
   return { connections, imapService, smtpService };
 }

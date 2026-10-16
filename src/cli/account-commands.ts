@@ -21,30 +21,24 @@ import {
   text,
 } from '@clack/prompts';
 
-import { CONFIG_FILE, configExists, loadRawConfig, saveConfig } from '../config/loader.js';
+import { CONFIG_FILE, configExists, loadRawConfig, saveConfigValidated } from '../config/loader.js';
+import { detectProvider } from '../config/providers.js';
 import type { RawAccountConfig, RawAppConfig } from '../config/schema.js';
-import { AppConfigFileSchema } from '../config/schema.js';
 import ConnectionManager from '../connections/manager.js';
 import type { AccountConfig } from '../types/index.js';
-import ensureInteractive from './guard.js';
-import { detectProvider } from './providers.js';
+import ensureInteractive, { assertNotCancel, CancelledError } from './guard.js';
+import {
+  KEYCHAIN_SERVICE,
+  keychainRefFor,
+  keychainSupported,
+  runKeychainStore,
+  storeSecretNonInteractive,
+} from './keychain-store.js';
+import { migrateAccountSecret } from './secret-migrate.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-class CancelledError extends Error {
-  constructor() {
-    super('Operation cancelled.');
-  }
-}
-
-function assertNotCancel<T>(value: T | symbol): asserts value is T {
-  if (isCancel(value)) {
-    cancel('Operation cancelled.');
-    throw new CancelledError();
-  }
-}
 
 function formatSecurity(tls: boolean, starttls: boolean): string {
   if (tls) return 'TLS';
@@ -353,6 +347,7 @@ async function testConnections(account: AccountConfig): Promise<boolean> {
     );
   } else {
     spinner.stop(`IMAP ✗ ${imapResult.error}`);
+    if (imapResult.hint) log.warn(imapResult.hint);
   }
 
   spinner.start('Testing SMTP connection…');
@@ -361,6 +356,7 @@ async function testConnections(account: AccountConfig): Promise<boolean> {
     spinner.stop(`SMTP ✓ ${account.smtp.host}:${account.smtp.port} — authenticated`);
   } else {
     spinner.stop(`SMTP ✗ ${smtpResult.error}`);
+    if (smtpResult.hint) log.warn(smtpResult.hint);
   }
 
   if (!imapResult.success || !smtpResult.success) {
@@ -453,6 +449,47 @@ async function listAccounts(): Promise<void> {
 /**
  * Interactive wizard to add a new email account.
  */
+/**
+ * Offer to put the password in the OS keychain instead of config.toml.
+ *
+ * Returns what belongs in the `password` field: a `keychain:<name>` reference
+ * when the secret was stored, otherwise the plaintext the user typed.
+ * `account set-secret` could already do this, but only after the fact and only
+ * for a user who discovered it — so every account this wizard created began
+ * life with its password in a file.
+ *
+ * The secret is handed over non-interactively because this process already
+ * holds it; asking the user to retype it into the OS prompt buys nothing here.
+ * On Linux that path is argv-clean (stdin); on macOS the value sits in the
+ * child's argv for the few milliseconds it runs, which is the same trade
+ * `migrate-secret` documents and makes for the same reason: a brief argv
+ * exposure replaces a permanent plaintext copy on disk.
+ */
+async function offerKeychainStorage(accountName: string, password: string): Promise<string> {
+  if (!keychainSupported()) return password;
+
+  const useKeychain = await confirm({
+    message: 'Store the password in the OS keychain instead of config.toml?',
+    initialValue: true,
+  });
+  if (isCancel(useKeychain) || !useKeychain) return password;
+
+  try {
+    await storeSecretNonInteractive(accountName, password);
+  } catch (err) {
+    // Never lose the account over this: fall back to the file, which
+    // saveConfig writes owner-only.
+    log.warning(
+      `Could not store the secret (${err instanceof Error ? err.message : String(err)}). ` +
+        'Keeping it in config.toml, which is written owner-only (0600).',
+    );
+    return password;
+  }
+
+  log.success('Password stored in the OS keychain; config.toml only references it.');
+  return keychainRefFor(accountName);
+}
+
 async function addAccount(): Promise<void> {
   ensureInteractive();
   intro('email-mcp › Add Account');
@@ -488,8 +525,9 @@ async function addAccount(): Promise<void> {
   const ok = await testConnections(testAccount);
   if (!ok) return;
 
-  // 5. Build and save
-  const newAccount = buildRawAccount(identity, creds, server);
+  // 5. Offer to keep the password out of config.toml, then build and save
+  const credential = await offerKeychainStorage(identity.name, creds.password);
+  const newAccount = buildRawAccount(identity, { ...creds, password: credential }, server);
   const config: RawAppConfig = existingConfig
     ? {
         ...existingConfig,
@@ -499,6 +537,40 @@ async function addAccount(): Promise<void> {
         settings: {
           rate_limit: 10,
           read_only: false,
+          send: { max_attachment_mb: 25, save_to_sent: false },
+          attachments: { auto_download: true },
+          scheduler: { sent_retention_days: 90 },
+          server: {
+            host: '127.0.0.1',
+            port: 8080,
+            path: '/mcp',
+            token: '',
+            allowed_hosts: [],
+          },
+          verification: {
+            enabled: true,
+            auto_copy: true,
+            confirm_copy: false,
+            notify: true,
+            copy_links: true,
+            link_action: 'open' as const,
+            clear_after_seconds: 60,
+            max_age_minutes: 10,
+            accounts: [],
+            sender_allowlist: [],
+            sender_denylist: [],
+          },
+          cache: {
+            enabled: true,
+            mailboxes: ['INBOX'],
+            // 0, matching the schema default: a bounded window leaves the
+            // mirror holding a slice, and a slice cannot answer "how many
+            // messages are in this mailbox", so every listing goes live.
+            window_days: 0,
+            body_messages: 500,
+            max_size_mb: 500,
+            sync_interval: 300,
+          },
           watcher: {
             enabled: false,
             folders: ['INBOX'],
@@ -527,8 +599,7 @@ async function addAccount(): Promise<void> {
         accounts: [newAccount],
       };
 
-  AppConfigFileSchema.parse(config);
-  await saveConfig(config);
+  await saveConfigValidated(config);
   log.success(`Account "${identity.name}" added. Config saved to ${CONFIG_FILE}`);
 
   note(
@@ -580,7 +651,7 @@ async function editAccount(nameArg?: string): Promise<void> {
     }
   } else if (accounts.length === 1) {
     accountIndex = 0;
-    log.info(`Editing account "${accounts[0].name}".`);
+    log.info(`Editing account "${accounts[0]?.name}".`);
   } else {
     const chosen = await select({
       message: 'Which account do you want to edit?',
@@ -595,6 +666,10 @@ async function editAccount(nameArg?: string): Promise<void> {
   }
 
   const current = accounts[accountIndex];
+  if (!current) {
+    cancel('Account not found.');
+    return;
+  }
 
   // Field selector — let user choose what to edit
   const fields = await select({
@@ -696,8 +771,7 @@ async function editAccount(nameArg?: string): Promise<void> {
     accounts: updatedAccounts,
   };
 
-  AppConfigFileSchema.parse(updatedConfig);
-  await saveConfig(updatedConfig);
+  await saveConfigValidated(updatedConfig);
   log.success(`Account "${identity.name}" updated. Config saved to ${CONFIG_FILE}`);
   outro('Done!');
 }
@@ -757,6 +831,10 @@ async function deleteAccount(nameArg?: string): Promise<void> {
   }
 
   const target = accounts[accountIndex];
+  if (!target) {
+    cancel('Account not found.');
+    return;
+  }
 
   // Require explicit confirmation
   const confirmed = await confirm({
@@ -775,10 +853,48 @@ async function deleteAccount(nameArg?: string): Promise<void> {
     accounts: updatedAccounts,
   };
 
-  AppConfigFileSchema.parse(updatedConfig);
-  await saveConfig(updatedConfig);
+  await saveConfigValidated(updatedConfig);
   log.success(`Account "${target.name}" deleted. Config saved to ${CONFIG_FILE}`);
   outro('Done!');
+}
+
+/**
+ * Store an account's secret in the macOS Keychain and print the config line to
+ * use instead of a plaintext password. The secret is typed into security's own
+ * prompt (see keychain-store.ts) — it never reaches this process or argv.
+ */
+async function setSecret(name?: string): Promise<void> {
+  if (!name) {
+    console.error('Usage: email-mcp account set-secret <account-name>');
+    process.exitCode = 1;
+    return;
+  }
+  if (process.platform !== 'darwin') {
+    console.error(
+      'set-secret uses the macOS Keychain (the "security" CLI) and only runs on macOS.\n' +
+        'On other platforms, store the secret in an environment variable and set\n' +
+        `  password = "env:MY_VAR"\nin the account config instead.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Storing the secret for account "${name}" in the macOS Keychain`);
+  console.log(
+    `(service "${KEYCHAIN_SERVICE}"). You will be prompted by macOS — nothing is echoed.\n`,
+  );
+  try {
+    await runKeychainStore(name);
+  } catch (err) {
+    console.error(
+      `Failed to store the secret: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`\n✅ Stored. In your config.toml, set this account's credential to:\n`);
+  console.log(`  password = "${keychainRefFor(name)}"\n`);
+  console.log('Then remove any plaintext password line for this account.');
 }
 
 // ---------------------------------------------------------------------------
@@ -793,12 +909,16 @@ Subcommands:
   add               Add a new email account interactively
   edit [name]       Edit an existing account
   delete [name]     Remove an account
+  set-secret <name>     Store a NEW secret in the OS keychain (prompts; no plaintext)
+  migrate-secret <name> Move an existing plaintext password into the OS keychain
 
 Examples:
   email-mcp account list
   email-mcp account add
   email-mcp account edit personal
   email-mcp account delete work
+  email-mcp account set-secret personal
+  email-mcp account migrate-secret personal
 `);
 }
 
@@ -820,6 +940,18 @@ export default async function runAccountCommand(subcommand?: string, arg?: strin
       case 'rm':
       case 'remove':
         await deleteAccount(arg);
+        return;
+      case 'set-secret':
+      case 'set-password':
+        await setSecret(arg);
+        return;
+      case 'migrate-secret':
+        if (!arg) {
+          console.error('Usage: email-mcp account migrate-secret <account-name>');
+          process.exitCode = 1;
+          return;
+        }
+        await migrateAccountSecret(arg);
         return;
       default:
         printAccountUsage();

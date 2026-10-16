@@ -74,7 +74,7 @@ describe('Email Read Operations', () => {
       });
 
       expect(result.items.length).toBeGreaterThanOrEqual(1);
-      expect(result.items[0].subject).toContain('Alice');
+      expect(result.items[0]!.subject).toContain('Alice');
     });
   });
 
@@ -85,7 +85,7 @@ describe('Email Read Operations', () => {
   describe('getEmail', () => {
     it('should fetch full email content', async () => {
       const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, { pageSize: 1 });
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       const email = await services.imapService.getEmail(TEST_ACCOUNT_NAME, emailId);
 
@@ -98,13 +98,94 @@ describe('Email Read Operations', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // body format handling
+  // ---------------------------------------------------------------------------
+
+  describe('body parts', () => {
+    async function seededEmail(subject: string) {
+      const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, { pageSize: 50 });
+      const meta = list.items.find((m) => m.subject === subject);
+      if (!meta) throw new Error(`seeded email "${subject}" not found in INBOX`);
+      return services.imapService.getEmail(TEST_ACCOUNT_NAME, meta.id);
+    }
+
+    it('returns both bodies of a multipart/alternative message', async () => {
+      await seedEmail({
+        subject: 'AltBody',
+        text: 'plain variant here',
+        html: '<p>html <b>variant</b> here</p>',
+      });
+      await waitForDelivery();
+
+      const email = await seededEmail('AltBody');
+
+      expect(email.bodyText).toContain('plain variant here');
+      expect(email.bodyHtml).toContain('<b>variant</b>');
+    });
+
+    it('lists an inline cid image and downloads it by part id', async () => {
+      const png = Buffer.from('89504e470d0a1a0a', 'hex');
+      await seedEmail({
+        subject: 'InlineLogo',
+        text: 'logo attached inline',
+        html: '<p>Logo: <img src="cid:logo@x"></p>',
+        attachments: [
+          { filename: 'logo.png', content: png, contentType: 'image/png', cid: 'logo@x' },
+        ],
+      });
+      await waitForDelivery();
+
+      const email = await seededEmail('InlineLogo');
+      const inline = email.attachments.find((a) => a.contentId === 'logo@x');
+
+      expect(inline).toBeDefined();
+      expect(inline?.inline).toBe(true);
+
+      const dl = await services.imapService.downloadAttachment(
+        TEST_ACCOUNT_NAME,
+        email.id,
+        'INBOX',
+        {
+          partId: inline?.partId ?? '',
+        },
+      );
+      expect(Buffer.from(dl.contentBase64, 'base64').toString('hex')).toBe(png.toString('hex'));
+    });
+
+    it('never uses an attached message as the body', async () => {
+      const attachedEml = [
+        'From: inner@localhost',
+        'To: test@localhost',
+        'Subject: Inner',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'inner attached body',
+        '',
+      ].join('\r\n');
+      await seedEmail({
+        subject: 'OuterFwd',
+        html: '<p>outer html body</p>',
+        attachments: [
+          { filename: 'forwarded.eml', content: attachedEml, contentType: 'message/rfc822' },
+        ],
+      });
+      await waitForDelivery();
+
+      const email = await seededEmail('OuterFwd');
+
+      expect(email.bodyText ?? '').not.toContain('inner attached body');
+      expect(email.bodyHtml).toContain('outer html body');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // get_email_flags (status)
   // ---------------------------------------------------------------------------
 
   describe('getEmailFlags', () => {
     it('should return read/flag/label state', async () => {
       const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, { pageSize: 1 });
-      const emailId = list.items[0].id;
+      const emailId = list.items[0]!.id;
 
       const flags = await services.imapService.getEmailFlags(TEST_ACCOUNT_NAME, emailId);
 
