@@ -634,6 +634,8 @@ email = "you@gmail.com"
 full_name = "Your Name"
 password = "keychain:personal"  # or "env:VAR", or a plaintext app password
 # max_attachment_mb = 25  # optional per-account override (beats global + provider limits)
+# sent_mailbox = "INBOX.Sent Messages"  # optional, see "Sent-folder copies" below
+# save_to_sent = true                    # optional per-account override of the Gmail-skip guess
 
 [accounts.imap]
 host = "imap.gmail.com"
@@ -1141,15 +1143,30 @@ Other formats behave as follows:
   used as the body when the message carries no other text (forward-as-attachment,
   digests).
 
-**Sent-folder copies.** SMTP delivers mail; it does not file it. Gmail and
-Outlook capture sent mail server-side, so `[settings.send] save_to_sent`
-defaults to **false** — enabling it on those providers would give you two
-copies of everything. Turn it on for an IMAP host that does not capture sends
-itself. The copy carries the same `Message-ID` the server accepted, is flagged
+**Sent-folder copies.** SMTP delivers mail; it does not file it. `[settings.send]
+save_to_sent` defaults to **false**; turn it on for an IMAP host that does not
+capture sends itself. Gmail does capture sends server-side, so an account
+whose IMAP server advertises the `X-GM-EXT-1` capability is skipped
+automatically even with the setting on — filing a copy there would give you
+two of everything. Set the account's own `save_to_sent` to force the decision
+either way (`true` files anyway, `false` never files, regardless of the
+global setting or the Gmail guess).
+
+The copy carries the same `Message-ID` the server accepted, is flagged
 `\Seen`, and lands in the folder the server marks `\Sent` (or a folder named
-`Sent`, created if absent). It omits `Bcc`, which the MIME composer strips
-unconditionally. A failure to file never fails the send — the mail has already
-left, and saying otherwise would invite a duplicate send.
+`Sent`, created if absent). On a mailbox that carries several sent-shaped
+folders — a leftover `Sent` beside the one actually in use — that guess can
+land on an empty one; set the account's `sent_mailbox` to the full path
+(as `list_mailboxes` reports it) to settle it. The copy omits `Bcc`, which the
+MIME composer strips unconditionally.
+
+A failure to file never fails the send — the mail has already left, and
+saying otherwise would invite a duplicate send — but `send_draft` keeps the
+draft in that case rather than deleting the only remaining copy of the
+message. `send_email`, `reply_email`, `forward_email` and `send_draft` all
+report the outcome in their result's `sentCopy` field: `{kind: "filed", path}`,
+`{kind: "skipped"}` (setting off, or Gmail's own capture), or
+`{kind: "failed", error}`.
 
 Outbound HTML (`html: true`) is sent as `multipart/alternative` with a
 generated plain-text alternative. Forwards quote the original as converted

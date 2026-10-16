@@ -14,6 +14,7 @@ import {
   sanitizeSearchQuery,
 } from '../safety/validation.js';
 import type {
+  AccountConfig,
   AttachmentMeta,
   BulkResult,
   Contact,
@@ -28,6 +29,7 @@ import type {
   PaginatedResult,
   QuotaInfo,
   SenderStat,
+  SentCopyResult,
 } from '../types/index.js';
 import { unflowFormatFlowed } from '../utils/body-format.js';
 import { stripHtml } from '../utils/html.js';
@@ -1433,21 +1435,20 @@ export default class ImapService {
   }
 
   /**
-   * APPEND an already-sent message to the account's Sent folder.
+   * Resolve the folder `appendToSent` should file into.
    *
-   * SMTP delivers; it does not file a copy. Providers that capture sent mail
-   * server-side (Gmail, Outlook) make this unnecessary — and doing it anyway
-   * would show the user two copies — so the caller decides, behind an opt-in
-   * setting, and this method only carries it out.
-   *
-   * @returns the folder the copy landed in.
+   * `sentMailbox` settles it outright for a mailbox that carries several
+   * sent-shaped folders (a leftover `Sent` beside the server's actual
+   * `\Sent`-flagged one). Otherwise prefer the folder the server
+   * designates, then one plainly named "Sent", whatever its case.
    */
-  async appendToSent(accountName: string, raw: Buffer): Promise<string> {
-    const client = await this.connections.getImapClient(accountName);
-    const mailboxes = await client.list();
+  private static async resolveSentFolder(
+    client: ImapFlow,
+    account: AccountConfig,
+  ): Promise<string> {
+    if (account.sentMailbox) return account.sentMailbox;
 
-    // Prefer the folder the server designates; otherwise one plainly named
-    // "Sent", whatever its case.
+    const mailboxes = await client.list();
     const designated = mailboxes.find((mb) => mb.specialUse === '\\Sent');
     const byName = mailboxes.find((mb) => mb.path.toLowerCase() === 'sent');
     const sentPath = designated?.path ?? byName?.path;
@@ -1459,13 +1460,55 @@ export default class ImapService {
       // Creating it is what a mail client does, and the user opted in.
       await imapCommand('Creating the "Sent" mailbox', () => client.mailboxCreate('Sent'));
     }
-    const target = sentPath ?? 'Sent';
+    return sentPath ?? 'Sent';
+  }
 
-    // \Seen: the user wrote it, so it is not unread mail.
-    await imapCommand(`Appending a sent copy to "${target}"`, () =>
-      client.append(target, raw, ['\\Seen']),
-    );
-    return target;
+  /**
+   * Whether this account should APPEND its own copy of outgoing mail.
+   *
+   * Gmail files messages sent through its SMTP into Sent Mail itself, so an
+   * APPEND on top of that leaves the user with every sent message twice.
+   * Its IMAP server is identifiable by the X-GM-EXT-1 capability — a more
+   * reliable signal than matching on the hostname, since it also covers
+   * Google Workspace domains that don't look like gmail.com.
+   *
+   * `saveToSent` overrides the guess in either direction.
+   */
+  private static shouldFileSentCopy(account: AccountConfig, client: ImapFlow): boolean {
+    if (account.saveToSent !== undefined) return account.saveToSent;
+    // ImapFlow exposes capabilities as a Set on the client (see getCapabilities).
+    const caps = (client as unknown as Record<string, unknown>).capabilities as
+      | Set<string>
+      | undefined;
+    return !caps?.has('X-GM-EXT-1');
+  }
+
+  /**
+   * APPEND an already-sent message to the account's Sent folder.
+   *
+   * SMTP delivers; it does not file a copy. Never throws: the message has
+   * already been delivered, so a failed or skipped APPEND is reported back
+   * instead — treating it as a send failure would be worse than the
+   * original problem, and would invite a duplicate send.
+   */
+  async appendToSent(accountName: string, raw: Buffer): Promise<SentCopyResult> {
+    const client = await this.connections.getImapClient(accountName);
+    const account = this.connections.getAccount(accountName);
+
+    if (!ImapService.shouldFileSentCopy(account, client)) {
+      return { kind: 'skipped' };
+    }
+
+    try {
+      const target = await ImapService.resolveSentFolder(client, account);
+      // \Seen: the user wrote it, so it is not unread mail.
+      await imapCommand(`Appending a sent copy to "${target}"`, () =>
+        client.append(target, raw, ['\\Seen']),
+      );
+      return { kind: 'filed', path: target };
+    } catch (err) {
+      return { kind: 'failed', error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /** Delete a draft after it has been sent. */

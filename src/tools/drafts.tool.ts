@@ -8,6 +8,14 @@ import audit from '../safety/audit.js';
 
 import type ImapService from '../services/imap.service.js';
 import type SmtpService from '../services/smtp.service.js';
+import type { SentCopyResult } from '../types/index.js';
+
+/** See send.tool.ts's identical helper — kept local to avoid a cross-tool-file import. */
+function sentCopyNote(sentCopy: SentCopyResult | undefined): string {
+  if (sentCopy?.kind === 'filed') return ` Filed a copy in "${sentCopy.path}".`;
+  if (sentCopy?.kind === 'failed') return ` Could not file a copy in Sent: ${sentCopy.error}`;
+  return '';
+}
 
 export default function registerDraftTools(
   server: McpServer,
@@ -109,7 +117,11 @@ export default function registerDraftTools(
           content: [
             {
               type: 'text' as const,
-              text: `✅ Draft sent (Message-ID: ${result.messageId}). Draft removed from folder.`,
+              text: `✅ Draft sent (Message-ID: ${result.messageId}). ${
+                result.sentCopy?.kind === 'failed'
+                  ? 'Draft kept (the Sent-copy APPEND failed).'
+                  : 'Draft removed from folder.'
+              }${sentCopyNote(result.sentCopy)}`,
             },
           ],
         };

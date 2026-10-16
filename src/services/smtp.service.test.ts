@@ -69,6 +69,7 @@ describe('SmtpService', () => {
       expect(result).toEqual({
         messageId: '<test@example.com>',
         status: 'sent',
+        sentCopy: { kind: 'skipped' },
       });
       expect(transport.sendMail).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -179,7 +180,7 @@ describe('saving a copy to the Sent folder', () => {
     const transport = createMockTransport();
     const connections = createMockConnectionManager(transport);
     const imap = {
-      appendToSent: vi.fn().mockResolvedValue('Sent'),
+      appendToSent: vi.fn().mockResolvedValue({ kind: 'filed', path: 'Sent' }),
       fetchDraft: vi.fn(),
       deleteDraft: vi.fn().mockResolvedValue(undefined),
     };
@@ -214,6 +215,7 @@ describe('saving a copy to the Sent folder', () => {
     expect(message).toContain(result.messageId);
     expect(message).toContain('Subject: Quarterly');
     expect(message).toContain('a@b.c');
+    expect(result.sentCopy).toEqual({ kind: 'filed', path: 'Sent' });
   });
 
   // Documented limitation, pinned so it cannot change silently: nodemailer's
@@ -237,7 +239,13 @@ describe('saving a copy to the Sent folder', () => {
     const { service, imap } = withImap(true);
     imap.appendToSent.mockRejectedValue(new Error('NO [TRYCREATE] no Sent folder'));
 
-    await expect(service.sendEmail('test', mail)).resolves.toMatchObject({ status: 'sent' });
+    const result = await service.sendEmail('test', mail);
+
+    expect(result.status).toBe('sent');
+    expect(result.sentCopy).toEqual({
+      kind: 'failed',
+      error: expect.stringContaining('TRYCREATE'),
+    });
   });
 
   it('files a copy for replies too', async () => {
@@ -258,6 +266,36 @@ describe('saving a copy to the Sent folder', () => {
     expect(imap.appendToSent).toHaveBeenCalledTimes(1);
     const [, raw] = imap.appendToSent.mock.calls[0]!;
     expect((raw as Buffer).toString('utf-8')).toContain('In-Reply-To: <orig@x>');
+  });
+
+  function withDraft(imap: ReturnType<typeof withImap>['imap']) {
+    imap.fetchDraft = vi.fn().mockResolvedValue({
+      email: { to: [{ address: 'a@b.c' }], subject: 'Draft', bodyText: 'text', references: [] },
+      mailbox: 'Drafts',
+    });
+  }
+
+  // A failed APPEND plus an unconditional draft delete left zero copies of
+  // the message anywhere: not in Sent (the APPEND failed) and not in Drafts
+  // (deleted anyway) — even though the send itself succeeded.
+  it('keeps the draft when the Sent-copy APPEND fails', async () => {
+    const { service, imap } = withImap(true);
+    withDraft(imap);
+    imap.appendToSent.mockRejectedValue(new Error('NO [TRYCREATE] no Sent folder'));
+
+    await service.sendDraft('test', 7);
+
+    expect(imap.deleteDraft).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the draft when the Sent-copy is only skipped on purpose', async () => {
+    const { service, imap } = withImap(true);
+    withDraft(imap);
+    imap.appendToSent.mockResolvedValue({ kind: 'skipped' });
+
+    await service.sendDraft('test', 7);
+
+    expect(imap.deleteDraft).toHaveBeenCalledTimes(1);
   });
 });
 

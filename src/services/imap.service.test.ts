@@ -860,9 +860,9 @@ describe('ImapService', () => {
         { path: '[Gmail]/Sent Mail', specialUse: '\\Sent' },
       ]);
 
-      const path = await service.appendToSent('test', Buffer.from('raw message'));
+      const result = await service.appendToSent('test', Buffer.from('raw message'));
 
-      expect(path).toBe('[Gmail]/Sent Mail');
+      expect(result).toEqual({ kind: 'filed', path: '[Gmail]/Sent Mail' });
       expect(client.append).toHaveBeenCalledWith('[Gmail]/Sent Mail', expect.any(Buffer), [
         '\\Seen',
       ]);
@@ -871,9 +871,9 @@ describe('ImapService', () => {
     it('falls back to "Sent" when no folder advertises the special use', async () => {
       client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }, { path: 'Sent' }]);
 
-      const path = await service.appendToSent('test', Buffer.from('raw'));
+      const result = await service.appendToSent('test', Buffer.from('raw'));
 
-      expect(path).toBe('Sent');
+      expect(result).toEqual({ kind: 'filed', path: 'Sent' });
       expect(client.mailboxCreate).not.toHaveBeenCalled();
     });
 
@@ -883,10 +883,10 @@ describe('ImapService', () => {
     it('creates the Sent folder when the server has none', async () => {
       client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }]);
 
-      const path = await service.appendToSent('test', Buffer.from('raw'));
+      const result = await service.appendToSent('test', Buffer.from('raw'));
 
       expect(client.mailboxCreate).toHaveBeenCalledWith('Sent');
-      expect(path).toBe('Sent');
+      expect(result).toEqual({ kind: 'filed', path: 'Sent' });
       expect(client.append).toHaveBeenCalledWith('Sent', expect.any(Buffer), ['\\Seen']);
     });
 
@@ -994,6 +994,75 @@ describe('ImapService', () => {
       const message = await savedMessage({ to: ['a@b.c'], subject: 'Hi', body: 'just text' });
       expect(message).toContain('Content-Type: text/plain; charset=utf-8');
       expect(message).not.toContain('multipart/alternative');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // appendToSent: Gmail dedup, sentMailbox override, failure reporting
+  //
+  // Gmail files messages sent through its SMTP into Sent Mail itself, so
+  // APPENDing on top of that would give the user every sent message twice.
+  // -----------------------------------------------------------------------
+
+  describe('appendToSent — Gmail dedup and overrides', () => {
+    it('skips filing on a server that advertises X-GM-EXT-1', async () => {
+      client.capabilities.add('X-GM-EXT-1');
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'skipped' });
+      expect(client.append).not.toHaveBeenCalled();
+      expect(client.list).not.toHaveBeenCalled();
+    });
+
+    it('files anyway when the account explicitly sets save_to_sent = true', async () => {
+      client.capabilities.add('X-GM-EXT-1');
+      connections.getAccount.mockReturnValue({
+        name: 'test',
+        saveToSent: true,
+      });
+      client.list.mockResolvedValue([{ path: 'Sent', specialUse: '\\Sent' }]);
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'filed', path: 'Sent' });
+      expect(client.append).toHaveBeenCalledOnce();
+    });
+
+    it('skips filing when the account explicitly sets save_to_sent = false, even off Gmail', async () => {
+      connections.getAccount.mockReturnValue({
+        name: 'test',
+        saveToSent: false,
+      });
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'skipped' });
+      expect(client.append).not.toHaveBeenCalled();
+    });
+
+    it("prefers the configured sentMailbox over the server's guess, with no folder lookup", async () => {
+      connections.getAccount.mockReturnValue({
+        name: 'test',
+        sentMailbox: 'INBOX.Sent Messages',
+      });
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'filed', path: 'INBOX.Sent Messages' });
+      expect(client.append).toHaveBeenCalledWith('INBOX.Sent Messages', expect.any(Buffer), [
+        '\\Seen',
+      ]);
+      expect(client.list).not.toHaveBeenCalled();
+    });
+
+    it('reports a failed APPEND instead of throwing, so a completed send never looks failed', async () => {
+      client.list.mockResolvedValue([{ path: 'Sent', specialUse: '\\Sent' }]);
+      client.append.mockRejectedValue(new Error('Over quota'));
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'failed', error: expect.stringContaining('Over quota') });
     });
   });
 
