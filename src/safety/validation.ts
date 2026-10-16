@@ -94,12 +94,49 @@ export function validateWebhookUrl(url: string): void {
     throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
   }
 
+  const reject = (): never => {
+    throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
+  };
+
+  const isPrivateIpv4 = (a: number, b: number): boolean =>
+    a === 127 ||
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    // 169.254.0.0/16: link-local, including the cloud metadata address
+    // (169.254.169.254) that hands out IAM credentials on AWS/GCP/Azure.
+    a === 169 ||
+    // 100.64.0.0/10: shared address space for carrier-grade NAT.
+    (a === 100 && b >= 64 && b <= 127);
+
   const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
   if (ipv4Match) {
     const [, a = 0, b = 0] = ipv4Match.map(Number);
-    if (a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
-      throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
-    }
+    if (isPrivateIpv4(a, b)) reject();
+    return;
+  }
+
+  // An IPv4-mapped IPv6 address (::ffff:a.b.c.d) carries the same address in
+  // a form the IPv4 regex above never sees. The WHATWG URL parser (and so
+  // `new URL(...).hostname`) normalizes the embedded IPv4 part to two hex
+  // groups (e.g. ::ffff:169.254.169.254 becomes ::ffff:a9fe:a9fe) rather
+  // than keeping it dotted — handle both forms.
+  const mappedHex = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(bare);
+  if (mappedHex) {
+    const word1 = parseInt(mappedHex[1] ?? '0', 16);
+    if (isPrivateIpv4(word1 >> 8, word1 & 0xff)) reject();
+    return;
+  }
+  const mappedDotted = /^::ffff:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
+  if (mappedDotted) {
+    const [, a = 0, b = 0] = mappedDotted.map(Number);
+    if (isPrivateIpv4(a, b)) reject();
+    return;
+  }
+
+  // fe80::/10 (link-local) and fc00::/7 (unique-local, fc00:: or fd00::).
+  if (/^fe[89ab][0-9a-f]:/.test(bare) || /^f[cd][0-9a-f]{2}:/.test(bare)) {
+    reject();
   }
 }
 
