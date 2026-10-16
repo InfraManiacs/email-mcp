@@ -48,9 +48,11 @@ RUN mkdir -p /home/node/.config/email-mcp \
 VOLUME ["/home/node/.local/state/email-mcp", "/home/node/.cache/email-mcp", "/data/attachments"]
 
 ENV NODE_ENV=production
-# download_attachment's saveToDownloadDir writes here by default; override or
-# unset to disable (see [settings.attachment_download] in the README).
-ENV MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR=/data/attachments
+# /data/attachments exists as a ready-made mount point for download_attachment's
+# saveToDownloadDir, but the feature stays off by default (matching the bare
+# server): opt in explicitly with
+#   -e MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR=/data/attachments
+# (see [settings.attachment_download] in the README).
 
 # Streamable HTTP port (only used when running the `http` subcommand).
 EXPOSE 8080
