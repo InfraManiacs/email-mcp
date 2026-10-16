@@ -16,9 +16,27 @@ vi.mock('imapflow', () => {
     connect = vi.fn().mockResolvedValue(undefined);
     logout = vi.fn().mockResolvedValue(undefined);
     close = vi.fn();
+    private listeners = new Map<string, ((...args: unknown[]) => void)[]>();
 
     constructor() {
       instances.push(this);
+    }
+
+    on(event: string, listener: (...args: unknown[]) => void): this {
+      const forEvent = this.listeners.get(event) ?? [];
+      forEvent.push(listener);
+      this.listeners.set(event, forEvent);
+      return this;
+    }
+
+    /** Fire a fake ImapFlow event. Mirrors EventEmitter: an unhandled 'error' throws. */
+    emit(event: string, ...args: unknown[]): boolean {
+      const forEvent = this.listeners.get(event) ?? [];
+      forEvent.forEach((listener) => {
+        listener(...args);
+      });
+      if (event === 'error' && forEvent.length === 0) throw args[0];
+      return forEvent.length > 0;
     }
   }
   return { ImapFlow: MockImapFlow };
@@ -71,6 +89,66 @@ describe('ConnectionManager', () => {
     // Anything derived from the old connection — capability probes, cached
     // UIDVALIDITY, label-strategy memos — is now suspect and must be told.
     expect(eventBus.emit).toHaveBeenCalledWith('imap:reconnect', { account: 'work' });
+  });
+});
+
+// ImapFlow is an EventEmitter. Node's default behaviour for an unhandled
+// 'error' event is to throw — on a cached, long-lived connection (an idle
+// socket timeout, the server closing the connection) that crashes the whole
+// process, not just the one request in flight.
+describe('IMAP connection lifecycle', () => {
+  beforeEach(() => {
+    instances.length = 0;
+    vi.spyOn(eventBus, 'emit');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('absorbs an error event and reconnects on the next request instead of crashing', async () => {
+    const manager = new ConnectionManager([account]);
+    const first = await manager.getImapClient('work');
+
+    expect(() =>
+      (first as unknown as { emit(e: string, ...a: unknown[]): boolean }).emit(
+        'error',
+        new Error('Socket timeout'),
+      ),
+    ).not.toThrow();
+
+    const second = await manager.getImapClient('work');
+    expect(second).not.toBe(first);
+    expect(instances).toHaveLength(2);
+    // Same invalidation path as the usable===false case: anything derived
+    // from the dead connection is now suspect.
+    expect(eventBus.emit).toHaveBeenCalledWith('imap:reconnect', { account: 'work' });
+  });
+
+  it('invalidates the cached client on a close event', async () => {
+    const manager = new ConnectionManager([account]);
+    const first = await manager.getImapClient('work');
+
+    (first as unknown as { emit(e: string, ...a: unknown[]): boolean }).emit('close');
+
+    const second = await manager.getImapClient('work');
+    expect(second).not.toBe(first);
+  });
+
+  it('does not let a late error from a replaced client invalidate its replacement', async () => {
+    const manager = new ConnectionManager([account]);
+    type Emits = { emit(e: string, ...a: unknown[]): boolean };
+    const first = (await manager.getImapClient('work')) as unknown as Emits;
+
+    (first as Emits).emit('error', new Error('Connection lost'));
+    const replacement = await manager.getImapClient('work');
+
+    // The old client's socket finishes tearing down and fires a second,
+    // trailing error — it must not evict the healthy client that replaced it.
+    (first as Emits).emit('error', new Error('Late stale error from the old socket'));
+    const current = await manager.getImapClient('work');
+
+    expect(current).toBe(replacement);
+    expect(instances).toHaveLength(2);
   });
 });
 
