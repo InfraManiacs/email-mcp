@@ -62,13 +62,44 @@ describe('quoteOriginalAsText', () => {
       1,
     );
   });
+
+  // NEL (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029)
+  // are line breaks to some renderers but not to a bare "\r\n".split('\n')
+  // — without normalizing them first, a line using one of these would slip
+  // past the "> " prefix and read as unquoted text. Built from fromCharCode
+  // rather than typed literally: these characters are invisible and easy to
+  // corrupt by accident when edited as plain text.
+  it.each([
+    ['NEL', String.fromCharCode(0x85)],
+    ['LS', String.fromCharCode(0x2028)],
+    ['PS', String.fromCharCode(0x2029)],
+  ])('quotes lines separated by %s instead of \\n', (_name, separator) => {
+    const body = `first${separator}second`;
+    const out = quoteOriginalAsText(makeEmail({ bodyText: body }));
+    const lines = out.split('\n').slice(3);
+    expect(lines).toEqual(['> first', '> second']);
+  });
+
+  it('collapses a Unicode line separator in the sender name the same as CRLF', () => {
+    const LS = String.fromCharCode(0x2028);
+    const out = quoteOriginalAsText(
+      makeEmail({ from: { name: `Alex${LS}Injected`, address: 'alex@example.com' } }),
+    );
+    expect(out).toContain('Alex Injected <alex@example.com> wrote:');
+    expect(out.split('\n').filter((l) => l.startsWith('On ') && l.endsWith('wrote:'))).toHaveLength(
+      1,
+    );
+  });
 });
 
 describe('quoteOriginalAsHtml', () => {
-  it('wraps original HTML body in <blockquote type="cite">', () => {
-    const out = quoteOriginalAsHtml(makeEmail({ bodyHtml: '<p>Hi</p>' }));
+  it('wraps the HTML original, stripped and escaped, in <blockquote type="cite">', () => {
+    const out = quoteOriginalAsHtml(
+      makeEmail({ bodyText: undefined, bodyHtml: '<p>Hi <b>there</b></p>' }),
+    );
     expect(out).toContain('<blockquote type="cite"');
-    expect(out).toContain('<p>Hi</p>');
+    expect(out).toContain('<pre');
+    expect(out).toContain('Hi there');
     expect(out).toContain('Alex Chery &lt;alex@example.com&gt; wrote:');
   });
 
@@ -94,5 +125,18 @@ describe('quoteOriginalAsHtml', () => {
     expect(out).not.toContain('\r');
     expect(out).not.toContain('\n');
     expect(out).toContain('Alex Injected &lt;a@b.com&gt; wrote:');
+  });
+
+  // bodyHtml is sender-controlled. Embedding it unsanitized would let an
+  // unbalanced tag break out of the quote boundary and have the rest of
+  // the message render as if it were the reply's own content, not quoted
+  // material.
+  it('never embeds the original HTML unescaped, even with an unbalanced tag', () => {
+    const out = quoteOriginalAsHtml(
+      makeEmail({ bodyHtml: '<p>Hi</p></blockquote><p>Forged reply content</p>' }),
+    );
+    expect(out).not.toContain('</blockquote><p>Forged');
+    expect(out.match(/<blockquote/g)).toHaveLength(1);
+    expect(out.match(/<\/blockquote>/g)).toHaveLength(1);
   });
 });

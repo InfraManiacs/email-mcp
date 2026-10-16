@@ -16,6 +16,14 @@ import type { Email, EmailAddress } from '../types/index.js';
 import { stripHtml } from './html.js';
 
 /**
+ * Every character a renderer might treat as a line break: CRLF, lone CR,
+ * LF, NEL (U+0085), and the Unicode LINE/PARAGRAPH SEPARATORs (U+2028,
+ * U+2029) — `\n` alone misses the last three, which `.split('\n')` or a
+ * naive `oneLine` would then let through disguised as ordinary text.
+ */
+const LINE_BREAK_RE = /\r\n|[\r\n\u0085\u2028\u2029]/g;
+
+/**
  * Collapse an embedded line break.
  *
  * The attribution line is not "> "-quoted, so a crafted display name or
@@ -24,7 +32,7 @@ import { stripHtml } from './html.js';
  * forwardEmail's forward header already guards against.
  */
 function oneLine(value: string): string {
-  return value.replace(/[\r\n]+/g, ' ').trim();
+  return value.replace(LINE_BREAK_RE, ' ').trim();
 }
 
 function formatSender(addr: EmailAddress): string {
@@ -41,7 +49,11 @@ function formatSender(addr: EmailAddress): string {
 export function quoteOriginalAsText(original: Email): string {
   const attribution = `On ${oneLine(original.date)}, ${formatSender(original.from)} wrote:`;
   const body = original.bodyText ?? (original.bodyHtml ? stripHtml(original.bodyHtml) : '');
+  // Normalize every line-break variant to "\n" first — a lone CR or a
+  // Unicode line separator would otherwise survive .split('\n') as part of
+  // what this treats as a single "line", reaching the output unquoted.
   const quoted = body
+    .replace(LINE_BREAK_RE, '\n')
     .split('\n')
     .map((line) => (line.trim() ? `> ${line}` : '>'))
     .join('\n');
@@ -51,18 +63,22 @@ export function quoteOriginalAsText(original: Email): string {
 /**
  * Produce an HTML quoted block for an HTML reply, wrapped in the standard
  * `<blockquote type="cite">` that mail clients recognize as quoted material.
+ *
+ * The original is always quoted as escaped text in a <pre>, never as raw
+ * HTML: `bodyHtml` is sender-controlled, and embedding it unsanitized would
+ * let an unbalanced tag (e.g. a stray `</blockquote>`) break out of the
+ * quote boundary and have the rest render as if it were the reply's own
+ * content. stripHtml first, same as the plain-text path, trades the
+ * original's own formatting for that guarantee.
  */
 export function quoteOriginalAsHtml(original: Email): string {
   const esc = (s: string) => sanitizeTemplateVariable(s, true);
   const attribution = `On ${esc(oneLine(original.date))}, ${esc(formatSender(original.from))} wrote:`;
-  let inner: string;
-  if (original.bodyHtml) {
-    inner = original.bodyHtml;
-  } else if (original.bodyText) {
-    inner = `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${esc(original.bodyText)}</pre>`;
-  } else {
-    inner = '';
-  }
+  const plainOriginal =
+    original.bodyText ?? (original.bodyHtml ? stripHtml(original.bodyHtml) : '');
+  const inner = plainOriginal
+    ? `<pre style="white-space:pre-wrap;font-family:inherit;margin:0">${esc(plainOriginal)}</pre>`
+    : '';
   return (
     `<br><br>${attribution}<br>` +
     `<blockquote type="cite" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${inner}</blockquote>`

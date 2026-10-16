@@ -700,7 +700,11 @@ describe('replyToEmail quote_original', () => {
     const call = transport.sendMail.mock.calls[0]![0];
     expect(call.html).toContain('<p>On it tomorrow.</p>');
     expect(call.html).toContain('<blockquote type="cite"');
-    expect(call.html).toContain('<p>Where are we?</p>');
+    // The original is quoted as stripped, escaped text in a <pre>, never as
+    // raw HTML — embedding it unsanitized would let an unbalanced tag break
+    // out of the quote boundary (see utils/quote.ts).
+    expect(call.html).toContain('<pre');
+    expect(call.html).toContain('Where are we?');
     // stripHtml derives the plain-text alternative from the quoted HTML —
     // it is never undefined, since nodemailer 10 no longer generates one.
     expect(call.text).toContain('On it tomorrow.');
