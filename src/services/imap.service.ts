@@ -78,9 +78,16 @@ function previewFromMessage(msg: Record<string, unknown>): string | undefined {
   if (!parts) {
     return undefined;
   }
-  const part = findPreviewPart(msg.bodyStructure);
-  const raw = part ? parts.get(part.key) : undefined;
-  return part && raw ? buildPreview(raw, part) : undefined;
+  try {
+    const part = findPreviewPart(msg.bodyStructure);
+    const raw = part ? parts.get(part.key) : undefined;
+    return part && raw ? buildPreview(raw, part) : undefined;
+  } catch {
+    // The body is sender-controlled; decoding it is a convenience, not the
+    // request. One malformed message must never fail an entire listing page
+    // over a preview nobody can act on anyway.
+    return undefined;
+  }
 }
 
 /**
