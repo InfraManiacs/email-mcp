@@ -637,6 +637,11 @@ save_to_sent = false    # file a copy of each sent message in the IMAP Sent fold
 [settings.attachments]
 auto_download = true  # save attachments locally when calendar events are created from emails
 
+[settings.attachment_download]
+# dir = "/data/attachments"  # unset (default) disables download_attachment's saveToDownloadDir
+allowed_extensions = ["pdf", "png", "jpg", "jpeg", "webp", "tiff", "txt", "md", "doc", "docx", "odt", "xls", "xlsx", "csv"]
+max_bytes = 26214400  # 25 MB
+
 [[accounts]]
 name = "personal"
 email = "you@gmail.com"
@@ -759,6 +764,9 @@ For single-account setups (overrides config file):
 | `MCP_EMAIL_SEND_SAVE_TO_SENT` | `false` | `true` appends a copy of each sent message to the IMAP Sent folder |
 | `MCP_EMAIL_READ_ONLY` | `false` | `true` unregisters the mailbox-write tools (send, move, delete, labels, bulk). Calendar/Reminders writes, clipboard copy and config-writing tools stay available — it is a mailbox guard, not a global one. |
 | `MCP_EMAIL_SCHEDULER_SENT_RETENTION_DAYS` | `90` | Days of sent-email history to keep; `0` keeps everything |
+| `MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR` | — | Directory `download_attachment`'s `saveToDownloadDir` writes into; unset disables the option |
+| `MCP_EMAIL_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS` | *(built-in list — see below)* | Comma-separated extension allowlist for saved attachments |
+| `MCP_EMAIL_ATTACHMENT_DOWNLOAD_MAX_BYTES` | `26214400` (25 MB) | Max attachment size `saveToDownloadDir` will write |
 
 ### Local Cache
 
@@ -1152,6 +1160,34 @@ Other formats behave as follows:
   used as the body when the message carries no other text (forward-as-attachment,
   digests).
 
+**Attachment download directory.** `download_attachment` normally returns the
+file base64-encoded (≤5 MB). Set `[settings.attachment_download] dir` (or
+`MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR`) to a directory and pass
+`saveToDownloadDir: true` to instead write the file there and get back its
+path — useful for larger files, or when the caller just wants the attachment
+on disk rather than inlined into the conversation. The option is unavailable
+(the call fails) until `dir` is set — there is no default location. Only
+`allowed_extensions` are written (default: common document/image types; see
+the config example above); `max_bytes` caps the size, independent of the
+5 MB base64 cap. Pass `saveAs` to choose the filename written there (a plain
+basename — no path separators); otherwise the attachment's own filename is
+sanitized and used. Running in Docker, point `dir` at a mounted volume shared
+with whatever reads the files back, e.g. in `docker-compose.yml`:
+
+```yaml
+services:
+  email-mcp:
+    environment:
+      MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR: /data/attachments
+    volumes:
+      - attachments:/data/attachments
+  other-service:
+    volumes:
+      - attachments:/data/attachments:ro
+volumes:
+  attachments:
+```
+
 **Sent-folder copies.** SMTP delivers mail; it does not file it. `[settings.send]
 save_to_sent` defaults to **false**; turn it on for an IMAP host that does not
 capture sends itself. Gmail does capture sends server-side, so an account
@@ -1192,7 +1228,7 @@ text; pass `html: true` to `forward_email` to also carry the original HTML.
 | `get_emails` | Fetch full content of multiple emails in a single call (max 20); same bulk markers |
 | `get_email_status` | Get read/flag/label state of an email without fetching the body |
 | `search_emails` | Search by keyword across subject, sender, and body; same bulk markers and optional preview as `list_emails` |
-| `download_attachment` | Download an email attachment by filename or MIME part id |
+| `download_attachment` | Download an email attachment by filename or MIME part id, base64-encoded or (if configured) saved to the server's attachment download directory |
 | `find_email_folder` | Discover the real folder(s) an email resides in (resolves virtual folders) |
 | `extract_contacts` | Extract unique contacts from recent email headers |
 | `get_thread` | Reconstruct a conversation thread via References/In-Reply-To; same bulk markers |

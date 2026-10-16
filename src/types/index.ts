@@ -192,6 +192,16 @@ export interface AttachmentsConfig {
   autoDownload: boolean;
 }
 
+/**
+ * Where `download_attachment`'s `save_to_download_dir` writes files.
+ * Unset `dir` disables the option entirely — see AttachmentDownloadConfigSchema.
+ */
+export interface AttachmentDownloadConfig {
+  dir?: string;
+  allowedExtensions: string[];
+  maxBytes: number;
+}
+
 /** Scheduler settings — see SchedulerConfigSchema for defaults and rationale. */
 export interface SchedulerConfig {
   sentRetentionDays: number;
@@ -215,6 +225,7 @@ export interface AppConfig {
     verification: VerificationConfig;
     send: SendConfig;
     attachments: AttachmentsConfig;
+    attachmentDownload: AttachmentDownloadConfig;
     scheduler: SchedulerConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;

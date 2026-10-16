@@ -42,11 +42,15 @@ COPY --from=builder /app/package.json ./
 RUN mkdir -p /home/node/.config/email-mcp \
       /home/node/.local/state/email-mcp \
       /home/node/.cache/email-mcp \
-    && chown -R node:node /home/node/.config /home/node/.local /home/node/.cache
+      /data/attachments \
+    && chown -R node:node /home/node/.config /home/node/.local /home/node/.cache /data/attachments
 
-VOLUME ["/home/node/.local/state/email-mcp", "/home/node/.cache/email-mcp"]
+VOLUME ["/home/node/.local/state/email-mcp", "/home/node/.cache/email-mcp", "/data/attachments"]
 
 ENV NODE_ENV=production
+# download_attachment's saveToDownloadDir writes here by default; override or
+# unset to disable (see [settings.attachment_download] in the README).
+ENV MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR=/data/attachments
 
 # Streamable HTTP port (only used when running the `http` subcommand).
 EXPOSE 8080

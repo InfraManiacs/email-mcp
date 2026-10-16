@@ -37,6 +37,7 @@ function fakeConfig(): AppConfig {
       readOnly: false,
       send: { saveToSent: false, maxAttachmentMb: 25 },
       attachments: { autoDownload: false },
+      attachmentDownload: { allowedExtensions: ['pdf'], maxBytes: 25 * 1024 * 1024 },
     },
     accounts: [],
   } as unknown as AppConfig;

@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { TestServices } from './helpers/index.js';
 import {
   buildTestAccount,
@@ -71,6 +75,45 @@ describe('Advanced Email Operations', () => {
         );
         expect(attachment.filename).toBe('image.png');
       }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // downloadAttachmentToDownloadDir (download_attachment's saveToDownloadDir)
+  // ---------------------------------------------------------------------------
+
+  describe('downloadAttachmentToDownloadDir', () => {
+    let downloadDir: string;
+
+    beforeEach(async () => {
+      downloadDir = await fs.realpath(mkdtempSync(join(tmpdir(), 'email-mcp-attach-it-')));
+    });
+
+    afterEach(() => {
+      rmSync(downloadDir, { recursive: true, force: true });
+    });
+
+    it('writes a real attachment to disk through the full IMAP download path', async () => {
+      await seedEmailWithAttachment('download-dir.txt', 'Saved to the download dir');
+      await waitForDelivery();
+
+      const list = await services.imapService.listEmails(TEST_ACCOUNT_NAME, {
+        subject: 'Email with attachment',
+        hasAttachment: true,
+      });
+      expect(list.items.length).toBeGreaterThanOrEqual(1);
+      const emailId = list.items[0]!.id;
+
+      const result = await services.imapService.downloadAttachmentToDownloadDir(
+        TEST_ACCOUNT_NAME,
+        emailId,
+        'INBOX',
+        'download-dir.txt',
+        { dir: downloadDir, allowedExtensions: ['txt'], maxBytes: 1024 * 1024 },
+      );
+
+      expect(result.path).toBe(join(downloadDir, 'download-dir.txt'));
+      expect(await fs.readFile(result.path, 'utf-8')).toContain('Saved to the download dir');
     });
   });
 

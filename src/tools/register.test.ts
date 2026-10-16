@@ -44,6 +44,7 @@ function createConfig(readOnly: boolean): AppConfig {
     settings: {
       send: { maxAttachmentMb: 25, saveToSent: false },
       attachments: { autoDownload: true },
+      attachmentDownload: { allowedExtensions: ['pdf'], maxBytes: 25 * 1024 * 1024 },
       scheduler: { sentRetentionDays: 90 },
       rateLimit: 10,
       readOnly,

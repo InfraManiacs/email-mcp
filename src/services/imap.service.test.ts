@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1378,6 +1379,126 @@ describe('ImapService', () => {
       await expect(service.downloadAttachment('test', '42', 'INBOX', 'huge.pdf')).rejects.toThrow(
         /5\.4MB/,
       );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // downloadAttachmentToDownloadDir
+  // -----------------------------------------------------------------------
+
+  describe('downloadAttachmentToDownloadDir', () => {
+    let downloadDir: string;
+
+    beforeEach(async () => {
+      // realpath'd upfront: resolveAttachmentDownloadPath canonicalizes the
+      // configured dir (macOS aliases /var to /private/var), so comparing
+      // against the raw mkdtemp path would fail even on a correct result.
+      downloadDir = await fs.realpath(mkdtempSync(join(tmpdir(), 'email-mcp-attach-')));
+    });
+
+    afterEach(() => {
+      rmSync(downloadDir, { recursive: true, force: true });
+    });
+
+    function mockPdfAttachment(filename: string) {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'application/pdf',
+          disposition: 'attachment',
+          dispositionParameters: { filename },
+          size: 100,
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('pdf bytes'));
+    }
+
+    it('writes the attachment under the configured dir using its own filename', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      const result = await service.downloadAttachmentToDownloadDir(
+        'test',
+        '42',
+        'INBOX',
+        'invoice.pdf',
+        { dir: downloadDir, allowedExtensions: ['pdf'], maxBytes: 1024 },
+      );
+
+      expect(result.path).toBe(join(downloadDir, 'invoice.pdf'));
+      expect(await fs.readFile(result.path, 'utf-8')).toBe('pdf bytes');
+    });
+
+    it('uses the caller-supplied saveAs name instead of the attachment filename', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      const result = await service.downloadAttachmentToDownloadDir(
+        'test',
+        '42',
+        'INBOX',
+        'invoice.pdf',
+        { dir: downloadDir, allowedExtensions: ['pdf'], maxBytes: 1024 },
+        'renamed.pdf',
+      );
+
+      expect(result.path).toBe(join(downloadDir, 'renamed.pdf'));
+    });
+
+    it('rejects a saveAs that is not a plain basename', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      await expect(
+        service.downloadAttachmentToDownloadDir(
+          'test',
+          '42',
+          'INBOX',
+          'invoice.pdf',
+          { dir: downloadDir, allowedExtensions: ['pdf'], maxBytes: 1024 },
+          '../../etc/passwd',
+        ),
+      ).rejects.toThrow('path separators');
+    });
+
+    it('rejects an extension outside the configured allowlist', async () => {
+      mockPdfAttachment('script.exe');
+
+      await expect(
+        service.downloadAttachmentToDownloadDir('test', '42', 'INBOX', 'script.exe', {
+          dir: downloadDir,
+          allowedExtensions: ['pdf'],
+          maxBytes: 1024,
+        }),
+      ).rejects.toThrow('not allowed');
+    });
+
+    it('refuses to run when no download directory is configured', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      await expect(
+        service.downloadAttachmentToDownloadDir('test', '42', 'INBOX', 'invoice.pdf', {
+          allowedExtensions: ['pdf'],
+          maxBytes: 1024,
+        }),
+      ).rejects.toThrow('not configured');
+    });
+
+    it('applies the configured maxBytes cap, not the base64 default', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'application/pdf',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'big.pdf' },
+          size: 2048,
+        },
+      });
+
+      await expect(
+        service.downloadAttachmentToDownloadDir('test', '42', 'INBOX', 'big.pdf', {
+          dir: downloadDir,
+          allowedExtensions: ['pdf'],
+          maxBytes: 1024,
+        }),
+      ).rejects.toThrow(/exceeds/);
     });
   });
 
