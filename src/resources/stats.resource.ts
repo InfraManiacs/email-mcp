@@ -36,20 +36,15 @@ export default function registerStatsResource(
     async (uri, { account }) => {
       const accountName = account as string;
 
-      // NOT a lightweight STATUS query, despite what this comment used to
-      // claim: getEmailStats runs SEARCH SINCE and then fetches envelope,
-      // flags and bodyStructure for every UID in the window, unbounded.
-      // On a busy INBOX this is one of the most expensive reads in the server.
-      const stats = await imapService.getEmailStats(accountName, 'INBOX', 'day');
-
+      const mailbox = await imapService.getMailboxSnapshot(accountName);
       const quota = await imapService.getQuota(accountName);
 
       const snapshot = {
         account: accountName,
         date: new Date().toISOString().split('T')[0],
-        inbox_total: stats.totalReceived,
-        inbox_unread: stats.unreadCount,
-        inbox_today: stats.totalReceived,
+        inbox_total: mailbox.total,
+        inbox_unread: mailbox.unread,
+        inbox_today: mailbox.receivedToday,
         quota: quota ?? undefined,
       };
 
