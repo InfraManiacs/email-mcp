@@ -168,6 +168,14 @@ describe('validateWebhookUrl', () => {
     expect(() => validateWebhookUrl('http://[fd12:3456::1]/hook')).toThrow('loopback or private');
   });
 
+  it('throws on the 0.0.0.0/8 range, not just the literal address', () => {
+    expect(() => validateWebhookUrl('https://0.1.2.3/hook')).toThrow('loopback or private');
+  });
+
+  it('throws on the IPv6 unspecified address ::', () => {
+    expect(() => validateWebhookUrl('http://[::]/hook')).toThrow('loopback or private');
+  });
+
   it('throws on an IPv4-mapped IPv6 address pointing at a private range', () => {
     expect(() => validateWebhookUrl('http://[::ffff:169.254.169.254]/hook')).toThrow(
       'loopback or private',

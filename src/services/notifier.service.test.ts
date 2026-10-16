@@ -80,3 +80,39 @@ describe('NotifierService.notifyRaw', () => {
     expect(execFileMock).toHaveBeenCalledTimes(5);
   });
 });
+
+describe('NotifierService webhook dispatch', () => {
+  let notifier: NotifierService;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    notifier = new NotifierService(
+      buildAlertsConfig({ webhookUrl: 'https://hooks.example.com/wh' }),
+    );
+  });
+
+  afterEach(() => {
+    notifier.stop();
+    vi.unstubAllGlobals();
+  });
+
+  // A compromised or misconfigured external endpoint could 302 the request
+  // to an internal address after the URL itself passed validation — refuse
+  // to follow it rather than silently completing an SSRF via redirect.
+  it('refuses to follow a webhook redirect', async () => {
+    await notifier.alert({
+      account: 'test',
+      sender: { address: 'a@b.c' },
+      subject: 'hi',
+      priority: 'high',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://hooks.example.com/wh',
+      expect.objectContaining({ redirect: 'error' }),
+    );
+  });
+});
