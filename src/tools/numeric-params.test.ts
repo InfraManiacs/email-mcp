@@ -60,12 +60,20 @@ const fakes = (n: number): unknown[] => Array.from({ length: n }, () => fakeServ
 // String(proxy) never bottoms out in a primitive. Give it the real shape.
 const sendLimitFake = { globalMb: 25, forAccount: () => 25 };
 
+// registerAttachmentTools' last argument is interpolated/`.join()`ed into a
+// description string too — same reasoning as sendLimitFake above.
+const attachmentDownloadConfigFake = {
+  dir: '/tmp/downloads',
+  allowedExtensions: ['pdf'],
+  maxBytes: 25 * 1024 * 1024,
+};
+
 /** (registrar, positional service args) for every registrar `register.ts` calls. */
 const REGISTRATIONS: [register: (...args: never[]) => void, args: unknown[]][] = [
   [registerAccountsTools as never, fakes(1)],
   [registerMailboxesTools as never, fakes(1)],
   [registerEmailsTools as never, fakes(2)],
-  [registerAttachmentTools as never, fakes(1)],
+  [registerAttachmentTools as never, [fakeService(), fakeService(), attachmentDownloadConfigFake]],
   [registerContactsTools as never, fakes(1)],
   [registerThreadTools as never, fakes(1)],
   [registerTemplateReadTools as never, fakes(1)],

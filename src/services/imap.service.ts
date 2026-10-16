@@ -9,12 +9,20 @@ import type { ImapFlow } from 'imapflow';
 import libmime from 'libmime';
 import type { IConnectionManager } from '../connections/types.js';
 import {
+  assertAllowedExtension,
+  assertSafeDownloadBasename,
+  resolveAttachmentDownloadPath,
+  sanitizeAttachmentBasename,
+  writeDownloadFileAtomic,
+} from '../safety/attachment-download.js';
+import {
   safeAttachmentFilename,
   sanitizeMailboxName,
   sanitizeSearchQuery,
 } from '../safety/validation.js';
 import type {
   AccountConfig,
+  AttachmentDownloadConfig,
   AttachmentMeta,
   BulkResult,
   Contact,
@@ -1734,6 +1742,81 @@ export default class ImapService {
     size: number;
     contentBase64: string;
   }> {
+    const result = await this.downloadAttachmentBuffer(
+      accountName,
+      emailId,
+      mailbox,
+      selector,
+      maxSizeBytes,
+    );
+    return {
+      filename: result.filename,
+      mimeType: result.mimeType,
+      size: result.size,
+      contentBase64: result.content.toString('base64'),
+    };
+  }
+
+  /**
+   * Download an attachment and write it to the server-configured download
+   * directory, instead of returning it base64-encoded. `config.dir` unset
+   * means the operator has not opted in — refuse rather than guessing a
+   * location. `saveAs`, when given, is a caller-supplied basename (validated
+   * as a plain segment, never a path); otherwise the attachment's own
+   * filename is sanitized the same way `save_attachments` already does.
+   */
+  async downloadAttachmentToDownloadDir(
+    accountName: string,
+    emailId: string,
+    mailbox: string,
+    selector: string | { filename?: string; partId?: string },
+    config: AttachmentDownloadConfig,
+    saveAs?: string,
+  ): Promise<{ filename: string; mimeType: string; size: number; path: string }> {
+    if (!config.dir) {
+      throw new Error(
+        'Attachment download directory is not configured (settings.attachment_download.dir)',
+      );
+    }
+    const result = await this.downloadAttachmentBuffer(
+      accountName,
+      emailId,
+      mailbox,
+      selector,
+      config.maxBytes,
+    );
+    const basename =
+      saveAs !== undefined
+        ? assertSafeDownloadBasename(saveAs)
+        : sanitizeAttachmentBasename(result.filename);
+    assertAllowedExtension(basename, config.allowedExtensions);
+    const targetPath = await resolveAttachmentDownloadPath(config.dir, basename);
+    await writeDownloadFileAtomic(targetPath, result.content);
+    return {
+      filename: result.filename,
+      mimeType: result.mimeType,
+      size: result.size,
+      path: targetPath,
+    };
+  }
+
+  /**
+   * Download an attachment as a raw Buffer — shared by `downloadAttachment`
+   * (base64-encodes it) and `downloadAttachmentToDownloadDir` (writes it to
+   * disk), so the MIME-part lookup and decode-fallback logic lives once.
+   */
+  private async downloadAttachmentBuffer(
+    accountName: string,
+    emailId: string,
+    mailbox: string,
+    selector: string | { filename?: string; partId?: string },
+    maxSizeBytes = 5 * 1024 * 1024,
+  ): Promise<{
+    filename: string;
+    mimeType: string;
+    size: number;
+    content: Buffer;
+  }> {
     const client = await this.connections.getImapClient(accountName);
     const uid = parseInt(emailId, 10);
 
@@ -1830,7 +1913,7 @@ export default class ImapService {
         filename: attachment.filename,
         mimeType: attachment.mimeType,
         size: content.length,
-        contentBase64: content.toString('base64'),
+        content,
       };
     } finally {
       lock.release();

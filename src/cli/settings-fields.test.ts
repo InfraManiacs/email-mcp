@@ -2,6 +2,7 @@ import type { RawAppConfig } from '../config/schema.js';
 import {
   AlertsConfigSchema,
   AppConfigFileSchema,
+  AttachmentDownloadConfigSchema,
   AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
@@ -54,12 +55,23 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     [
       'general',
       SettingsSchema.shape,
-      ['verification', 'cache', 'watcher', 'hooks', 'server', 'send', 'attachments', 'scheduler'],
+      [
+        'verification',
+        'cache',
+        'watcher',
+        'hooks',
+        'server',
+        'send',
+        'attachments',
+        'attachment_download',
+        'scheduler',
+      ],
     ],
     ['watcher', WatcherConfigSchema.shape, []],
     ['verification', VerificationConfigSchema.shape, []],
     ['send', SendConfigSchema.shape, []],
     ['attachments', AttachmentsConfigSchema.shape, []],
+    ['attachment_download', AttachmentDownloadConfigSchema.shape, []],
     ['scheduler', SchedulerConfigSchema.shape, []],
     ['cache', CacheConfigSchema.shape, []],
     ['hooks', HooksConfigSchema.shape, ['rules', 'alerts']],
@@ -77,7 +89,7 @@ describe('SETTINGS_SECTIONS drift guards', () => {
     expect(catalogKeys).toEqual(schemaKeys);
   });
 
-  it('exposes all ten sections in order', () => {
+  it('exposes all eleven sections in order', () => {
     expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual([
       'general',
       'server',
@@ -85,6 +97,7 @@ describe('SETTINGS_SECTIONS drift guards', () => {
       'verification',
       'send',
       'attachments',
+      'attachment_download',
       'scheduler',
       'cache',
       'hooks',

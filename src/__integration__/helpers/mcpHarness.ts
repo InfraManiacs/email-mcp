@@ -46,7 +46,10 @@ export async function createMcpHarness(
   // IMAP path rather than a mirror.
   const mailReadService = new MailReadService(imapService);
   registerEmailsTools(server, mailReadService, imapService);
-  registerAttachmentTools(server, mailReadService);
+  registerAttachmentTools(server, mailReadService, imapService, {
+    allowedExtensions: [],
+    maxBytes: 25 * 1024 * 1024,
+  });
   registerSendTools(server, smtpService, {
     globalMb: maxAttachmentMb,
     forAccount: () => maxAttachmentMb,

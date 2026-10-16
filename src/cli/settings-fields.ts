@@ -12,6 +12,7 @@ import type { z } from 'zod';
 import type { RawAppConfig } from '../config/schema.js';
 import {
   AlertsConfigSchema,
+  AttachmentDownloadConfigSchema,
   AttachmentsConfigSchema,
   CacheConfigSchema,
   HooksConfigSchema,
@@ -28,6 +29,7 @@ export type SectionId =
   | 'server'
   | 'send'
   | 'attachments'
+  | 'attachment_download'
   | 'scheduler'
   | 'watcher'
   | 'verification'
@@ -79,6 +81,7 @@ function onOff(value: unknown): string {
 const generalShape = SettingsSchema.shape;
 const sendShape = SendConfigSchema.shape;
 const attachmentsShape = AttachmentsConfigSchema.shape;
+const attachmentDownloadShape = AttachmentDownloadConfigSchema.shape;
 const schedulerShape = SchedulerConfigSchema.shape;
 const serverShape = ServerConfigSchema.shape;
 const watcherShape = WatcherConfigSchema.shape;
@@ -296,6 +299,39 @@ export const SETTINGS_SECTIONS: SectionDescriptor[] = [
         label: 'Save attachments locally when creating calendar events from emails',
         kind: 'boolean',
         schema: attachmentsShape.auto_download,
+      },
+    ],
+  },
+  {
+    id: 'attachment_download',
+    label: 'Attachment download directory',
+    resolve: (raw) => raw.settings.attachment_download as unknown as Record<string, unknown>,
+    summarize: (raw) => {
+      const a = raw.settings.attachment_download;
+      return a.dir
+        ? `${a.dir} | extensions: ${a.allowed_extensions.join(', ')} | cap ${Math.round(a.max_bytes / 1024 / 1024)}MB`
+        : 'disabled (no directory configured)';
+    },
+    fields: [
+      {
+        key: 'dir',
+        label: 'Directory download_attachment writes into (unset = disabled)',
+        kind: 'string',
+        schema: attachmentDownloadShape.dir,
+        optional: true,
+        emptyLabel: '(disabled)',
+      },
+      {
+        key: 'allowed_extensions',
+        label: 'Allowed file extensions for saved attachments',
+        kind: 'string-array',
+        schema: attachmentDownloadShape.allowed_extensions,
+      },
+      {
+        key: 'max_bytes',
+        label: 'Max attachment size to save, in bytes (1+)',
+        kind: 'int',
+        schema: attachmentDownloadShape.max_bytes,
       },
     ],
   },

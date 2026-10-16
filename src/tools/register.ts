@@ -58,7 +58,7 @@ export default function registerAllTools(server: McpServer, services: AppService
   registerAccountsTools(server, connections);
   registerMailboxesTools(server, imapService);
   registerEmailsTools(server, mailReadService, imapService);
-  registerAttachmentTools(server, mailReadService);
+  registerAttachmentTools(server, mailReadService, imapService, config.settings.attachmentDownload);
   registerContactsTools(server, imapService);
   registerThreadTools(server, mailReadService);
   registerTemplateReadTools(server, templateService);
