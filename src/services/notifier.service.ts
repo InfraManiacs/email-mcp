@@ -29,6 +29,11 @@ export interface AlertPayload {
   priority: UrgencyLevel;
   labels?: string[];
   ruleName?: string;
+  /** Email UID — lets a webhook consumer act on the message (e.g. fetch it). */
+  uid?: string;
+  /** Mailbox the email was found in. */
+  folder?: string;
+  hasAttachments?: boolean;
 }
 
 export interface PlatformDiagnostics {
@@ -407,6 +412,9 @@ export default class NotifierService {
       priority: payload.priority,
       labels: payload.labels ?? [],
       rule: payload.ruleName ?? null,
+      uid: payload.uid ?? null,
+      folder: payload.folder ?? null,
+      hasAttachments: payload.hasAttachments ?? false,
       timestamp: new Date().toISOString(),
     });
 

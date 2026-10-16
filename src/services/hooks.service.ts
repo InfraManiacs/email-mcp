@@ -312,6 +312,9 @@ export default class HooksService {
       priority: actions.flag ? 'high' : 'normal',
       labels: actions.labels,
       ruleName: rule.name,
+      uid: email.meta.id,
+      folder: email.mailbox,
+      hasAttachments: email.meta.hasAttachments,
     };
     await this.notifier.alert(payload, actions.alert === true);
 
@@ -362,6 +365,9 @@ export default class HooksService {
         sender: e.meta.from,
         subject: e.meta.subject,
         priority: 'normal',
+        uid: e.meta.id,
+        folder: e.mailbox,
+        hasAttachments: e.meta.hasAttachments,
       };
       return this.notifier.alert(payload);
     });
@@ -486,6 +492,9 @@ export default class HooksService {
       subject: email.meta.subject,
       priority,
       labels: triage.labels,
+      uid: email.meta.id,
+      folder: email.mailbox,
+      hasAttachments: email.meta.hasAttachments,
     };
     await this.notifier.alert(payload);
     if (triage.action) {

@@ -115,4 +115,26 @@ describe('NotifierService webhook dispatch', () => {
       expect.objectContaining({ redirect: 'error' }),
     );
   });
+
+  // Without these, a webhook consumer has no way to act on the message
+  // (fetch it, check its attachments) — just a sender and a subject line.
+  it('carries uid, folder and hasAttachments in the webhook body', async () => {
+    await notifier.alert({
+      account: 'test',
+      sender: { address: 'a@b.c' },
+      subject: 'hi',
+      priority: 'high',
+      uid: '42',
+      folder: 'INBOX',
+      hasAttachments: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const [, options] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(JSON.parse(options.body)).toMatchObject({
+      uid: '42',
+      folder: 'INBOX',
+      hasAttachments: true,
+    });
+  });
 });
