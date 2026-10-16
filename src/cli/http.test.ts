@@ -1,5 +1,25 @@
+import type { Server } from 'node:http';
+
+import type { AppServices } from '../app.js';
 import type { ServerConfig } from '../types/index.js';
 import { parseOptions } from './http.js';
+
+// Captures every real `http.Server` runHttp creates, so a test that boots a
+// real listener can discover the ephemeral port it bound and close it
+// afterwards — runHttp itself hands back neither.
+const { capturedServers } = vi.hoisted(() => ({ capturedServers: [] as Server[] }));
+
+vi.mock('node:http', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:http')>();
+  return {
+    ...actual,
+    createServer: (...args: Parameters<typeof actual.createServer>) => {
+      const server = actual.createServer(...args);
+      capturedServers.push(server);
+      return server;
+    },
+  };
+});
 
 vi.mock('../app.js', () => ({
   buildServices: vi.fn(() => {
@@ -108,5 +128,71 @@ describe('runHttp --help', () => {
     expect(log).toHaveBeenCalled();
     expect(log.mock.calls[0]?.[0]).toContain('Usage: email-mcp http');
     log.mockRestore();
+  });
+});
+
+// The SDK's stateless transport is single-exchange: its own guard throws
+// "Stateless transport cannot be reused across requests" on a second
+// `handleRequest` call. runHttp built one transport at startup and reused it
+// for every incoming request, so only ever the first request to the process
+// worked — everything after 500'd. A bare GET (no `text/event-stream` in
+// Accept) is enough to prove this: it 406s deterministically without needing
+// a real MCP session, so the only thing a second request can still get wrong
+// is the reused-transport crash.
+describe('runHttp request handling', () => {
+  afterEach(async () => {
+    // buildServer is called once at startup plus once per request — reset
+    // its queued implementation so it doesn't leak into other tests.
+    const { buildServer } = await import('../app.js');
+    vi.mocked(buildServer).mockReset();
+
+    await Promise.all(
+      capturedServers.splice(0).map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          }),
+      ),
+    );
+  });
+
+  it('serves a second request the same as the first instead of 500ing on a reused transport', async () => {
+    const { buildServices, buildServer, startBackgroundServices } = await import('../app.js');
+    const { default: createServer } = await import('../server.js');
+    const { createServer: createNodeHttpServer } = await import('node:http');
+
+    // Ask the OS for a free port up front — parseOptions rejects `--port 0`.
+    const probe = createNodeHttpServer();
+    const port = await new Promise<number>((resolve) => {
+      probe.listen(0, '127.0.0.1', () => {
+        const address = probe.address();
+        resolve(typeof address === 'object' && address ? address.port : 0);
+      });
+    });
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+    // Only `config.settings.server` is read on this path (by parseOptions);
+    // startBackgroundServices is mocked below instead of using the real
+    // services this fake does not provide. buildServer is called once at
+    // startup and once per request, so it needs a fresh McpServer every
+    // call rather than a single queued return value.
+    const fakeServices = { config: { settings: { server: undefined } } } as unknown as AppServices;
+    vi.mocked(buildServices).mockResolvedValueOnce(fakeServices);
+    vi.mocked(buildServer).mockImplementation(() => createServer());
+    vi.mocked(startBackgroundServices).mockReturnValueOnce({
+      stop: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { default: runHttp } = await import('./http.js');
+    await runHttp(['--host', '127.0.0.1', '--port', String(port)]);
+
+    const url = `http://127.0.0.1:${port}/mcp`;
+    const first = await fetch(url, { headers: { Accept: 'application/json' } });
+    await first.text();
+    const second = await fetch(url, { headers: { Accept: 'application/json' } });
+    await second.text();
+
+    expect(first.status).toBe(406);
+    expect(second.status).toBe(406);
   });
 });

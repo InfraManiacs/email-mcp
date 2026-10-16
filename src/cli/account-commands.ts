@@ -25,6 +25,10 @@ import { CONFIG_FILE, configExists, loadRawConfig, saveConfigValidated } from '.
 import { detectProvider } from '../config/providers.js';
 import type { RawAccountConfig, RawAppConfig } from '../config/schema.js';
 import ConnectionManager from '../connections/manager.js';
+import {
+  DEFAULT_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS,
+  DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
+} from '../safety/attachment-download.js';
 import type { AccountConfig } from '../types/index.js';
 import ensureInteractive, { assertNotCancel, CancelledError } from './guard.js';
 import {
@@ -539,6 +543,10 @@ async function addAccount(): Promise<void> {
           read_only: false,
           send: { max_attachment_mb: 25, save_to_sent: false },
           attachments: { auto_download: true },
+          attachment_download: {
+            allowed_extensions: [...DEFAULT_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS],
+            max_bytes: DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
+          },
           scheduler: { sent_retention_days: 90 },
           server: {
             host: '127.0.0.1',

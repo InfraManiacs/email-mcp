@@ -186,6 +186,35 @@ describe('findMimePartByFilename', () => {
   it('returns undefined when no attachment matches', () => {
     expect(findMimePartByFilename(textPlain(), 'a.pdf')).toBeUndefined();
   });
+
+  // extractAttachments already lists these (disposition: inline, or no
+  // Content-Disposition at all, named only via Content-Type's name=) — but
+  // the old recursive walk here only matched disposition === 'attachment',
+  // so a filename the listing showed could not actually be downloaded by it.
+  it('finds an inline cid image by filename, not just classic attachments', () => {
+    const bs = {
+      type: 'multipart/related',
+      childNodes: [
+        textHtml(),
+        {
+          type: 'image/png',
+          disposition: 'inline',
+          id: '<logo@x>',
+          parameters: { name: 'logo.png' },
+          size: 900,
+        },
+      ],
+    };
+    expect(findMimePartByFilename(bs, 'logo.png')).toBe('2');
+  });
+
+  it('finds a part named only via Content-Type name=, with no Content-Disposition', () => {
+    const bs = {
+      type: 'multipart/mixed',
+      childNodes: [textPlain(), { type: 'application/pdf', parameters: { name: 'x.pdf' } }],
+    };
+    expect(findMimePartByFilename(bs, 'x.pdf')).toBe('2');
+  });
 });
 
 describe('collectTextParts', () => {

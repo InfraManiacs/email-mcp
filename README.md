@@ -39,6 +39,7 @@ Built on the MCP TypeScript SDK v2 (spec revision 2026-07-28), it serves over **
 - [Install](#install)
 - [Usage](#usage)
 - [API](#api)
+- [Roadmap](#roadmap)
 - [Maintainers](#maintainers)
 - [Contributing](#contributing)
 - [License](#license)
@@ -64,7 +65,7 @@ Key design decisions:
 
 ## Install
 
-Requires Node.js ≥ 22.
+Requires Node.js ≥ 24.
 
 ```bash
 # Run directly (no install needed)
@@ -77,6 +78,15 @@ npm install -g @codefuturist/email-mcp
 # or
 pnpm add -g @codefuturist/email-mcp
 ```
+
+`npm install -g` fails with `EACCES` when npm's global prefix is a root-owned
+directory (common on a system Node install) — the `npx`/`pnpm dlx` form above
+avoids this entirely by not installing anything globally. If you do want a
+permanent global install, fix npm's prefix instead of reaching for `sudo`
+(`npm config set prefix ~/.npm-global` and add that to `PATH`, or use a Node
+version manager like `nvm`/`fnm`/`volta`) — running `npm install -g` as root
+routinely leaves root-owned files mixed into a user-owned `node_modules` tree,
+which causes harder-to-diagnose permission errors on the *next* global install.
 
 ### Homebrew (native binary)
 
@@ -628,12 +638,19 @@ save_to_sent = false    # file a copy of each sent message in the IMAP Sent fold
 [settings.attachments]
 auto_download = true  # save attachments locally when calendar events are created from emails
 
+[settings.attachment_download]
+# dir = "/data/attachments"  # unset (default) disables download_attachment's saveToDownloadDir
+allowed_extensions = ["pdf", "png", "jpg", "jpeg", "webp", "tiff", "txt", "md", "doc", "docx", "odt", "xls", "xlsx", "csv"]
+max_bytes = 26214400  # 25 MB
+
 [[accounts]]
 name = "personal"
 email = "you@gmail.com"
 full_name = "Your Name"
 password = "keychain:personal"  # or "env:VAR", or a plaintext app password
 # max_attachment_mb = 25  # optional per-account override (beats global + provider limits)
+# sent_mailbox = "INBOX.Sent Messages"  # optional, see "Sent-folder copies" below
+# save_to_sent = true                    # optional per-account override of the Gmail-skip guess
 
 [accounts.imap]
 host = "imap.gmail.com"
@@ -748,6 +765,9 @@ For single-account setups (overrides config file):
 | `MCP_EMAIL_SEND_SAVE_TO_SENT` | `false` | `true` appends a copy of each sent message to the IMAP Sent folder |
 | `MCP_EMAIL_READ_ONLY` | `false` | `true` unregisters the mailbox-write tools (send, move, delete, labels, bulk). Calendar/Reminders writes, clipboard copy and config-writing tools stay available — it is a mailbox guard, not a global one. |
 | `MCP_EMAIL_SCHEDULER_SENT_RETENTION_DAYS` | `90` | Days of sent-email history to keep; `0` keeps everything |
+| `MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR` | — | Directory `download_attachment`'s `saveToDownloadDir` writes into; unset disables the option |
+| `MCP_EMAIL_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS` | *(built-in list — see below)* | Comma-separated extension allowlist for saved attachments |
+| `MCP_EMAIL_ATTACHMENT_DOWNLOAD_MAX_BYTES` | `26214400` (25 MB) | Max attachment size `saveToDownloadDir` will write |
 
 ### Local Cache
 
@@ -1141,15 +1161,58 @@ Other formats behave as follows:
   used as the body when the message carries no other text (forward-as-attachment,
   digests).
 
-**Sent-folder copies.** SMTP delivers mail; it does not file it. Gmail and
-Outlook capture sent mail server-side, so `[settings.send] save_to_sent`
-defaults to **false** — enabling it on those providers would give you two
-copies of everything. Turn it on for an IMAP host that does not capture sends
-itself. The copy carries the same `Message-ID` the server accepted, is flagged
+**Attachment download directory.** `download_attachment` normally returns the
+file base64-encoded (≤5 MB). Set `[settings.attachment_download] dir` (or
+`MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR`) to a directory and pass
+`saveToDownloadDir: true` to instead write the file there and get back its
+path — useful for larger files, or when the caller just wants the attachment
+on disk rather than inlined into the conversation. The option is unavailable
+(the call fails) until `dir` is set — there is no default location. Only
+`allowed_extensions` are written (default: common document/image types; see
+the config example above); `max_bytes` caps the size, independent of the
+5 MB base64 cap. Pass `saveAs` to choose the filename written there (a plain
+basename — no path separators); otherwise the attachment's own filename is
+sanitized and used. Running in Docker, point `dir` at a mounted volume shared
+with whatever reads the files back, e.g. in `docker-compose.yml`:
+
+```yaml
+services:
+  email-mcp:
+    environment:
+      MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR: /data/attachments
+    volumes:
+      - attachments:/data/attachments
+  other-service:
+    volumes:
+      - attachments:/data/attachments:ro
+volumes:
+  attachments:
+```
+
+**Sent-folder copies.** SMTP delivers mail; it does not file it. `[settings.send]
+save_to_sent` defaults to **false**; turn it on for an IMAP host that does not
+capture sends itself. Gmail does capture sends server-side, so an account
+whose IMAP server advertises the `X-GM-EXT-1` capability is skipped
+automatically even with the setting on — filing a copy there would give you
+two of everything. Set the account's own `save_to_sent` to force the decision
+either way (`true` files anyway, `false` never files, regardless of the
+global setting or the Gmail guess).
+
+The copy carries the same `Message-ID` the server accepted, is flagged
 `\Seen`, and lands in the folder the server marks `\Sent` (or a folder named
-`Sent`, created if absent). It omits `Bcc`, which the MIME composer strips
-unconditionally. A failure to file never fails the send — the mail has already
-left, and saying otherwise would invite a duplicate send.
+`Sent`, created if absent). On a mailbox that carries several sent-shaped
+folders — a leftover `Sent` beside the one actually in use — that guess can
+land on an empty one; set the account's `sent_mailbox` to the full path
+(as `list_mailboxes` reports it) to settle it. The copy omits `Bcc`, which the
+MIME composer strips unconditionally.
+
+A failure to file never fails the send — the mail has already left, and
+saying otherwise would invite a duplicate send — but `send_draft` keeps the
+draft in that case rather than deleting the only remaining copy of the
+message. `send_email`, `reply_email`, `forward_email` and `send_draft` all
+report the outcome in their result's `sentCopy` field: `{kind: "filed", path}`,
+`{kind: "skipped"}` (setting off, or Gmail's own capture), or
+`{kind: "failed", error}`.
 
 Outbound HTML (`html: true`) is sent as `multipart/alternative` with a
 generated plain-text alternative. Forwards quote the original as converted
@@ -1161,18 +1224,60 @@ text; pass `html: true` to `forward_email` to also carry the original HTML.
 |------|-------------|
 | `list_accounts` | List all configured email accounts |
 | `list_mailboxes` | List folders with unread counts and special-use flags |
-| `list_emails` | Paginated email listing with date, sender, subject, and flag filters |
-| `get_email` | Read full email content with attachment metadata (HTML converted to readable text by default) |
-| `get_emails` | Fetch full content of multiple emails in a single call (max 20) |
+| `list_emails` | Paginated email listing with date, sender, subject, and flag filters; marks bulk mail; optional body preview |
+| `get_email` | Read full email content with attachment metadata and bulk-mail classification (HTML converted to readable text by default) |
+| `get_emails` | Fetch full content of multiple emails in a single call (max 20); same bulk markers |
 | `get_email_status` | Get read/flag/label state of an email without fetching the body |
-| `search_emails` | Search by keyword across subject, sender, and body |
-| `download_attachment` | Download an email attachment by filename or MIME part id |
+| `search_emails` | Search by keyword across subject, sender, and body; same bulk markers and optional preview as `list_emails` |
+| `download_attachment` | Download an email attachment by filename or MIME part id, base64-encoded or (if configured) saved to the server's attachment download directory |
 | `find_email_folder` | Discover the real folder(s) an email resides in (resolves virtual folders) |
 | `extract_contacts` | Extract unique contacts from recent email headers |
-| `get_thread` | Reconstruct a conversation thread via References/In-Reply-To |
+| `get_thread` | Reconstruct a conversation thread via References/In-Reply-To; same bulk markers |
 | `list_templates` | List available email templates |
 | `get_email_stats` | Email analytics — volume, top senders, daily trends |
 | `check_health` | Connection health, latency, quota, and IMAP capabilities |
+
+#### Bulk-mail classification
+
+`list_emails`, `search_emails`, `get_email`, `get_emails` and `get_thread` mark
+list and machine-generated mail, so an inbox can be triaged without reading
+bodies:
+
+| Marker | Meaning | Derived from |
+|--------|---------|--------------|
+| 📰 `newsletter` | Mailing list or subscription | `List-Unsubscribe` (RFC 2369), `List-Id` (RFC 2919), `Precedence: list` |
+| 🤖 `automated` | Machine-generated notification | `Auto-Submitted` (RFC 3834), `Precedence: bulk`/`junk` |
+| _(none)_ | Ordinary person-to-person mail | no bulk headers present |
+
+A newsletter also reports its unsubscribe URI when the sender offers one, and
+flags `1-click` when RFC 8058 one-click unsubscribe is supported. The headers
+are requested as part of the listing fetch, so classifying a whole page costs no
+extra round trip.
+
+Classification is header-derived and therefore deterministic — no model call and
+no heuristics on subject text. A sender that omits the headers is reported as
+personal mail rather than guessed at. These are sender-asserted headers, not
+verified ones — treat the marker as a signal to weigh, not a fact to defer to.
+
+#### Body previews
+
+`list_emails` and `search_emails` accept `preview: true` to include roughly 200
+characters of each message body. It is **off by default**: it fetches 1500 extra
+bytes per message and lengthens the tool output, which is a cost the caller
+should choose rather than inherit.
+
+The preview is decoded from one body part rather than from message source —
+IMAP section 1, or 1.1 when section 1 is itself a multipart. Because the fetch
+stops at a byte count rather than at an encoding boundary, decoding tolerates
+input cut mid-stream: base64 is truncated to a whole group, a half-written
+quoted-printable escape is dropped, and the replacement character left by a
+severed UTF-8 sequence is trimmed. Charsets beyond UTF-8 are handled — real mail
+still ships `iso-8859-1`.
+
+Markup is stripped whether or not the sender declared it, since bulk senders
+routinely put HTML and stylesheets in a part labelled `text/plain`. Entities and
+zero-width preheader padding are decoded, and a preview that reduces to markup
+residue is omitted: **no preview beats a misleading one**.
 
 #### Write (9)
 
@@ -1326,6 +1431,21 @@ src/
 ├── safety/                — Audit trail and rate limiter
 └── types/                 — Shared TypeScript types
 ```
+
+## Roadmap
+
+Ideas raised but deliberately not built yet, kept here so they aren't lost or
+quietly re-proposed:
+
+- **AgentMail as an alternative provider.** [AgentMail](https://agentmail.to)
+  offers API-key-only, programmatic `@agentmail.to` inboxes — no IMAP/SMTP
+  host/port/TLS/credential setup, useful for spinning up throwaway
+  agent-owned addresses. It would be additive (a second provider alongside
+  real IMAP/SMTP accounts, not a replacement), but is a product/architecture
+  decision — a new vendor dependency and tool surface — rather than a bug fix
+  or gap-fill, so it's parked here rather than auto-built. Revisit if there's
+  real demand for agent-provisioned inboxes rather than access to existing
+  mailboxes.
 
 ## Maintainers
 

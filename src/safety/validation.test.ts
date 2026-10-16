@@ -145,6 +145,46 @@ describe('validateWebhookUrl', () => {
     expect(() => validateWebhookUrl('https://0.0.0.0/hook')).toThrow('loopback or private');
   });
 
+  // 169.254.169.254 is the cloud metadata endpoint (AWS/GCP/Azure/etc.) —
+  // IAM credentials are one unauthenticated GET away from any process that
+  // can reach it.
+  it('throws on the link-local range, including the cloud metadata address', () => {
+    expect(() => validateWebhookUrl('https://169.254.169.254/latest/meta-data/')).toThrow(
+      'loopback or private',
+    );
+    expect(() => validateWebhookUrl('https://169.254.0.1/hook')).toThrow('loopback or private');
+  });
+
+  it('throws on the CGNAT range (100.64.0.0/10)', () => {
+    expect(() => validateWebhookUrl('https://100.64.0.1/hook')).toThrow('loopback or private');
+    expect(() => validateWebhookUrl('https://100.127.255.255/hook')).toThrow('loopback or private');
+    // Outside the /10: 100.128.0.0 is a public address, not CGNAT.
+    expect(() => validateWebhookUrl('https://100.128.0.1/hook')).not.toThrow();
+  });
+
+  it('throws on IPv6 link-local and unique-local addresses', () => {
+    expect(() => validateWebhookUrl('http://[fe80::1]/hook')).toThrow('loopback or private');
+    expect(() => validateWebhookUrl('http://[fc00::1]/hook')).toThrow('loopback or private');
+    expect(() => validateWebhookUrl('http://[fd12:3456::1]/hook')).toThrow('loopback or private');
+  });
+
+  it('throws on the 0.0.0.0/8 range, not just the literal address', () => {
+    expect(() => validateWebhookUrl('https://0.1.2.3/hook')).toThrow('loopback or private');
+  });
+
+  it('throws on the IPv6 unspecified address ::', () => {
+    expect(() => validateWebhookUrl('http://[::]/hook')).toThrow('loopback or private');
+  });
+
+  it('throws on an IPv4-mapped IPv6 address pointing at a private range', () => {
+    expect(() => validateWebhookUrl('http://[::ffff:169.254.169.254]/hook')).toThrow(
+      'loopback or private',
+    );
+    expect(() => validateWebhookUrl('http://[::ffff:10.0.0.1]/hook')).toThrow(
+      'loopback or private',
+    );
+  });
+
   it('allows valid public https URL', () => {
     expect(() => validateWebhookUrl('https://hooks.example.com/wh')).not.toThrow();
   });

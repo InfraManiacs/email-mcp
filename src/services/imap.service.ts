@@ -9,11 +9,20 @@ import type { ImapFlow } from 'imapflow';
 import libmime from 'libmime';
 import type { IConnectionManager } from '../connections/types.js';
 import {
+  assertAllowedExtension,
+  assertSafeDownloadBasename,
+  resolveAttachmentDownloadPath,
+  sanitizeAttachmentBasename,
+  writeDownloadFileAtomic,
+} from '../safety/attachment-download.js';
+import {
   safeAttachmentFilename,
   sanitizeMailboxName,
   sanitizeSearchQuery,
 } from '../safety/validation.js';
 import type {
+  AccountConfig,
+  AttachmentDownloadConfig,
   AttachmentMeta,
   BulkResult,
   Contact,
@@ -24,11 +33,15 @@ import type {
   EmailStats,
   LabelInfo,
   Mailbox,
+  MailboxSnapshot,
   PaginatedResult,
   QuotaInfo,
   SenderStat,
+  SentCopyResult,
 } from '../types/index.js';
 import { unflowFormatFlowed } from '../utils/body-format.js';
+import { buildPreview, findPreviewPart, PREVIEW_PART_BYTES } from '../utils/body-preview.js';
+import { BULK_HEADER_FIELDS, classifyBulk } from '../utils/bulk-headers.js';
 import { stripHtml } from '../utils/html.js';
 import { imapCommand } from '../utils/imap-error.js';
 import type { ReconnectEvent } from './event-bus.js';
@@ -65,6 +78,58 @@ export function parseAddresses(
 ): EmailAddress[] {
   if (!addrs) return [];
   return addrs.map(parseAddress);
+}
+
+/** Decode the preview from an already-fetched body part, when one is present. */
+function previewFromMessage(msg: Record<string, unknown>): string | undefined {
+  const parts = msg.bodyParts as Map<string, Buffer> | undefined;
+  if (!parts) {
+    return undefined;
+  }
+  try {
+    const part = findPreviewPart(msg.bodyStructure);
+    const raw = part ? parts.get(part.key) : undefined;
+    return part && raw ? buildPreview(raw, part) : undefined;
+  } catch {
+    // The body is sender-controlled; decoding it is a convenience, not the
+    // request. One malformed message must never fail an entire listing page
+    // over a preview nobody can act on anyway.
+    return undefined;
+  }
+}
+
+/**
+ * Fill in previews for the messages whose text sits at section 1.1.
+ *
+ * This needs its own fetch restricted to those UIDs: asking for a section a
+ * message does not have fails the entire batch on Gmail, so 1.1 cannot simply
+ * be added to the first request.
+ */
+async function fetchNestedPreviews(
+  client: ImapFlow,
+  messages: Record<string, unknown>[],
+): Promise<void> {
+  const byUid = new Map<number, Record<string, unknown>>();
+  messages.forEach((msg) => {
+    if (findPreviewPart(msg.bodyStructure)?.key === '1.1') {
+      byUid.set(msg.uid as number, msg);
+    }
+  });
+  if (byUid.size === 0) {
+    return;
+  }
+
+  // eslint-disable-next-line no-restricted-syntax
+  for await (const msg of client.fetch(
+    [...byUid.keys()].join(','),
+    { uid: true, bodyParts: [{ key: '1.1', start: 0, maxLength: PREVIEW_PART_BYTES }] },
+    { uid: true },
+  )) {
+    const target = byUid.get(msg.uid);
+    if (target) {
+      target.bodyParts = msg.bodyParts;
+    }
+  }
 }
 
 /**
@@ -104,9 +169,11 @@ export function messageToEmailMeta(msg: Record<string, unknown>): EmailMeta {
     answered: flags.has('\\Answered'),
     hasAttachments: hasAttachments(msg.bodyStructure),
     labels,
-    // `preview` stays optional in EmailMeta for a future RFC 8970 PREVIEW
-    // implementation; the old 256-byte source window never reached past real
-    // header blocks, so it was always undefined anyway.
+    // Only set when the caller opted into the preview (listEmails/searchEmails
+    // `preview: true`) and requested bodyParts accordingly; undefined
+    // otherwise, including for the IDLE watcher's shared use of this mapper.
+    preview: previewFromMessage(msg),
+    bulk: Buffer.isBuffer(msg.headers) ? classifyBulk(parseHeaders(msg.headers)) : undefined,
   };
 }
 
@@ -337,6 +404,10 @@ async function messageToEmail(
     attachments: extractAttachments(msg.bodyStructure),
     headers,
     deliveryStatus,
+    // Recomputed from the full header set rather than reusing meta.bulk: a
+    // single/thread fetch carries every header, so this is strictly more
+    // complete than the targeted HEADER.FIELDS subset a listing fetch uses.
+    bulk: classifyBulk(headers),
   };
 }
 
@@ -540,6 +611,8 @@ export default class ImapService {
       flagged?: boolean;
       hasAttachment?: boolean;
       answered?: boolean;
+      /** Fetch and decode a short body preview. Costs extra bytes per message. */
+      preview?: boolean;
     } = {},
   ): Promise<PaginatedResult<EmailMeta>> {
     const client = await this.connections.getImapClient(accountName);
@@ -607,6 +680,7 @@ export default class ImapService {
       }
 
       const items: EmailMeta[] = [];
+      const raw: Record<string, unknown>[] = [];
       const range = pageUids.join(',');
 
       // eslint-disable-next-line no-restricted-syntax
@@ -617,11 +691,25 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
+          // Targeted field fetch for bulk-mail classification — cheap enough
+          // to run over a whole page; see classifyBulk.
+          headers: BULK_HEADER_FIELDS,
+          ...(options.preview
+            ? { bodyParts: [{ key: '1', start: 0, maxLength: PREVIEW_PART_BYTES }] }
+            : {}),
         },
         { uid: true },
       )) {
-        items.push(messageToEmailMeta(msg as unknown as Record<string, unknown>));
+        raw.push(msg as unknown as Record<string, unknown>);
       }
+
+      if (options.preview) {
+        await fetchNestedPreviews(client, raw);
+      }
+
+      raw.forEach((msg) => {
+        items.push(messageToEmailMeta(msg));
+      });
 
       // Sort by date descending
       items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -743,11 +831,18 @@ export default class ImapService {
       mailbox?: string;
       page?: number;
       pageSize?: number;
+      from?: string;
       to?: string;
+      since?: string;
+      before?: string;
+      sentSince?: string;
+      sentBefore?: string;
       hasAttachment?: boolean;
       largerThan?: number;
       smallerThan?: number;
       answered?: boolean;
+      /** Fetch and decode a short body preview. Costs extra bytes per message. */
+      preview?: boolean;
     } = {},
   ): Promise<PaginatedResult<EmailMeta>> {
     const client = await this.connections.getImapClient(accountName);
@@ -755,6 +850,29 @@ export default class ImapService {
     const page = options.page ?? 1;
     const pageSize = options.pageSize ?? 20;
     const sanitizedQuery = query ? sanitizeSearchQuery(query) : '';
+
+    // Reject "no query and no filters" — IMAP would return the entire mailbox,
+    // which silently turns search_emails into list_emails. Force callers to be
+    // explicit; if they really want everything they should call list_emails.
+    const hasAnyFilter =
+      !!sanitizedQuery ||
+      !!options.from ||
+      !!options.to ||
+      !!options.since ||
+      !!options.before ||
+      !!options.sentSince ||
+      !!options.sentBefore ||
+      options.hasAttachment !== undefined ||
+      options.largerThan !== undefined ||
+      options.smallerThan !== undefined ||
+      options.answered !== undefined;
+    if (!hasAnyFilter) {
+      throw new Error(
+        'search_emails requires at least one of: query, from, to, since, before, sent_since, ' +
+          'sent_before, has_attachment, larger_than, smaller_than, answered. Use list_emails to ' +
+          'browse a mailbox without filters.',
+      );
+    }
 
     const lock = await ImapService.lockMailbox(client, mailbox);
     try {
@@ -766,8 +884,23 @@ export default class ImapService {
       // Build additional filters as AND conditions
       const andConditions: Record<string, unknown>[] = [baseCriteria];
 
+      if (options.from) {
+        andConditions.push({ from: options.from });
+      }
       if (options.to) {
         andConditions.push({ to: options.to });
+      }
+      if (options.since) {
+        andConditions.push({ since: new Date(options.since) });
+      }
+      if (options.before) {
+        andConditions.push({ before: new Date(options.before) });
+      }
+      if (options.sentSince) {
+        andConditions.push({ sentSince: new Date(options.sentSince) });
+      }
+      if (options.sentBefore) {
+        andConditions.push({ sentBefore: new Date(options.sentBefore) });
       }
       if (options.largerThan !== undefined) {
         andConditions.push({ larger: options.largerThan * 1024 });
@@ -793,7 +926,12 @@ export default class ImapService {
       // results. Skipped when structured filters are active — the cache
       // cannot evaluate them, so a union would leak non-matching messages.
       const structuredFiltersActive =
+        options.from !== undefined ||
         options.to !== undefined ||
+        options.since !== undefined ||
+        options.before !== undefined ||
+        options.sentSince !== undefined ||
+        options.sentBefore !== undefined ||
         options.largerThan !== undefined ||
         options.smallerThan !== undefined ||
         options.answered !== undefined;
@@ -861,6 +999,7 @@ export default class ImapService {
       }
 
       const items: EmailMeta[] = [];
+      const raw: Record<string, unknown>[] = [];
       const range = pageUids.join(',');
 
       // eslint-disable-next-line no-restricted-syntax
@@ -871,11 +1010,25 @@ export default class ImapService {
           envelope: true,
           flags: true,
           bodyStructure: true,
+          // Targeted field fetch for bulk-mail classification — cheap enough
+          // to run over a whole page; see classifyBulk.
+          headers: BULK_HEADER_FIELDS,
+          ...(options.preview
+            ? { bodyParts: [{ key: '1', start: 0, maxLength: PREVIEW_PART_BYTES }] }
+            : {}),
         },
         { uid: true },
       )) {
-        items.push(messageToEmailMeta(msg as unknown as Record<string, unknown>));
+        raw.push(msg as unknown as Record<string, unknown>);
       }
+
+      if (options.preview) {
+        await fetchNestedPreviews(client, raw);
+      }
+
+      raw.forEach((msg) => {
+        items.push(messageToEmailMeta(msg));
+      });
 
       items.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
@@ -965,6 +1118,27 @@ export default class ImapService {
   // Find real folder for an email
   // -------------------------------------------------------------------------
 
+  /** Folders a message is most likely to be in, in the order worth searching. */
+  private static readonly LIKELY_SPECIAL_USE = ['\\Sent', '\\Drafts', '\\Archive'];
+
+  /**
+   * Order mailboxes so the first match is the one a caller would want to act
+   * on, since the search stops there.
+   */
+  private static orderByLikelihood<T extends { path: string; specialUse?: string }>(
+    mailboxes: T[],
+  ): T[] {
+    const rank = (mailbox: T): number => {
+      if (mailbox.path === 'INBOX') return 0;
+      const specialIndex = mailbox.specialUse
+        ? ImapService.LIKELY_SPECIAL_USE.indexOf(mailbox.specialUse)
+        : -1;
+      return specialIndex === -1 ? ImapService.LIKELY_SPECIAL_USE.length + 1 : specialIndex + 1;
+    };
+    // Stable within a rank, so the server's own ordering is otherwise kept.
+    return [...mailboxes].sort((a, b) => rank(a) - rank(b));
+  }
+
   async findEmailFolder(
     accountName: string,
     emailId: string,
@@ -1005,9 +1179,19 @@ export default class ImapService {
       return true;
     });
 
-    // 3. Search each real mailbox for the Message-ID (sequential — each needs its own lock)
+    // 3. Search for the Message-ID, stopping at the first hit.
+    //
+    // Each folder costs a SELECT and a header SEARCH, and header SEARCH is
+    // typically an unindexed server-side scan. Continuing after a match spent
+    // that on every remaining folder to produce a list the caller was told to
+    // take the first entry of.
+    //
+    // Likely folders go first so the one hit is also the useful one: a
+    // message is far more often in INBOX or Sent than in an archive label.
+    const searchOrder = ImapService.orderByLikelihood(realMailboxes);
+
     const folders: string[] = [];
-    const searchMailbox = async (mbPath: string): Promise<void> => {
+    const findInMailbox = async (mbPath: string): Promise<boolean> => {
       try {
         const lock = await client.getMailboxLock(mbPath);
         try {
@@ -1015,20 +1199,22 @@ export default class ImapService {
             { header: { 'message-id': messageId } },
             { uid: true },
           );
-          if (results && Array.isArray(results) && results.length > 0) {
-            folders.push(mbPath);
-          }
+          return Array.isArray(results) && results.length > 0;
         } finally {
           lock.release();
         }
       } catch {
         // Skip folders that can't be selected or searched (e.g. \Noselect, INBOX on some providers)
+        return false;
       }
     };
     // eslint-disable-next-line no-restricted-syntax
-    for (const mb of realMailboxes) {
+    for (const mb of searchOrder) {
       // eslint-disable-next-line no-await-in-loop
-      await searchMailbox(mb.path);
+      if (await findInMailbox(mb.path)) {
+        folders.push(mb.path);
+        break;
+      }
     }
 
     return { folders, messageId };
@@ -1432,21 +1618,20 @@ export default class ImapService {
   }
 
   /**
-   * APPEND an already-sent message to the account's Sent folder.
+   * Resolve the folder `appendToSent` should file into.
    *
-   * SMTP delivers; it does not file a copy. Providers that capture sent mail
-   * server-side (Gmail, Outlook) make this unnecessary — and doing it anyway
-   * would show the user two copies — so the caller decides, behind an opt-in
-   * setting, and this method only carries it out.
-   *
-   * @returns the folder the copy landed in.
+   * `sentMailbox` settles it outright for a mailbox that carries several
+   * sent-shaped folders (a leftover `Sent` beside the server's actual
+   * `\Sent`-flagged one). Otherwise prefer the folder the server
+   * designates, then one plainly named "Sent", whatever its case.
    */
-  async appendToSent(accountName: string, raw: Buffer): Promise<string> {
-    const client = await this.connections.getImapClient(accountName);
-    const mailboxes = await client.list();
+  private static async resolveSentFolder(
+    client: ImapFlow,
+    account: AccountConfig,
+  ): Promise<string> {
+    if (account.sentMailbox) return account.sentMailbox;
 
-    // Prefer the folder the server designates; otherwise one plainly named
-    // "Sent", whatever its case.
+    const mailboxes = await client.list();
     const designated = mailboxes.find((mb) => mb.specialUse === '\\Sent');
     const byName = mailboxes.find((mb) => mb.path.toLowerCase() === 'sent');
     const sentPath = designated?.path ?? byName?.path;
@@ -1458,13 +1643,55 @@ export default class ImapService {
       // Creating it is what a mail client does, and the user opted in.
       await imapCommand('Creating the "Sent" mailbox', () => client.mailboxCreate('Sent'));
     }
-    const target = sentPath ?? 'Sent';
+    return sentPath ?? 'Sent';
+  }
 
-    // \Seen: the user wrote it, so it is not unread mail.
-    await imapCommand(`Appending a sent copy to "${target}"`, () =>
-      client.append(target, raw, ['\\Seen']),
-    );
-    return target;
+  /**
+   * Whether this account should APPEND its own copy of outgoing mail.
+   *
+   * Gmail files messages sent through its SMTP into Sent Mail itself, so an
+   * APPEND on top of that leaves the user with every sent message twice.
+   * Its IMAP server is identifiable by the X-GM-EXT-1 capability — a more
+   * reliable signal than matching on the hostname, since it also covers
+   * Google Workspace domains that don't look like gmail.com.
+   *
+   * `saveToSent` overrides the guess in either direction.
+   */
+  private static shouldFileSentCopy(account: AccountConfig, client: ImapFlow): boolean {
+    if (account.saveToSent !== undefined) return account.saveToSent;
+    // ImapFlow exposes capabilities as a Set on the client (see getCapabilities).
+    const caps = (client as unknown as Record<string, unknown>).capabilities as
+      | Set<string>
+      | undefined;
+    return !caps?.has('X-GM-EXT-1');
+  }
+
+  /**
+   * APPEND an already-sent message to the account's Sent folder.
+   *
+   * SMTP delivers; it does not file a copy. Never throws: the message has
+   * already been delivered, so a failed or skipped APPEND is reported back
+   * instead — treating it as a send failure would be worse than the
+   * original problem, and would invite a duplicate send.
+   */
+  async appendToSent(accountName: string, raw: Buffer): Promise<SentCopyResult> {
+    const client = await this.connections.getImapClient(accountName);
+    const account = this.connections.getAccount(accountName);
+
+    if (!ImapService.shouldFileSentCopy(account, client)) {
+      return { kind: 'skipped' };
+    }
+
+    try {
+      const target = await ImapService.resolveSentFolder(client, account);
+      // \Seen: the user wrote it, so it is not unread mail.
+      await imapCommand(`Appending a sent copy to "${target}"`, () =>
+        client.append(target, raw, ['\\Seen']),
+      );
+      return { kind: 'filed', path: target };
+    } catch (err) {
+      return { kind: 'failed', error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /** Delete a draft after it has been sent. */
@@ -1514,6 +1741,81 @@ export default class ImapService {
     mimeType: string;
     size: number;
     contentBase64: string;
+  }> {
+    const result = await this.downloadAttachmentBuffer(
+      accountName,
+      emailId,
+      mailbox,
+      selector,
+      maxSizeBytes,
+    );
+    return {
+      filename: result.filename,
+      mimeType: result.mimeType,
+      size: result.size,
+      contentBase64: result.content.toString('base64'),
+    };
+  }
+
+  /**
+   * Download an attachment and write it to the server-configured download
+   * directory, instead of returning it base64-encoded. `config.dir` unset
+   * means the operator has not opted in — refuse rather than guessing a
+   * location. `saveAs`, when given, is a caller-supplied basename (validated
+   * as a plain segment, never a path); otherwise the attachment's own
+   * filename is sanitized the same way `save_attachments` already does.
+   */
+  async downloadAttachmentToDownloadDir(
+    accountName: string,
+    emailId: string,
+    mailbox: string,
+    selector: string | { filename?: string; partId?: string },
+    config: AttachmentDownloadConfig,
+    saveAs?: string,
+  ): Promise<{ filename: string; mimeType: string; size: number; path: string }> {
+    if (!config.dir) {
+      throw new Error(
+        'Attachment download directory is not configured (settings.attachment_download.dir)',
+      );
+    }
+    const result = await this.downloadAttachmentBuffer(
+      accountName,
+      emailId,
+      mailbox,
+      selector,
+      config.maxBytes,
+    );
+    const basename =
+      saveAs !== undefined
+        ? assertSafeDownloadBasename(saveAs)
+        : sanitizeAttachmentBasename(result.filename);
+    assertAllowedExtension(basename, config.allowedExtensions);
+    const targetPath = await resolveAttachmentDownloadPath(config.dir, basename);
+    await writeDownloadFileAtomic(targetPath, result.content);
+    return {
+      filename: result.filename,
+      mimeType: result.mimeType,
+      size: result.size,
+      path: targetPath,
+    };
+  }
+
+  /**
+   * Download an attachment as a raw Buffer — shared by `downloadAttachment`
+   * (base64-encodes it) and `downloadAttachmentToDownloadDir` (writes it to
+   * disk), so the MIME-part lookup and decode-fallback logic lives once.
+   */
+  private async downloadAttachmentBuffer(
+    accountName: string,
+    emailId: string,
+    mailbox: string,
+    selector: string | { filename?: string; partId?: string },
+    maxSizeBytes = 5 * 1024 * 1024,
+  ): Promise<{
+    filename: string;
+    mimeType: string;
+    size: number;
+    content: Buffer;
   }> {
     const client = await this.connections.getImapClient(accountName);
     const uid = parseInt(emailId, 10);
@@ -1611,7 +1913,7 @@ export default class ImapService {
         filename: attachment.filename,
         mimeType: attachment.mimeType,
         size: content.length,
-        contentBase64: content.toString('base64'),
+        content,
       };
     } finally {
       lock.release();
@@ -1965,6 +2267,37 @@ export default class ImapService {
   // -------------------------------------------------------------------------
   // Email analytics
   // -------------------------------------------------------------------------
+
+  /**
+   * Cheap counters for a dashboard-style snapshot: one STATUS round trip for
+   * totals (no SELECT required) plus a UID-only SEARCH for today's count —
+   * never a FETCH. Contrast `getEmailStats`, which FETCHes envelope, flags
+   * and bodyStructure for every message in its window.
+   */
+  async getMailboxSnapshot(accountName: string, mailbox = 'INBOX'): Promise<MailboxSnapshot> {
+    const client = await this.connections.getImapClient(accountName);
+    const path = sanitizeMailboxName(mailbox);
+
+    const status = (await client.status(path, {
+      messages: true,
+      unseen: true,
+    })) as { messages?: number; unseen?: number };
+
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+
+    const lock = await ImapService.lockMailbox(client, path);
+    try {
+      const uids = await client.search({ since }, { uid: true });
+      return {
+        total: status.messages ?? 0,
+        unread: status.unseen ?? 0,
+        receivedToday: Array.isArray(uids) ? uids.length : 0,
+      };
+    } finally {
+      lock.release();
+    }
+  }
 
   async getEmailStats(
     accountName: string,

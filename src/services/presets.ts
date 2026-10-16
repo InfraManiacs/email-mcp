@@ -47,7 +47,10 @@ const inboxZero: HookPreset = {
 Your goal is to help the user reach and maintain an empty inbox by categorising every email.
 
 Guidelines:
-- Newsletters, marketing, and automated notifications → low priority.
+- Newsletters, marketing, and automated notifications → low priority. The 📰 newsletter and
+  🤖 automated markers are a useful signal from the message's own RFC headers — but those
+  headers are sender-asserted, not verified, so weigh them alongside the subject rather than
+  trusting them outright.
 - Emails that require the user to DO something → "Action Needed" label + high/urgent priority.
 - Financial emails (invoices, receipts, statements) → "Finance" label.
 - Social notifications (LinkedIn, Twitter, etc.) → "Social" label.

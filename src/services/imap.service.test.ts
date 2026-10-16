@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -192,6 +193,115 @@ describe('ImapService', () => {
       expect(query.source).toBeUndefined();
     });
 
+    it('requests the bulk-classification header fields and marks a newsletter', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({
+          uid: 77,
+          envelope: { subject: 'Weekly digest' },
+          flags: [],
+          headers: Buffer.from('List-Unsubscribe: <https://example.com/u/abc>\r\n\r\n'),
+        }),
+      );
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX' });
+
+      const [, query] = client.fetch.mock.calls[0]!;
+      expect(query.headers).toEqual([
+        'list-unsubscribe',
+        'list-unsubscribe-post',
+        'list-id',
+        'precedence',
+        'auto-submitted',
+      ]);
+      expect(result.items[0]!.bulk).toMatchObject({ kind: 'newsletter' });
+    });
+
+    it('leaves bulk undefined for personal mail', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({
+          uid: 77,
+          envelope: { subject: 'Lunch?' },
+          flags: [],
+          headers: Buffer.from('\r\n'),
+        }),
+      );
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX' });
+
+      expect(result.items[0]!.bulk).toBeUndefined();
+    });
+
+    it('does not request bodyParts when preview is not requested', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({ uid: 77, envelope: { subject: 'Hi' }, flags: [] }),
+      );
+
+      await service.listEmails('test', { mailbox: 'INBOX' });
+
+      const [, query] = client.fetch.mock.calls[0]!;
+      expect(query.bodyParts).toBeUndefined();
+    });
+
+    it('decodes a body preview when requested, for a simple single-part message', async () => {
+      client.search.mockResolvedValue([77]);
+      client.fetch.mockImplementation(
+        fetchYielding({
+          uid: 77,
+          envelope: { subject: 'Hi' },
+          flags: [],
+          bodyStructure: { type: 'text/plain', encoding: '8bit', parameters: { charset: 'utf-8' } },
+          bodyParts: new Map([['1', Buffer.from('The actual message body text.')]]),
+        }),
+      );
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX', preview: true });
+
+      const [, query] = client.fetch.mock.calls[0]!;
+      expect(query.bodyParts).toEqual([{ key: '1', start: 0, maxLength: 1500 }]);
+      expect(result.items[0]!.preview).toBe('The actual message body text.');
+    });
+
+    // Roughly 4% of real messages: section 1 is itself a multipart, so the
+    // text sits at 1.1 — which needs its own fetch, since asking for a
+    // section a message does not have fails the whole batch on Gmail.
+    it('fetches the nested 1.1 part in a second pass when section 1 is itself a multipart', async () => {
+      client.search.mockResolvedValue([77]);
+      const nestedStructure = {
+        type: 'multipart/alternative',
+        childNodes: [
+          { part: '1.1', type: 'text/plain', encoding: '8bit', parameters: { charset: 'utf-8' } },
+          { part: '1.2', type: 'text/html' },
+        ],
+      };
+      let callCount = 0;
+      client.fetch.mockImplementation(() => {
+        callCount += 1;
+        if (callCount === 1) {
+          return (async function* firstPass() {
+            yield {
+              uid: 77,
+              envelope: { subject: 'Hi' },
+              flags: [],
+              bodyStructure: nestedStructure,
+            };
+          })();
+        }
+        return (async function* secondPass() {
+          yield { uid: 77, bodyParts: new Map([['1.1', Buffer.from('Nested plain text body.')]]) };
+        })();
+      });
+
+      const result = await service.listEmails('test', { mailbox: 'INBOX', preview: true });
+
+      expect(client.fetch).toHaveBeenCalledTimes(2);
+      const [, secondQuery] = client.fetch.mock.calls[1]!;
+      expect(secondQuery.bodyParts).toEqual([{ key: '1.1', start: 0, maxLength: 1500 }]);
+      expect(result.items[0]!.preview).toBe('Nested plain text body.');
+    });
+
     it('rejects a message with no UID rather than falling back to its sequence number', async () => {
       client.search.mockResolvedValue([5]);
       // A server that answers a UID FETCH without a UID is violating the
@@ -247,6 +357,71 @@ describe('ImapService', () => {
 
       expect(cacheStub.searchMessages).not.toHaveBeenCalled();
     });
+
+    it('leaves the cache out when a date filter is active', async () => {
+      stubMailbox();
+      client.search.mockResolvedValue([]);
+      const cacheStub = { searchMessages: vi.fn().mockReturnValue([{ uid: 9 }]) };
+      service.setCacheStore(cacheStub as never);
+
+      await service.searchEmails('test', 'report', { since: '2026-05-01T00:00:00Z' });
+
+      expect(cacheStub.searchMessages).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // searchEmails — criteria builder
+  // -----------------------------------------------------------------------
+
+  describe('searchEmails filters', () => {
+    it('throws when no query and no filters are provided', async () => {
+      await expect(service.searchEmails('test', '')).rejects.toThrow(
+        /at least one of: query, from, to/,
+      );
+      expect(client.search).not.toHaveBeenCalled();
+    });
+
+    it('AND-combines from with the OR keyword criteria', async () => {
+      client.search.mockResolvedValue([]);
+
+      await service.searchEmails('test', 'invoice', { from: 'billing@example.com' });
+
+      const [criteria] = client.search.mock.calls[0]!;
+      expect(criteria).toMatchObject({
+        or: [{ subject: 'invoice' }, { from: 'invoice' }, { body: 'invoice' }],
+        from: 'billing@example.com',
+      });
+    });
+
+    it('passes since/before/sentSince/sentBefore as Date objects', async () => {
+      client.search.mockResolvedValue([]);
+
+      await service.searchEmails('test', '', {
+        from: 'billing@example.com',
+        since: '2026-05-01T00:00:00Z',
+        before: '2026-05-08T00:00:00Z',
+        sentSince: '2026-05-01T00:00:00Z',
+        sentBefore: '2026-05-08T00:00:00Z',
+      });
+
+      const [criteria] = client.search.mock.calls[0]! as [Record<string, unknown>];
+      expect(criteria.since).toBeInstanceOf(Date);
+      expect(criteria.before).toBeInstanceOf(Date);
+      expect(criteria.sentSince).toBeInstanceOf(Date);
+      expect(criteria.sentBefore).toBeInstanceOf(Date);
+      expect((criteria.since as Date).toISOString()).toBe('2026-05-01T00:00:00.000Z');
+      expect((criteria.before as Date).toISOString()).toBe('2026-05-08T00:00:00.000Z');
+    });
+
+    it('allows a search with only a filter and no keyword', async () => {
+      client.search.mockResolvedValue([]);
+
+      await expect(
+        service.searchEmails('test', '', { since: '2026-05-01T00:00:00Z' }),
+      ).resolves.toMatchObject({ items: [], total: 0 });
+      expect(client.search).toHaveBeenCalledTimes(1);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -290,6 +465,22 @@ describe('ImapService', () => {
         source: Buffer.from('Subject: Nested\r\n\r\nfallback body\r\n', 'utf-8'),
       });
       client.download = vi.fn();
+    });
+
+    it('classifies bulk mail from the full header set', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        envelope: { subject: 'Nested', messageId: '<a@b>' },
+        flags: [],
+        bodyStructure: nestedStructure,
+        source: Buffer.from('Subject: Nested\r\n\r\nfallback body\r\n', 'utf-8'),
+        headers: Buffer.from('Precedence: bulk\r\n\r\n'),
+      });
+      client.download.mockResolvedValue(downloadYielding('x'));
+
+      const email = await service.getEmail('test', '42', 'INBOX');
+
+      expect(email.bulk).toMatchObject({ kind: 'automated' });
     });
 
     it('downloads the real text/plain part, not hardcoded part "1"', async () => {
@@ -860,9 +1051,9 @@ describe('ImapService', () => {
         { path: '[Gmail]/Sent Mail', specialUse: '\\Sent' },
       ]);
 
-      const path = await service.appendToSent('test', Buffer.from('raw message'));
+      const result = await service.appendToSent('test', Buffer.from('raw message'));
 
-      expect(path).toBe('[Gmail]/Sent Mail');
+      expect(result).toEqual({ kind: 'filed', path: '[Gmail]/Sent Mail' });
       expect(client.append).toHaveBeenCalledWith('[Gmail]/Sent Mail', expect.any(Buffer), [
         '\\Seen',
       ]);
@@ -871,9 +1062,9 @@ describe('ImapService', () => {
     it('falls back to "Sent" when no folder advertises the special use', async () => {
       client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }, { path: 'Sent' }]);
 
-      const path = await service.appendToSent('test', Buffer.from('raw'));
+      const result = await service.appendToSent('test', Buffer.from('raw'));
 
-      expect(path).toBe('Sent');
+      expect(result).toEqual({ kind: 'filed', path: 'Sent' });
       expect(client.mailboxCreate).not.toHaveBeenCalled();
     });
 
@@ -883,10 +1074,10 @@ describe('ImapService', () => {
     it('creates the Sent folder when the server has none', async () => {
       client.list.mockResolvedValue([{ path: 'INBOX', specialUse: '\\Inbox' }]);
 
-      const path = await service.appendToSent('test', Buffer.from('raw'));
+      const result = await service.appendToSent('test', Buffer.from('raw'));
 
       expect(client.mailboxCreate).toHaveBeenCalledWith('Sent');
-      expect(path).toBe('Sent');
+      expect(result).toEqual({ kind: 'filed', path: 'Sent' });
       expect(client.append).toHaveBeenCalledWith('Sent', expect.any(Buffer), ['\\Seen']);
     });
 
@@ -994,6 +1185,75 @@ describe('ImapService', () => {
       const message = await savedMessage({ to: ['a@b.c'], subject: 'Hi', body: 'just text' });
       expect(message).toContain('Content-Type: text/plain; charset=utf-8');
       expect(message).not.toContain('multipart/alternative');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // appendToSent: Gmail dedup, sentMailbox override, failure reporting
+  //
+  // Gmail files messages sent through its SMTP into Sent Mail itself, so
+  // APPENDing on top of that would give the user every sent message twice.
+  // -----------------------------------------------------------------------
+
+  describe('appendToSent — Gmail dedup and overrides', () => {
+    it('skips filing on a server that advertises X-GM-EXT-1', async () => {
+      client.capabilities.add('X-GM-EXT-1');
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'skipped' });
+      expect(client.append).not.toHaveBeenCalled();
+      expect(client.list).not.toHaveBeenCalled();
+    });
+
+    it('files anyway when the account explicitly sets save_to_sent = true', async () => {
+      client.capabilities.add('X-GM-EXT-1');
+      connections.getAccount.mockReturnValue({
+        name: 'test',
+        saveToSent: true,
+      });
+      client.list.mockResolvedValue([{ path: 'Sent', specialUse: '\\Sent' }]);
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'filed', path: 'Sent' });
+      expect(client.append).toHaveBeenCalledOnce();
+    });
+
+    it('skips filing when the account explicitly sets save_to_sent = false, even off Gmail', async () => {
+      connections.getAccount.mockReturnValue({
+        name: 'test',
+        saveToSent: false,
+      });
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'skipped' });
+      expect(client.append).not.toHaveBeenCalled();
+    });
+
+    it("prefers the configured sentMailbox over the server's guess, with no folder lookup", async () => {
+      connections.getAccount.mockReturnValue({
+        name: 'test',
+        sentMailbox: 'INBOX.Sent Messages',
+      });
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'filed', path: 'INBOX.Sent Messages' });
+      expect(client.append).toHaveBeenCalledWith('INBOX.Sent Messages', expect.any(Buffer), [
+        '\\Seen',
+      ]);
+      expect(client.list).not.toHaveBeenCalled();
+    });
+
+    it('reports a failed APPEND instead of throwing, so a completed send never looks failed', async () => {
+      client.list.mockResolvedValue([{ path: 'Sent', specialUse: '\\Sent' }]);
+      client.append.mockRejectedValue(new Error('Over quota'));
+
+      const result = await service.appendToSent('test', Buffer.from('raw'));
+
+      expect(result).toEqual({ kind: 'failed', error: expect.stringContaining('Over quota') });
     });
   });
 
@@ -1119,6 +1379,126 @@ describe('ImapService', () => {
       await expect(service.downloadAttachment('test', '42', 'INBOX', 'huge.pdf')).rejects.toThrow(
         /5\.4MB/,
       );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // downloadAttachmentToDownloadDir
+  // -----------------------------------------------------------------------
+
+  describe('downloadAttachmentToDownloadDir', () => {
+    let downloadDir: string;
+
+    beforeEach(async () => {
+      // realpath'd upfront: resolveAttachmentDownloadPath canonicalizes the
+      // configured dir (macOS aliases /var to /private/var), so comparing
+      // against the raw mkdtemp path would fail even on a correct result.
+      downloadDir = await fs.realpath(mkdtempSync(join(tmpdir(), 'email-mcp-attach-')));
+    });
+
+    afterEach(() => {
+      rmSync(downloadDir, { recursive: true, force: true });
+    });
+
+    function mockPdfAttachment(filename: string) {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'application/pdf',
+          disposition: 'attachment',
+          dispositionParameters: { filename },
+          size: 100,
+        },
+      });
+      client.download.mockResolvedValue(downloadYielding('pdf bytes'));
+    }
+
+    it('writes the attachment under the configured dir using its own filename', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      const result = await service.downloadAttachmentToDownloadDir(
+        'test',
+        '42',
+        'INBOX',
+        'invoice.pdf',
+        { dir: downloadDir, allowedExtensions: ['pdf'], maxBytes: 1024 },
+      );
+
+      expect(result.path).toBe(join(downloadDir, 'invoice.pdf'));
+      expect(await fs.readFile(result.path, 'utf-8')).toBe('pdf bytes');
+    });
+
+    it('uses the caller-supplied saveAs name instead of the attachment filename', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      const result = await service.downloadAttachmentToDownloadDir(
+        'test',
+        '42',
+        'INBOX',
+        'invoice.pdf',
+        { dir: downloadDir, allowedExtensions: ['pdf'], maxBytes: 1024 },
+        'renamed.pdf',
+      );
+
+      expect(result.path).toBe(join(downloadDir, 'renamed.pdf'));
+    });
+
+    it('rejects a saveAs that is not a plain basename', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      await expect(
+        service.downloadAttachmentToDownloadDir(
+          'test',
+          '42',
+          'INBOX',
+          'invoice.pdf',
+          { dir: downloadDir, allowedExtensions: ['pdf'], maxBytes: 1024 },
+          '../../etc/passwd',
+        ),
+      ).rejects.toThrow('path separators');
+    });
+
+    it('rejects an extension outside the configured allowlist', async () => {
+      mockPdfAttachment('script.exe');
+
+      await expect(
+        service.downloadAttachmentToDownloadDir('test', '42', 'INBOX', 'script.exe', {
+          dir: downloadDir,
+          allowedExtensions: ['pdf'],
+          maxBytes: 1024,
+        }),
+      ).rejects.toThrow('not allowed');
+    });
+
+    it('refuses to run when no download directory is configured', async () => {
+      mockPdfAttachment('invoice.pdf');
+
+      await expect(
+        service.downloadAttachmentToDownloadDir('test', '42', 'INBOX', 'invoice.pdf', {
+          allowedExtensions: ['pdf'],
+          maxBytes: 1024,
+        }),
+      ).rejects.toThrow('not configured');
+    });
+
+    it('applies the configured maxBytes cap, not the base64 default', async () => {
+      client.fetchOne.mockResolvedValue({
+        uid: 42,
+        bodyStructure: {
+          type: 'application/pdf',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'big.pdf' },
+          size: 2048,
+        },
+      });
+
+      await expect(
+        service.downloadAttachmentToDownloadDir('test', '42', 'INBOX', 'big.pdf', {
+          dir: downloadDir,
+          allowedExtensions: ['pdf'],
+          maxBytes: 1024,
+        }),
+      ).rejects.toThrow(/exceeds/);
     });
   });
 
@@ -1600,6 +1980,78 @@ describe('getMailboxStatus', () => {
   });
 });
 
+// getEmailStats runs SEARCH SINCE and then FETCHes envelope, flags and
+// bodyStructure for every UID in the window — a resource that only needs
+// three counters was paying for all of that. getMailboxSnapshot uses STATUS
+// for totals (no SELECT required) and a UID-only SEARCH for today's count.
+describe('getMailboxSnapshot', () => {
+  it('reads totals from STATUS and today from a UID-only SEARCH, never FETCHing', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({ messages: 42, unseen: 7 });
+    client.search.mockResolvedValue([101, 102, 103]);
+    const service = new ImapService(createMockConnectionManager(client));
+
+    const snapshot = await service.getMailboxSnapshot('test', 'INBOX');
+
+    expect(snapshot).toEqual({ total: 42, unread: 7, receivedToday: 3 });
+    expect(client.status).toHaveBeenCalledWith('INBOX', { messages: true, unseen: true });
+    expect(client.search).toHaveBeenCalledWith({ since: expect.any(Date) }, { uid: true });
+    expect(client.fetch).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('counts only messages received since local midnight today', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({ messages: 1, unseen: 0 });
+    const service = new ImapService(createMockConnectionManager(client));
+
+    await service.getMailboxSnapshot('test', 'INBOX');
+
+    const [sinceArg] = client.search.mock.calls[0] as [{ since: Date }, unknown];
+    const since = sinceArg.since;
+    const now = new Date();
+    expect(since.getFullYear()).toBe(now.getFullYear());
+    expect(since.getMonth()).toBe(now.getMonth());
+    expect(since.getDate()).toBe(now.getDate());
+    expect(since.getHours()).toBe(0);
+    expect(since.getMinutes()).toBe(0);
+    expect(since.getSeconds()).toBe(0);
+    service.dispose();
+  });
+
+  it('treats missing STATUS counters as zero rather than undefined', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({});
+    const service = new ImapService(createMockConnectionManager(client));
+
+    const snapshot = await service.getMailboxSnapshot('test', 'INBOX');
+
+    expect(snapshot).toEqual({ total: 0, unread: 0, receivedToday: 0 });
+    service.dispose();
+  });
+
+  it('defaults to INBOX when no mailbox is given', async () => {
+    const client = createMockImapClient();
+    const service = new ImapService(createMockConnectionManager(client));
+
+    await service.getMailboxSnapshot('test');
+
+    expect(client.status).toHaveBeenCalledWith('INBOX', { messages: true, unseen: true });
+    service.dispose();
+  });
+
+  it('releases the mailbox lock even when the SEARCH fails', async () => {
+    const client = createMockImapClient();
+    client.search.mockRejectedValue(new Error('boom'));
+    const service = new ImapService(createMockConnectionManager(client));
+
+    await expect(service.getMailboxSnapshot('test', 'INBOX')).rejects.toThrow('boom');
+
+    expect(client._releaseFn).toHaveBeenCalled();
+    service.dispose();
+  });
+});
+
 describe('label writes invalidate the mirror', () => {
   let client: ReturnType<typeof createMockImapClient>;
   let service: ImapService;
@@ -1631,5 +2083,101 @@ describe('label writes invalidate the mirror', () => {
     await service.removeLabel('test', '10', 'INBOX', 'Work');
 
     expect(changed).toEqual([{ account: 'test', mailbox: 'INBOX' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findEmailFolder: stop at the first match, search likely folders first
+//
+// Each folder costs a SELECT and a header SEARCH, and header SEARCH is
+// typically an unindexed server-side scan — continuing after a match spent
+// that on every remaining folder to build a list the caller was told to use
+// only the first entry of.
+// ---------------------------------------------------------------------------
+
+describe('ImapService.findEmailFolder', () => {
+  let client: ReturnType<typeof createMockImapClient>;
+  let service: ImapService;
+
+  /** Mailboxes as client.list() returns them, in an unhelpful order. */
+  const mailboxes = [
+    { path: 'Archives2019', listed: true, flags: new Set<string>() },
+    { path: 'Klakedelle', listed: true, flags: new Set<string>() },
+    { path: 'Sent', listed: true, flags: new Set<string>(), specialUse: '\\Sent' },
+    { path: 'INBOX', listed: true, flags: new Set<string>() },
+    { path: 'Travaux', listed: true, flags: new Set<string>() },
+  ];
+
+  beforeEach(() => {
+    client = createMockImapClient();
+    service = new ImapService(createMockConnectionManager(client));
+    client.fetchOne.mockResolvedValue({
+      headers: Buffer.from('Message-ID: <target@example.com>\r\n'),
+    });
+    client.list.mockResolvedValue(mailboxes);
+  });
+
+  /** Make the Message-ID search hit in exactly one mailbox. */
+  function messageLivesIn(path: string) {
+    let currentMailbox = '';
+    client.getMailboxLock.mockImplementation(async (mailboxPath: string) => {
+      currentMailbox = mailboxPath;
+      return { release: vi.fn() };
+    });
+    client.search.mockImplementation(async () => (currentMailbox === path ? [42] : []));
+  }
+
+  it('searches INBOX before any other folder', async () => {
+    messageLivesIn('INBOX');
+
+    const result = await service.findEmailFolder('test', '42', 'INBOX');
+
+    expect(result.folders).toEqual(['INBOX']);
+    // One SELECT and one SEARCH, not one per folder.
+    expect(client.search).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops as soon as a folder matches', async () => {
+    messageLivesIn('Sent');
+
+    const result = await service.findEmailFolder('test', '42', 'INBOX');
+
+    expect(result.folders).toEqual(['Sent']);
+    // INBOX then Sent — the three remaining folders are never selected, which
+    // is the whole point.
+    expect(client.search).toHaveBeenCalledTimes(2);
+  });
+
+  it('still finds a message in an ordinary folder', async () => {
+    messageLivesIn('Klakedelle');
+
+    const result = await service.findEmailFolder('test', '42', 'INBOX');
+
+    expect(result.folders).toEqual(['Klakedelle']);
+  });
+
+  it('reports no folder when nothing matches', async () => {
+    messageLivesIn('nowhere');
+
+    const result = await service.findEmailFolder('test', '42', 'INBOX');
+
+    expect(result.folders).toEqual([]);
+    expect(result.messageId).toBe('<target@example.com>');
+  });
+
+  it('keeps searching past a folder it cannot select', async () => {
+    let currentMailbox = '';
+    client.getMailboxLock.mockImplementation(async (mailboxPath: string) => {
+      currentMailbox = mailboxPath;
+      // Sent is searched second, before the match — an unselectable folder
+      // there must not abandon the hunt.
+      if (mailboxPath === 'Sent') throw new Error('NO [SERVERBUG] cannot select');
+      return { release: vi.fn() };
+    });
+    client.search.mockImplementation(async () => (currentMailbox === 'Klakedelle' ? [42] : []));
+
+    const result = await service.findEmailFolder('test', '42', 'INBOX');
+
+    expect(result.folders).toEqual(['Klakedelle']);
   });
 });

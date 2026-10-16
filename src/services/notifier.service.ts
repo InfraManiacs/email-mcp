@@ -29,6 +29,11 @@ export interface AlertPayload {
   priority: UrgencyLevel;
   labels?: string[];
   ruleName?: string;
+  /** Email UID — lets a webhook consumer act on the message (e.g. fetch it). */
+  uid?: string;
+  /** Mailbox the email was found in. */
+  folder?: string;
+  hasAttachments?: boolean;
 }
 
 export interface PlatformDiagnostics {
@@ -407,6 +412,9 @@ export default class NotifierService {
       priority: payload.priority,
       labels: payload.labels ?? [],
       rule: payload.ruleName ?? null,
+      uid: payload.uid ?? null,
+      folder: payload.folder ?? null,
+      hasAttachments: payload.hasAttachments ?? false,
       timestamp: new Date().toISOString(),
     });
 
@@ -421,6 +429,10 @@ export default class NotifierService {
         headers: { 'Content-Type': 'application/json' },
         body,
         signal: controller.signal,
+        // A compromised or misconfigured endpoint could 302 this request to
+        // an internal address after the URL itself passed validation — never
+        // follow it.
+        redirect: 'error',
       });
       if (!resp.ok) {
         await mcpLog('warning', 'notifier', `Webhook returned ${resp.status}`);

@@ -80,3 +80,61 @@ describe('NotifierService.notifyRaw', () => {
     expect(execFileMock).toHaveBeenCalledTimes(5);
   });
 });
+
+describe('NotifierService webhook dispatch', () => {
+  let notifier: NotifierService;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    notifier = new NotifierService(
+      buildAlertsConfig({ webhookUrl: 'https://hooks.example.com/wh' }),
+    );
+  });
+
+  afterEach(() => {
+    notifier.stop();
+    vi.unstubAllGlobals();
+  });
+
+  // A compromised or misconfigured external endpoint could 302 the request
+  // to an internal address after the URL itself passed validation — refuse
+  // to follow it rather than silently completing an SSRF via redirect.
+  it('refuses to follow a webhook redirect', async () => {
+    await notifier.alert({
+      account: 'test',
+      sender: { address: 'a@b.c' },
+      subject: 'hi',
+      priority: 'high',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://hooks.example.com/wh',
+      expect.objectContaining({ redirect: 'error' }),
+    );
+  });
+
+  // Without these, a webhook consumer has no way to act on the message
+  // (fetch it, check its attachments) — just a sender and a subject line.
+  it('carries uid, folder and hasAttachments in the webhook body', async () => {
+    await notifier.alert({
+      account: 'test',
+      sender: { address: 'a@b.c' },
+      subject: 'hi',
+      priority: 'high',
+      uid: '42',
+      folder: 'INBOX',
+      hasAttachments: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const [, options] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(JSON.parse(options.body)).toMatchObject({
+      uid: '42',
+      folder: 'INBOX',
+      hasAttachments: true,
+    });
+  });
+});

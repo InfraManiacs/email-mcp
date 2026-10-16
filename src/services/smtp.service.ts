@@ -10,8 +10,9 @@ import type { IConnectionManager } from '../connections/types.js';
 import { mcpLog } from '../logging.js';
 import type RateLimiter from '../safety/rate-limiter.js';
 import { sanitizeTemplateVariable } from '../safety/validation.js';
-import type { SendResult } from '../types/index.js';
+import type { SendResult, SentCopyResult } from '../types/index.js';
 import { stripHtml } from '../utils/html.js';
+import { quoteOriginalAsHtml, quoteOriginalAsText } from '../utils/quote.js';
 import type { PreparedAttachment } from './attachments.js';
 import type ImapService from './imap.service.js';
 
@@ -54,9 +55,9 @@ export default class SmtpService {
   /**
    * File a copy of a just-sent message in the Sent folder.
    *
-   * SMTP delivers; it files nothing. Gmail and Outlook capture sent mail
-   * server-side, so this is opt-in: doing it unasked would give those users
-   * two copies of everything they send.
+   * SMTP delivers; it files nothing. This is opt-in (`saveToSent`) — and
+   * `ImapService.appendToSent` itself skips accounts Gmail already files
+   * sent mail for, since doing it anyway would give those users two copies.
    *
    * The copy is composed from the same mail options that were just sent,
    * carrying the Message-ID the transport reported, so a later reply threads
@@ -68,29 +69,34 @@ export default class SmtpService {
    * MIME boundary strings, which no reader cares about.
    *
    * Never throws. The mail has already left; reporting a failure here would
-   * tell the user the send failed and invite a duplicate send.
+   * tell the user the send failed and invite a duplicate send. The outcome is
+   * returned instead, so callers can tell a failure from an intentional skip.
    */
   private async fileCopyInSent(
     accountName: string,
     mail: Record<string, unknown>,
     messageId: string | undefined,
-  ): Promise<void> {
-    if (!this.saveToSent) return;
+  ): Promise<SentCopyResult> {
+    if (!this.saveToSent) return { kind: 'skipped' };
 
+    let result: SentCopyResult;
     try {
       const raw = await new MailComposer({ ...mail, ...(messageId ? { messageId } : {}) })
         .compile()
         .build();
-      await this.imapService.appendToSent(accountName, raw);
+      result = await this.imapService.appendToSent(accountName, raw);
     } catch (err) {
+      result = { kind: 'failed', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    if (result.kind === 'failed') {
       await mcpLog(
         'warning',
         'smtp',
-        `sent, but could not file a copy in the Sent folder: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `sent, but could not file a copy in the Sent folder: ${result.error}`,
       );
     }
+    return result;
   }
 
   // -------------------------------------------------------------------------
@@ -136,11 +142,12 @@ export default class SmtpService {
     };
 
     const result = await transport.sendMail(mail);
-    await this.fileCopyInSent(accountName, mail, result.messageId);
+    const sentCopy = await this.fileCopyInSent(accountName, mail, result.messageId);
 
     return {
       messageId: result.messageId ?? '',
       status: 'sent',
+      sentCopy,
     };
   }
 
@@ -157,6 +164,13 @@ export default class SmtpService {
       replyAll?: boolean;
       html?: boolean;
       attachments?: PreparedAttachment[];
+      /**
+       * When true (default), the original message is appended below the reply
+       * as a quoted block (Thunderbird/Outlook style: "On DATE, NAME wrote:"
+       * followed by `>`-prefixed lines, or `<blockquote type="cite">` for HTML
+       * replies). Set false to send the bare reply body only.
+       */
+      quoteOriginal?: boolean;
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -190,6 +204,19 @@ export default class SmtpService {
       ? original.subject
       : `Re: ${original.subject}`;
 
+    // Appended below the reply unless explicitly disabled — the same
+    // convention every desktop client (Thunderbird, Outlook, Apple Mail)
+    // applies automatically. In the HTML case the plain-text alternative
+    // comes from stripHtml, which already turns a <blockquote> into "> "
+    // lines, so only the HTML body needs the quote appended.
+    const includeQuote = options.quoteOriginal !== false;
+    const htmlBody = options.html
+      ? options.body + (includeQuote ? quoteOriginalAsHtml(original) : '')
+      : undefined;
+    const textBody = options.html
+      ? undefined
+      : options.body + (includeQuote ? quoteOriginalAsText(original) : '');
+
     const transport = await this.connections.getSmtpTransport(accountName);
 
     const mail = {
@@ -199,20 +226,21 @@ export default class SmtpService {
       subject,
       inReplyTo: original.messageId,
       references: references.join(' '),
-      ...(options.html
-        ? { html: options.body, text: stripHtml(options.body) }
-        : { text: options.body }),
+      ...(htmlBody !== undefined
+        ? { html: htmlBody, text: stripHtml(htmlBody) }
+        : { text: textBody }),
       ...(options.attachments?.length
         ? { attachments: options.attachments.map(toTransportAttachment) }
         : {}),
     };
 
     const result = await transport.sendMail(mail);
-    await this.fileCopyInSent(accountName, mail, result.messageId);
+    const sentCopy = await this.fileCopyInSent(accountName, mail, result.messageId);
 
     return {
       messageId: result.messageId ?? '',
       status: 'sent',
+      sentCopy,
     };
   }
 
@@ -338,11 +366,12 @@ export default class SmtpService {
     };
 
     const result = await transport.sendMail(mail);
-    await this.fileCopyInSent(accountName, mail, result.messageId);
+    const sentCopy = await this.fileCopyInSent(accountName, mail, result.messageId);
 
     return {
       messageId: result.messageId ?? '',
       status: 'sent',
+      sentCopy,
     };
   }
 
@@ -392,14 +421,20 @@ export default class SmtpService {
     };
 
     const result = await transport.sendMail(mail);
-    await this.fileCopyInSent(accountName, mail, result.messageId);
+    const sentCopy = await this.fileCopyInSent(accountName, mail, result.messageId);
 
-    // Delete the draft after successful send
-    await this.imapService.deleteDraft(accountName, draftId, draftsPath);
+    // Delete the draft after a successful send — unless the Sent-copy APPEND
+    // failed. The copy would otherwise disappear entirely: the draft gone,
+    // and no replacement filed to take its place. A copy that was skipped on
+    // purpose (saveToSent off, or Gmail already filing it) is not this case.
+    if (sentCopy.kind !== 'failed') {
+      await this.imapService.deleteDraft(accountName, draftId, draftsPath);
+    }
 
     return {
       messageId: result.messageId ?? '',
       status: 'sent',
+      sentCopy,
     };
   }
 }

@@ -8,6 +8,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { parse as parseTOML, stringify as stringifyTOML } from 'smol-toml';
+import {
+  DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
+  parseExtensionAllowlist,
+} from '../safety/attachment-download.js';
 import type { AccountConfig, AppConfig, HookRule, OAuth2Config } from '../types/index.js';
 import type { RawAccountConfig, RawAppConfig } from './schema.js';
 import { AppConfigFileSchema } from './schema.js';
@@ -90,6 +94,17 @@ function loadFromEnv(): RawAppConfig | null {
       },
       attachments: {
         auto_download: process.env.MCP_EMAIL_ATTACHMENTS_AUTO_DOWNLOAD !== 'false',
+      },
+      attachment_download: {
+        dir: process.env.MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR,
+        allowed_extensions: parseExtensionAllowlist(
+          process.env.MCP_EMAIL_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS,
+        ),
+        max_bytes: parseInt(
+          process.env.MCP_EMAIL_ATTACHMENT_DOWNLOAD_MAX_BYTES ??
+            String(DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES),
+          10,
+        ),
       },
       scheduler: {
         sent_retention_days: parseInt(
@@ -265,6 +280,8 @@ function normalizeAccount(raw: RawAccountConfig): AccountConfig {
     password: raw.password,
     oauth2: raw.oauth2 ? normalizeOAuth2(raw.oauth2) : undefined,
     maxAttachmentMb: raw.max_attachment_mb,
+    sentMailbox: raw.sent_mailbox,
+    saveToSent: raw.save_to_sent,
     imap: {
       host: raw.imap.host,
       port: raw.imap.port,
@@ -341,6 +358,11 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       },
       attachments: {
         autoDownload: raw.settings.attachments.auto_download,
+      },
+      attachmentDownload: {
+        dir: raw.settings.attachment_download.dir,
+        allowedExtensions: raw.settings.attachment_download.allowed_extensions,
+        maxBytes: raw.settings.attachment_download.max_bytes,
       },
       scheduler: {
         sentRetentionDays: raw.settings.scheduler.sent_retention_days,
@@ -553,6 +575,15 @@ read_only = false  # set to true to disable the mailbox-write tools
 # [settings.send]
 # max_attachment_mb = 25
 # save_to_sent = false
+
+# download_attachment's save_to_download_dir writes into this directory and
+# returns only metadata (path/size/mime), skipping base64 — useful for large
+# files or handing a document to another MCP server by path. Unset (the
+# default) disables the option. Also settable via MCP_EMAIL_ATTACHMENT_DOWNLOAD_DIR.
+# [settings.attachment_download]
+# dir = "/data/attachments"
+# allowed_extensions = ["pdf", "png", "jpg", "jpeg", "webp", "tiff", "txt", "md", "doc", "docx", "odt", "xls", "xlsx", "csv"]
+# max_bytes = 26214400
 
 # Scheduled sends. The queue keeps one JSON file per sent email under
 # $XDG_STATE_HOME/email-mcp/scheduled/sent/; retention bounds how far back

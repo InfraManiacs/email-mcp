@@ -69,6 +69,7 @@ describe('SmtpService', () => {
       expect(result).toEqual({
         messageId: '<test@example.com>',
         status: 'sent',
+        sentCopy: { kind: 'skipped' },
       });
       expect(transport.sendMail).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -179,7 +180,7 @@ describe('saving a copy to the Sent folder', () => {
     const transport = createMockTransport();
     const connections = createMockConnectionManager(transport);
     const imap = {
-      appendToSent: vi.fn().mockResolvedValue('Sent'),
+      appendToSent: vi.fn().mockResolvedValue({ kind: 'filed', path: 'Sent' }),
       fetchDraft: vi.fn(),
       deleteDraft: vi.fn().mockResolvedValue(undefined),
     };
@@ -214,6 +215,7 @@ describe('saving a copy to the Sent folder', () => {
     expect(message).toContain(result.messageId);
     expect(message).toContain('Subject: Quarterly');
     expect(message).toContain('a@b.c');
+    expect(result.sentCopy).toEqual({ kind: 'filed', path: 'Sent' });
   });
 
   // Documented limitation, pinned so it cannot change silently: nodemailer's
@@ -237,7 +239,13 @@ describe('saving a copy to the Sent folder', () => {
     const { service, imap } = withImap(true);
     imap.appendToSent.mockRejectedValue(new Error('NO [TRYCREATE] no Sent folder'));
 
-    await expect(service.sendEmail('test', mail)).resolves.toMatchObject({ status: 'sent' });
+    const result = await service.sendEmail('test', mail);
+
+    expect(result.status).toBe('sent');
+    expect(result.sentCopy).toEqual({
+      kind: 'failed',
+      error: expect.stringContaining('TRYCREATE'),
+    });
   });
 
   it('files a copy for replies too', async () => {
@@ -251,6 +259,8 @@ describe('saving a copy to the Sent folder', () => {
       to: [{ address: 'test@example.com' }],
       cc: [],
       references: [],
+      date: 'Mon, 25 May 2026 16:11:00 +0200',
+      bodyText: 'What do you think?',
     });
 
     await service.replyToEmail('test', { emailId: '7', body: 'answer' });
@@ -258,6 +268,36 @@ describe('saving a copy to the Sent folder', () => {
     expect(imap.appendToSent).toHaveBeenCalledTimes(1);
     const [, raw] = imap.appendToSent.mock.calls[0]!;
     expect((raw as Buffer).toString('utf-8')).toContain('In-Reply-To: <orig@x>');
+  });
+
+  function withDraft(imap: ReturnType<typeof withImap>['imap']) {
+    imap.fetchDraft = vi.fn().mockResolvedValue({
+      email: { to: [{ address: 'a@b.c' }], subject: 'Draft', bodyText: 'text', references: [] },
+      mailbox: 'Drafts',
+    });
+  }
+
+  // A failed APPEND plus an unconditional draft delete left zero copies of
+  // the message anywhere: not in Sent (the APPEND failed) and not in Drafts
+  // (deleted anyway) — even though the send itself succeeded.
+  it('keeps the draft when the Sent-copy APPEND fails', async () => {
+    const { service, imap } = withImap(true);
+    withDraft(imap);
+    imap.appendToSent.mockRejectedValue(new Error('NO [TRYCREATE] no Sent folder'));
+
+    await service.sendDraft('test', 7);
+
+    expect(imap.deleteDraft).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the draft when the Sent-copy is only skipped on purpose', async () => {
+    const { service, imap } = withImap(true);
+    withDraft(imap);
+    imap.appendToSent.mockResolvedValue({ kind: 'skipped' });
+
+    await service.sendDraft('test', 7);
+
+    expect(imap.deleteDraft).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -601,5 +641,88 @@ describe('reply attachments', () => {
     expect(transport.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({ attachments: [{ filename: 'a.txt', path: '/tmp/a.txt' }] }),
     );
+  });
+});
+
+describe('replyToEmail quote_original', () => {
+  function makeOriginal(overrides: Record<string, unknown> = {}) {
+    return {
+      id: '42',
+      subject: 'Project update',
+      from: { name: 'Alex', address: 'alex@example.com' },
+      to: [{ address: 'test@example.com' }],
+      cc: [],
+      date: 'Mon, 25 May 2026 16:11:00 +0200',
+      messageId: '<orig-42@example.com>',
+      references: ['<root@example.com>'],
+      bodyText: 'Where are we on the launch?',
+      attachments: [],
+      ...overrides,
+    };
+  }
+
+  function setup(original: Record<string, unknown>) {
+    const imap = { getEmail: vi.fn().mockResolvedValue(original) } as unknown as ImapService;
+    const transport = createMockTransport();
+    const connections = createMockConnectionManager(transport);
+    const service = new SmtpService(connections, createMockRateLimiter(), imap);
+    return { service, transport };
+  }
+
+  it('appends quoted original below text reply by default', async () => {
+    const { service, transport } = setup(makeOriginal());
+
+    await service.replyToEmail('test', { emailId: '42', body: 'On it tomorrow.' });
+
+    const call = transport.sendMail.mock.calls[0]![0];
+    expect(call.text).toContain('On it tomorrow.');
+    expect(call.text).toContain(
+      'On Mon, 25 May 2026 16:11:00 +0200, Alex <alex@example.com> wrote:',
+    );
+    expect(call.text).toContain('> Where are we on the launch?');
+    expect(call.subject).toBe('Re: Project update');
+    expect(call.inReplyTo).toBe('<orig-42@example.com>');
+    expect(call.references).toContain('<root@example.com>');
+    expect(call.references).toContain('<orig-42@example.com>');
+  });
+
+  it('appends <blockquote type="cite"> for HTML replies', async () => {
+    const { service, transport } = setup(
+      makeOriginal({ bodyHtml: '<p>Where are we?</p>', bodyText: undefined }),
+    );
+
+    await service.replyToEmail('test', {
+      emailId: '42',
+      body: '<p>On it tomorrow.</p>',
+      html: true,
+    });
+
+    const call = transport.sendMail.mock.calls[0]![0];
+    expect(call.html).toContain('<p>On it tomorrow.</p>');
+    expect(call.html).toContain('<blockquote type="cite"');
+    // The original is quoted as stripped, escaped text in a <pre>, never as
+    // raw HTML — embedding it unsanitized would let an unbalanced tag break
+    // out of the quote boundary (see utils/quote.ts).
+    expect(call.html).toContain('<pre');
+    expect(call.html).toContain('Where are we?');
+    // stripHtml derives the plain-text alternative from the quoted HTML —
+    // it is never undefined, since nodemailer 10 no longer generates one.
+    expect(call.text).toContain('On it tomorrow.');
+    expect(call.text).toContain('> Where are we?');
+  });
+
+  it('does not append a quoted block when quoteOriginal=false', async () => {
+    const { service, transport } = setup(makeOriginal());
+
+    await service.replyToEmail('test', {
+      emailId: '42',
+      body: 'On it tomorrow.',
+      quoteOriginal: false,
+    });
+
+    const call = transport.sendMail.mock.calls[0]![0];
+    expect(call.text).toBe('On it tomorrow.');
+    expect(call.text).not.toContain('wrote:');
+    expect(call.text).not.toContain('>');
   });
 });

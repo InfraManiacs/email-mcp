@@ -3,6 +3,10 @@
  */
 
 import { z } from 'zod';
+import {
+  DEFAULT_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS,
+  DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
+} from '../safety/attachment-download.js';
 
 export const ImapConfigSchema = z.object({
   host: z.string().min(1, 'IMAP host is required'),
@@ -58,6 +62,10 @@ export const AccountConfigSchema = z
      * documented limit for this account.
      */
     max_attachment_mb: z.number().int().min(1).optional(),
+    /** Settles which folder appendToSent files into when a mailbox has several candidates. */
+    sent_mailbox: z.string().optional(),
+    /** Per-account override of the Sent-copy default (see appendToSent). */
+    save_to_sent: z.boolean().optional(),
   })
   .refine((data) => data.password ?? data.oauth2, {
     message: 'Either password or oauth2 config is required',
@@ -259,6 +267,14 @@ export const AttachmentsConfigSchema = z.object({
   auto_download: z.boolean().default(true),
 });
 
+export const AttachmentDownloadConfigSchema = z.object({
+  dir: z.string().min(1).optional(),
+  allowed_extensions: z
+    .array(z.string().min(1))
+    .default(() => [...DEFAULT_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS]),
+  max_bytes: z.number().int().min(1).default(DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES),
+});
+
 export const SettingsSchema = z.object({
   rate_limit: z.number().int().min(1).default(10),
   read_only: z.boolean().default(false),
@@ -293,6 +309,13 @@ export const SettingsSchema = z.object({
   ),
   attachments: AttachmentsConfigSchema.default(
     () => ({ auto_download: true }) as z.infer<typeof AttachmentsConfigSchema>,
+  ),
+  attachment_download: AttachmentDownloadConfigSchema.default(
+    () =>
+      ({
+        allowed_extensions: [...DEFAULT_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS],
+        max_bytes: DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
+      }) as z.infer<typeof AttachmentDownloadConfigSchema>,
   ),
   scheduler: SchedulerConfigSchema.default(
     () => ({ sent_retention_days: 90 }) as z.infer<typeof SchedulerConfigSchema>,
@@ -368,6 +391,10 @@ export const AppConfigFileSchema = z.object({
         },
         send: { max_attachment_mb: 25, save_to_sent: false },
         attachments: { auto_download: true },
+        attachment_download: {
+          allowed_extensions: [...DEFAULT_ATTACHMENT_DOWNLOAD_ALLOWED_EXTENSIONS],
+          max_bytes: DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
+        },
         scheduler: { sent_retention_days: 90 },
         cache: {
           enabled: true,

@@ -68,6 +68,20 @@ export interface AccountConfig {
   oauth2?: OAuth2Config;
   /** Optional per-account attachment cap (MB, base64-encoded total). */
   maxAttachmentMb?: number;
+  /**
+   * Settles which folder `appendToSent` files a copy into, for a mailbox
+   * that carries several sent-shaped folders (e.g. a leftover `Sent` beside
+   * the server's actual `\Sent`-flagged one). Use the full IMAP path as
+   * `list_mailboxes` reports it.
+   */
+  sentMailbox?: string;
+  /**
+   * Per-account override of the Sent-copy default. Unset defers to the
+   * guess (file it, unless the server already does — see `appendToSent`);
+   * `true`/`false` forces the decision for this account regardless of that
+   * guess.
+   */
+  saveToSent?: boolean;
   imap: ImapConfig;
   smtp: SmtpConfig;
 }
@@ -178,6 +192,16 @@ export interface AttachmentsConfig {
   autoDownload: boolean;
 }
 
+/**
+ * Where `download_attachment`'s `save_to_download_dir` writes files.
+ * Unset `dir` disables the option entirely — see AttachmentDownloadConfigSchema.
+ */
+export interface AttachmentDownloadConfig {
+  dir?: string;
+  allowedExtensions: string[];
+  maxBytes: number;
+}
+
 /** Scheduler settings — see SchedulerConfigSchema for defaults and rationale. */
 export interface SchedulerConfig {
   sentRetentionDays: number;
@@ -201,6 +225,7 @@ export interface AppConfig {
     verification: VerificationConfig;
     send: SendConfig;
     attachments: AttachmentsConfig;
+    attachmentDownload: AttachmentDownloadConfig;
     scheduler: SchedulerConfig;
     cache: CacheConfig;
     watcher: WatcherConfig;
@@ -227,6 +252,19 @@ export interface Mailbox {
 // Email
 // ---------------------------------------------------------------------------
 
+/** How a message was originated, when its headers say so. */
+export type BulkKind = 'newsletter' | 'automated';
+
+export interface BulkSignal {
+  kind: BulkKind;
+  /** RFC 2919 list identifier, without its angle brackets. */
+  listId?: string;
+  /** Most actionable RFC 2369 unsubscribe URI (https preferred over mailto). */
+  unsubscribe?: string;
+  /** RFC 8058 one-click unsubscribe is supported. */
+  oneClick: boolean;
+}
+
 export interface EmailMeta {
   id: string;
   subject: string;
@@ -239,6 +277,8 @@ export interface EmailMeta {
   hasAttachments: boolean;
   labels: string[];
   preview?: string;
+  /** Set only for list or machine-generated mail; absent for personal mail. */
+  bulk?: BulkSignal;
 }
 
 export interface AttachmentMeta {
@@ -280,9 +320,22 @@ export interface Email extends EmailMeta {
 // Results
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcome of filing a copy of a sent message in the Sent folder.
+ *
+ * A failed or skipped APPEND never fails the send itself — the message is
+ * already delivered — so this is reported, never thrown, and callers that
+ * ignore it lose nothing they had before.
+ */
+export type SentCopyResult =
+  | { kind: 'filed'; path: string }
+  | { kind: 'skipped' }
+  | { kind: 'failed'; error: string };
+
 export interface SendResult {
   messageId: string;
   status: 'sent' | 'failed';
+  sentCopy?: SentCopyResult;
 }
 
 export interface PaginatedResult<T> {
@@ -415,6 +468,16 @@ export interface EmailStats {
   dailyVolume: DailyVolume[];
   hasAttachmentsCount: number;
   avgPerDay: number;
+}
+
+/**
+ * Cheap mailbox counters for a dashboard-style snapshot — one IMAP STATUS
+ * round trip plus a UID-only SEARCH, no envelope/flags/bodyStructure FETCH.
+ */
+export interface MailboxSnapshot {
+  total: number;
+  unread: number;
+  receivedToday: number;
 }
 
 export interface QuotaInfo {

@@ -1,7 +1,36 @@
 /** Input validation and sanitization utilities. */
 
+import { BlockList, isIP } from 'node:net';
+
 /** Comfortably inside the 255-byte name limit common to ext4, APFS and NTFS. */
 const MAX_ATTACHMENT_NAME_CHARS = 200;
+
+/**
+ * Loopback/private/link-local ranges a webhook must not resolve to.
+ *
+ * A hand-rolled regex or octet comparison here is exactly the kind of check
+ * that quietly drifts incomplete (169.254.0.0/16 — the cloud metadata
+ * endpoint on AWS/GCP/Azure — and the IPv4-mapped IPv6 form of any of these
+ * were both missing before). `net.BlockList` is Node's own CIDR matcher and
+ * already unwraps IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) against the
+ * IPv4 subnets below, so there is nothing extra to handle for that form.
+ */
+const PRIVATE_WEBHOOK_RANGES = new BlockList();
+// 0.0.0.0/8: "this network" — unspecified/unroutable, same spirit as ::.
+PRIVATE_WEBHOOK_RANGES.addSubnet('0.0.0.0', 8, 'ipv4');
+PRIVATE_WEBHOOK_RANGES.addSubnet('10.0.0.0', 8, 'ipv4');
+// 100.64.0.0/10: shared address space for carrier-grade NAT.
+PRIVATE_WEBHOOK_RANGES.addSubnet('100.64.0.0', 10, 'ipv4');
+PRIVATE_WEBHOOK_RANGES.addSubnet('127.0.0.0', 8, 'ipv4');
+// 169.254.0.0/16: link-local, including 169.254.169.254, the cloud metadata
+// address that hands out IAM credentials to any process that can reach it.
+PRIVATE_WEBHOOK_RANGES.addSubnet('169.254.0.0', 16, 'ipv4');
+PRIVATE_WEBHOOK_RANGES.addSubnet('172.16.0.0', 12, 'ipv4');
+PRIVATE_WEBHOOK_RANGES.addSubnet('192.168.0.0', 16, 'ipv4');
+PRIVATE_WEBHOOK_RANGES.addSubnet('::', 128, 'ipv6'); // unspecified
+PRIVATE_WEBHOOK_RANGES.addSubnet('::1', 128, 'ipv6'); // loopback
+PRIVATE_WEBHOOK_RANGES.addSubnet('fe80::', 10, 'ipv6'); // link-local
+PRIVATE_WEBHOOK_RANGES.addSubnet('fc00::', 7, 'ipv6'); // unique-local
 
 /**
  * Reduce a sender-supplied attachment name to one that is safe to write.
@@ -90,16 +119,19 @@ export function validateWebhookUrl(url: string): void {
 
   // new URL('https://[::1]') stores hostname as '[::1]'
   const bare = hostname.replace(/^\[|\]$/g, '');
-  if (bare === 'localhost' || bare === '::1' || bare === '0.0.0.0') {
+  if (bare === 'localhost') {
     throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
   }
 
-  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(bare);
-  if (ipv4Match) {
-    const [, a = 0, b = 0] = ipv4Match.map(Number);
-    if (a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
-      throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
-    }
+  // A bare hostname (not a literal IP) resolves at request time, outside
+  // this check's reach — DNS-rebinding past a validated hostname is a known,
+  // deliberate gap: webhookUrl is the local user's own config, not
+  // attacker-controlled input, which is the threat this guards against.
+  const family = isIP(bare);
+  if (family === 0) return;
+
+  if (PRIVATE_WEBHOOK_RANGES.check(bare, family === 4 ? 'ipv4' : 'ipv6')) {
+    throw new Error(`Webhook URL must not point to a loopback or private address: ${bare}`);
   }
 }
 

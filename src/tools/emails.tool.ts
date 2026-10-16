@@ -15,6 +15,7 @@ import {
   DEFAULT_MULTI_BODY_MAX,
   DEFAULT_SINGLE_BODY_MAX,
 } from '../utils/body-format.js';
+import { formatBulk } from '../utils/bulk-headers.js';
 import { emailListOutputSchema, emailStatusOutputSchema } from './schemas.js';
 
 // ---------------------------------------------------------------------------
@@ -33,8 +34,10 @@ function formatEmailMeta(email: EmailMeta): string {
 
   const from = email.from.name ? `${email.from.name} <${email.from.address}>` : email.from.address;
   const labelStr = email.labels.length > 0 ? `\n  🏷️ ${email.labels.join(', ')}` : '';
+  const bulk = formatBulk(email.bulk);
+  const bulkStr = bulk ? `\n  ${bulk}` : '';
 
-  return `[${email.id}] ${flags} ${email.subject}\n  From: ${from} | ${email.date}${labelStr}${email.preview ? `\n  ${email.preview}` : ''}`;
+  return `[${email.id}] ${flags} ${email.subject}\n  From: ${from} | ${email.date}${labelStr}${bulkStr}${email.preview ? `\n  ${email.preview}` : ''}`;
 }
 
 /** Renders the current read/flag/label state as a concise status line. */
@@ -63,14 +66,16 @@ export default function registerEmailsTools(
       description:
         'List emails in a mailbox with optional filters. Returns paginated results with metadata ' +
         '(read/unread 🔵, flagged ⭐, replied ↩️, attachments 📎, labels 🏷️). ' +
+        'List or machine-generated mail is marked 📰 newsletter / 🤖 automated from its RFC headers, ' +
+        'with the unsubscribe URI when the sender offers one — personal mail carries no marker. ' +
         'Use get_email to fetch full body content. ' +
         'ProtonMail note: labels are represented as IMAP folders — use list_labels to discover them, ' +
         'then list_emails with mailbox="Labels/X" to find labeled emails.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         mailbox: z.string().default('INBOX').describe('Mailbox path (default: INBOX)'),
-        page: z.number().int().min(1).default(1).describe('Page number'),
-        pageSize: z.number().int().min(1).max(100).default(20).describe('Results per page'),
+        page: z.coerce.number().int().min(1).default(1).describe('Page number'),
+        pageSize: z.coerce.number().int().min(1).max(100).default(20).describe('Results per page'),
         since: z.string().optional().describe('Show emails after this date (ISO 8601)'),
         before: z.string().optional().describe('Show emails before this date (ISO 8601)'),
         from: z.string().optional().describe('Filter by sender address or name'),
@@ -82,6 +87,12 @@ export default function registerEmailsTools(
           .optional()
           .describe('Filter: true=has attachments, false=no attachments'),
         answered: z.boolean().optional().describe('Filter: true=replied, false=not yet replied'),
+        preview: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Include a ~200 character body preview per message. Off by default: it fetches extra bytes per message and lengthens the output.',
+          ),
       }),
       outputSchema: emailListOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false },
@@ -100,6 +111,7 @@ export default function registerEmailsTools(
           flagged: params.flagged,
           hasAttachment: params.has_attachment,
           answered: params.answered,
+          preview: params.preview,
         });
 
         if (result.items.length === 0) {
@@ -165,7 +177,9 @@ export default function registerEmailsTools(
         'format: text (default) = HTML converted to readable text with [markdown](links); ' +
         'stripped = text minus quoted replies and signatures; full = raw body part (HTML mail returns raw HTML). ' +
         `Body is capped at ${DEFAULT_SINGLE_BODY_MAX} chars by default — pass maxLength (0 = unlimited) to change. ` +
-        'Set markRead=true only when you want to explicitly mark the email as read.',
+        'Set markRead=true only when you want to explicitly mark the email as read. ' +
+        'A Bulk: line appears for list or machine-generated mail (📰 newsletter / 🤖 automated), ' +
+        'derived from RFC headers, with the unsubscribe URI when the sender offers one.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID from list_emails or search_emails'),
@@ -176,7 +190,7 @@ export default function registerEmailsTools(
           .describe(
             'Body format: text=readable text with markdown links (default), stripped=text without quoted replies or signatures, full=raw body part',
           ),
-        maxLength: z
+        maxLength: z.coerce
           .number()
           .int()
           .min(0)
@@ -213,6 +227,11 @@ export default function registerEmailsTools(
         // `emailId`; "ID" alone leaves the caller guessing which identifier
         // get_thread's `message_id` wants.
         parts.push(`Message-ID: ${email.messageId}`);
+
+        const bulk = formatBulk(email.bulk);
+        if (bulk) {
+          parts.push(`Bulk:   ${bulk}`);
+        }
 
         if (email.inReplyTo) {
           parts.push(`Reply:  ${email.inReplyTo}`);
@@ -267,7 +286,8 @@ export default function registerEmailsTools(
         'Fetch the full content of multiple emails in a single call (max 20). ' +
         'More efficient than calling get_email repeatedly when triaging or summarising several emails. ' +
         'Does NOT mark emails as seen. ' +
-        'Defaults to format="text" (HTML stripped) for compact, AI-friendly output.',
+        'Defaults to format="text" (HTML stripped) for compact, AI-friendly output. ' +
+        'Each message carries the same 📰 newsletter / 🤖 automated marker as get_email.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         ids: z
@@ -282,7 +302,7 @@ export default function registerEmailsTools(
           .describe(
             'Body format (default: text — HTML converted to readable text with markdown links). Use stripped to also remove quoted replies.',
           ),
-        maxLength: z
+        maxLength: z.coerce
           .number()
           .int()
           .min(0)
@@ -316,6 +336,7 @@ export default function registerEmailsTools(
           );
           const attachLine =
             email.attachments.length > 0 ? `📎 ${describeAttachments(email.attachments)}` : '';
+          const bulkLine = formatBulk(email.bulk);
 
           results.push(
             [
@@ -323,6 +344,7 @@ export default function registerEmailsTools(
               `Status: ${formatEmailStatus(email)}`,
               `From:   ${from}`,
               `Date:   ${email.date}`,
+              bulkLine ? `Bulk:   ${bulkLine}` : '',
               attachLine,
               '',
               body,
@@ -429,26 +451,53 @@ export default function registerEmailsTools(
         'mirror is enabled, attachment filenames (searching "report" finds an email carrying ' +
         'Q3-report.pdf). ' +
         'Omit query (or pass an empty string) to use it as a pure filter — e.g. find all emails ' +
-        'with attachments from a specific recipient without a keyword. ' +
-        'Supports additional filters for recipient, attachments, size, and reply status.',
+        'from a specific sender without a keyword. ' +
+        'Supports additional filters for sender, recipient, date range (since/before — INTERNALDATE; ' +
+        'sent_since/sent_before — Date: header), attachments, size, and reply status. ' +
+        'At least one of query/from/to/since/before/sent_since/sent_before/has_attachment/' +
+        'larger_than/smaller_than/answered must be set; otherwise the call errors ' +
+        '(use list_emails to browse without filters). ' +
+        'Results carry the same 📰 newsletter / 🤖 automated markers as list_emails.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         query: z
           .string()
           .optional()
           .default('')
-          .describe('Search keyword (omit or leave empty to use filters only)'),
+          .describe('Search keyword across subject, sender, and body (omit to use filters only)'),
         mailbox: z.string().default('INBOX').describe('Mailbox path (default: INBOX)'),
-        page: z.number().int().min(1).default(1).describe('Page number'),
-        pageSize: z.number().int().min(1).max(100).default(20).describe('Results per page'),
+        page: z.coerce.number().int().min(1).default(1).describe('Page number'),
+        pageSize: z.coerce.number().int().min(1).max(100).default(20).describe('Results per page'),
+        from: z.string().optional().describe('Filter by sender address (substring match)'),
         to: z.string().optional().describe('Filter by recipient address'),
+        since: z
+          .string()
+          .optional()
+          .describe(
+            'Only emails received on/after this date (ISO 8601, e.g. 2026-05-11T00:00:00Z)',
+          ),
+        before: z.string().optional().describe('Only emails received before this date (ISO 8601)'),
+        sent_since: z
+          .string()
+          .optional()
+          .describe('Only emails with Date: header on/after this date (ISO 8601)'),
+        sent_before: z
+          .string()
+          .optional()
+          .describe('Only emails with Date: header before this date (ISO 8601)'),
         has_attachment: z
           .boolean()
           .optional()
           .describe('Filter: true=has attachments, false=no attachments'),
-        larger_than: z.number().optional().describe('Minimum email size in KB'),
-        smaller_than: z.number().optional().describe('Maximum email size in KB'),
+        larger_than: z.coerce.number().optional().describe('Minimum email size in KB'),
+        smaller_than: z.coerce.number().optional().describe('Maximum email size in KB'),
         answered: z.boolean().optional().describe('Filter: true=replied, false=not replied'),
+        preview: z
+          .boolean()
+          .default(false)
+          .describe(
+            'Include a ~200 character body preview per message. Off by default: it fetches extra bytes per message and lengthens the output.',
+          ),
       }),
       outputSchema: emailListOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false },
@@ -459,11 +508,17 @@ export default function registerEmailsTools(
           mailbox: params.mailbox,
           page: params.page,
           pageSize: params.pageSize,
+          from: params.from,
           to: params.to,
+          since: params.since,
+          before: params.before,
+          sentSince: params.sent_since,
+          sentBefore: params.sent_before,
           hasAttachment: params.has_attachment,
           largerThan: params.larger_than,
           smallerThan: params.smaller_than,
           answered: params.answered,
+          preview: params.preview,
         });
 
         if (result.items.length === 0) {
