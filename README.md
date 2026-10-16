@@ -64,7 +64,7 @@ Key design decisions:
 
 ## Install
 
-Requires Node.js ≥ 22.
+Requires Node.js ≥ 24.
 
 ```bash
 # Run directly (no install needed)
@@ -77,6 +77,15 @@ npm install -g @codefuturist/email-mcp
 # or
 pnpm add -g @codefuturist/email-mcp
 ```
+
+`npm install -g` fails with `EACCES` when npm's global prefix is a root-owned
+directory (common on a system Node install) — the `npx`/`pnpm dlx` form above
+avoids this entirely by not installing anything globally. If you do want a
+permanent global install, fix npm's prefix instead of reaching for `sudo`
+(`npm config set prefix ~/.npm-global` and add that to `PATH`, or use a Node
+version manager like `nvm`/`fnm`/`volta`) — running `npm install -g` as root
+routinely leaves root-owned files mixed into a user-owned `node_modules` tree,
+which causes harder-to-diagnose permission errors on the *next* global install.
 
 ### Homebrew (native binary)
 
