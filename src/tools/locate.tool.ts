@@ -20,9 +20,10 @@ export default function registerLocateTools(
     {
       title: 'Find email folder',
       description:
-        'Find which real mailbox folder(s) an email belongs to. ' +
+        'Find a real mailbox folder an email belongs to. ' +
         'Required before move_email or delete_email when the email was found in a virtual folder ' +
-        '(e.g., "All Mail", "Starred"). Returns the real folder path to use as sourceMailbox.',
+        '(e.g., "All Mail", "Starred"). Returns the first real folder path found, to use as ' +
+        'sourceMailbox; on a label-based server a message may also sit in other folders.',
       inputSchema: z.object({
         account: z.string().describe('Account name from list_accounts'),
         emailId: z.string().describe('Email ID (UID) from list_emails'),
@@ -53,10 +54,10 @@ export default function registerLocateTools(
         }
 
         const lines = [
-          `📁 Email ${emailId} found in ${folders.length} folder(s):`,
+          `📁 Email ${emailId} found in:`,
           ...folders.map((f) => `  • ${f}`),
           '',
-          `Use the first folder as sourceMailbox for move_email or delete_email.`,
+          `Use this as sourceMailbox for move_email or delete_email.`,
         ];
         if (messageId) {
           lines.push(`Message-ID: ${messageId}`);
