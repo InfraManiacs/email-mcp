@@ -12,6 +12,7 @@ import type RateLimiter from '../safety/rate-limiter.js';
 import { sanitizeTemplateVariable } from '../safety/validation.js';
 import type { SendResult, SentCopyResult } from '../types/index.js';
 import { stripHtml } from '../utils/html.js';
+import { quoteOriginalAsHtml, quoteOriginalAsText } from '../utils/quote.js';
 import type { PreparedAttachment } from './attachments.js';
 import type ImapService from './imap.service.js';
 
@@ -163,6 +164,13 @@ export default class SmtpService {
       replyAll?: boolean;
       html?: boolean;
       attachments?: PreparedAttachment[];
+      /**
+       * When true (default), the original message is appended below the reply
+       * as a quoted block (Thunderbird/Outlook style: "On DATE, NAME wrote:"
+       * followed by `>`-prefixed lines, or `<blockquote type="cite">` for HTML
+       * replies). Set false to send the bare reply body only.
+       */
+      quoteOriginal?: boolean;
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -196,6 +204,19 @@ export default class SmtpService {
       ? original.subject
       : `Re: ${original.subject}`;
 
+    // Appended below the reply unless explicitly disabled — the same
+    // convention every desktop client (Thunderbird, Outlook, Apple Mail)
+    // applies automatically. In the HTML case the plain-text alternative
+    // comes from stripHtml, which already turns a <blockquote> into "> "
+    // lines, so only the HTML body needs the quote appended.
+    const includeQuote = options.quoteOriginal !== false;
+    const htmlBody = options.html
+      ? options.body + (includeQuote ? quoteOriginalAsHtml(original) : '')
+      : undefined;
+    const textBody = options.html
+      ? undefined
+      : options.body + (includeQuote ? quoteOriginalAsText(original) : '');
+
     const transport = await this.connections.getSmtpTransport(accountName);
 
     const mail = {
@@ -205,9 +226,9 @@ export default class SmtpService {
       subject,
       inReplyTo: original.messageId,
       references: references.join(' '),
-      ...(options.html
-        ? { html: options.body, text: stripHtml(options.body) }
-        : { text: options.body }),
+      ...(htmlBody !== undefined
+        ? { html: htmlBody, text: stripHtml(htmlBody) }
+        : { text: textBody }),
       ...(options.attachments?.length
         ? { attachments: options.attachments.map(toTransportAttachment) }
         : {}),

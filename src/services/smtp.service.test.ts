@@ -259,6 +259,8 @@ describe('saving a copy to the Sent folder', () => {
       to: [{ address: 'test@example.com' }],
       cc: [],
       references: [],
+      date: 'Mon, 25 May 2026 16:11:00 +0200',
+      bodyText: 'What do you think?',
     });
 
     await service.replyToEmail('test', { emailId: '7', body: 'answer' });
@@ -639,5 +641,84 @@ describe('reply attachments', () => {
     expect(transport.sendMail).toHaveBeenCalledWith(
       expect.objectContaining({ attachments: [{ filename: 'a.txt', path: '/tmp/a.txt' }] }),
     );
+  });
+});
+
+describe('replyToEmail quote_original', () => {
+  function makeOriginal(overrides: Record<string, unknown> = {}) {
+    return {
+      id: '42',
+      subject: 'Project update',
+      from: { name: 'Alex', address: 'alex@example.com' },
+      to: [{ address: 'test@example.com' }],
+      cc: [],
+      date: 'Mon, 25 May 2026 16:11:00 +0200',
+      messageId: '<orig-42@example.com>',
+      references: ['<root@example.com>'],
+      bodyText: 'Where are we on the launch?',
+      attachments: [],
+      ...overrides,
+    };
+  }
+
+  function setup(original: Record<string, unknown>) {
+    const imap = { getEmail: vi.fn().mockResolvedValue(original) } as unknown as ImapService;
+    const transport = createMockTransport();
+    const connections = createMockConnectionManager(transport);
+    const service = new SmtpService(connections, createMockRateLimiter(), imap);
+    return { service, transport };
+  }
+
+  it('appends quoted original below text reply by default', async () => {
+    const { service, transport } = setup(makeOriginal());
+
+    await service.replyToEmail('test', { emailId: '42', body: 'On it tomorrow.' });
+
+    const call = transport.sendMail.mock.calls[0]![0];
+    expect(call.text).toContain('On it tomorrow.');
+    expect(call.text).toContain(
+      'On Mon, 25 May 2026 16:11:00 +0200, Alex <alex@example.com> wrote:',
+    );
+    expect(call.text).toContain('> Where are we on the launch?');
+    expect(call.subject).toBe('Re: Project update');
+    expect(call.inReplyTo).toBe('<orig-42@example.com>');
+    expect(call.references).toContain('<root@example.com>');
+    expect(call.references).toContain('<orig-42@example.com>');
+  });
+
+  it('appends <blockquote type="cite"> for HTML replies', async () => {
+    const { service, transport } = setup(
+      makeOriginal({ bodyHtml: '<p>Where are we?</p>', bodyText: undefined }),
+    );
+
+    await service.replyToEmail('test', {
+      emailId: '42',
+      body: '<p>On it tomorrow.</p>',
+      html: true,
+    });
+
+    const call = transport.sendMail.mock.calls[0]![0];
+    expect(call.html).toContain('<p>On it tomorrow.</p>');
+    expect(call.html).toContain('<blockquote type="cite"');
+    expect(call.html).toContain('<p>Where are we?</p>');
+    // stripHtml derives the plain-text alternative from the quoted HTML —
+    // it is never undefined, since nodemailer 10 no longer generates one.
+    expect(call.text).toContain('On it tomorrow.');
+    expect(call.text).toContain('> Where are we?');
+  });
+
+  it('does not append a quoted block when quoteOriginal=false', async () => {
+    const { service, transport } = setup(makeOriginal());
+
+    await service.replyToEmail('test', {
+      emailId: '42',
+      body: 'On it tomorrow.',
+      quoteOriginal: false,
+    });
+
+    const call = transport.sendMail.mock.calls[0]![0];
+    expect(call.text).toBe('On it tomorrow.');
+    expect(call.text).not.toContain('wrote:');
+    expect(call.text).not.toContain('>');
   });
 });
