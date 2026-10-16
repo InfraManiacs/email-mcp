@@ -9,6 +9,7 @@ import { validateInputLength } from '../safety/validation.js';
 
 import { formatSize, prepareAttachments } from '../services/attachments.js';
 import type SmtpService from '../services/smtp.service.js';
+import type { SentCopyResult } from '../types/index.js';
 
 /**
  * A bare path, or a path with inline/cid metadata. The object form exists for
@@ -46,6 +47,18 @@ function attachmentReport(prepared: Awaited<ReturnType<typeof prepareAttachments
   if (!prepared || prepared.attachments.length === 0) return '';
   const lines = prepared.attachments.map((a) => `  - ${a.filename} (${formatSize(a.size)})`);
   return `\n📎 Attachments (${prepared.attachments.length}, ${formatSize(prepared.totalBytes)} raw ≈ ${formatSize(prepared.totalEncodedBytes)} encoded):\n${lines.join('\n')}`;
+}
+
+/**
+ * Mention filing a Sent-folder copy only when it is worth mentioning: a
+ * confirmation that it worked, or a warning that it didn't. A plain skip —
+ * the setting is off for almost every account — is the default and silent
+ * case, so staying quiet about it keeps the common reply uncluttered.
+ */
+function sentCopyNote(sentCopy: SentCopyResult | undefined): string {
+  if (sentCopy?.kind === 'filed') return `\n📁 Filed a copy in "${sentCopy.path}"`;
+  if (sentCopy?.kind === 'failed') return `\n⚠️ Could not file a copy in Sent: ${sentCopy.error}`;
+  return '';
 }
 
 /** Attachment caps the send tools enforce (resolved per account at call time). */
@@ -107,7 +120,7 @@ export default function registerSendTools(
           content: [
             {
               type: 'text' as const,
-              text: `✅ Email sent successfully!\nTo: ${params.to.join(', ')}\nSubject: ${params.subject}\nMessage-ID: ${result.messageId}${attachmentReport(prepared)}`,
+              text: `✅ Email sent successfully!\nTo: ${params.to.join(', ')}\nSubject: ${params.subject}\nMessage-ID: ${result.messageId}${attachmentReport(prepared)}${sentCopyNote(result.sentCopy)}`,
             },
           ],
         };
@@ -177,7 +190,7 @@ export default function registerSendTools(
           content: [
             {
               type: 'text' as const,
-              text: `✅ Reply sent successfully!\nMessage-ID: ${result.messageId}${attachmentReport(prepared)}`,
+              text: `✅ Reply sent successfully!\nMessage-ID: ${result.messageId}${attachmentReport(prepared)}${sentCopyNote(result.sentCopy)}`,
             },
           ],
         };
@@ -248,7 +261,7 @@ export default function registerSendTools(
           content: [
             {
               type: 'text' as const,
-              text: `✅ Email forwarded successfully!\nTo: ${params.to.join(', ')}\nMessage-ID: ${result.messageId}${params.includeAttachments === false ? '\n(original attachments not included)' : ''}`,
+              text: `✅ Email forwarded successfully!\nTo: ${params.to.join(', ')}\nMessage-ID: ${result.messageId}${params.includeAttachments === false ? '\n(original attachments not included)' : ''}${sentCopyNote(result.sentCopy)}`,
             },
           ],
         };

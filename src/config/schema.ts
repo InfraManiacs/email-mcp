@@ -58,6 +58,10 @@ export const AccountConfigSchema = z
      * documented limit for this account.
      */
     max_attachment_mb: z.number().int().min(1).optional(),
+    /** Settles which folder appendToSent files into when a mailbox has several candidates. */
+    sent_mailbox: z.string().optional(),
+    /** Per-account override of the Sent-copy default (see appendToSent). */
+    save_to_sent: z.boolean().optional(),
   })
   .refine((data) => data.password ?? data.oauth2, {
     message: 'Either password or oauth2 config is required',

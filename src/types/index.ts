@@ -68,6 +68,20 @@ export interface AccountConfig {
   oauth2?: OAuth2Config;
   /** Optional per-account attachment cap (MB, base64-encoded total). */
   maxAttachmentMb?: number;
+  /**
+   * Settles which folder `appendToSent` files a copy into, for a mailbox
+   * that carries several sent-shaped folders (e.g. a leftover `Sent` beside
+   * the server's actual `\Sent`-flagged one). Use the full IMAP path as
+   * `list_mailboxes` reports it.
+   */
+  sentMailbox?: string;
+  /**
+   * Per-account override of the Sent-copy default. Unset defers to the
+   * guess (file it, unless the server already does — see `appendToSent`);
+   * `true`/`false` forces the decision for this account regardless of that
+   * guess.
+   */
+  saveToSent?: boolean;
   imap: ImapConfig;
   smtp: SmtpConfig;
 }
@@ -280,9 +294,22 @@ export interface Email extends EmailMeta {
 // Results
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcome of filing a copy of a sent message in the Sent folder.
+ *
+ * A failed or skipped APPEND never fails the send itself — the message is
+ * already delivered — so this is reported, never thrown, and callers that
+ * ignore it lose nothing they had before.
+ */
+export type SentCopyResult =
+  | { kind: 'filed'; path: string }
+  | { kind: 'skipped' }
+  | { kind: 'failed'; error: string };
+
 export interface SendResult {
   messageId: string;
   status: 'sent' | 'failed';
+  sentCopy?: SentCopyResult;
 }
 
 export interface PaginatedResult<T> {
