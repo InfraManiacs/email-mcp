@@ -170,7 +170,12 @@ export default async function runHttp(argv: string[]): Promise<void> {
 
   const server = buildServer(services);
 
-  // Stateless Streamable HTTP (no session IDs) — matches the 2026-07-28 model.
+  // This connection exists only so `server.server` can carry background-
+  // service notifications — request handling below never uses `transport`:
+  // the SDK's stateless transport is single-exchange (it throws "Stateless
+  // transport cannot be reused across requests" on a second call), so one
+  // shared instance can serve at most one HTTP request for the process's
+  // entire lifetime. Each request gets its own server + transport instead.
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   await server.connect(transport);
 
@@ -220,7 +225,10 @@ export default async function runHttp(argv: string[]): Promise<void> {
         return;
       }
 
-      await transport.handleRequest(req, res);
+      const reqServer = buildServer(services);
+      const reqTransport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      await reqServer.connect(reqTransport);
+      await reqTransport.handleRequest(req, res);
     })().catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[email-mcp] http request error: ${message}\n`);
