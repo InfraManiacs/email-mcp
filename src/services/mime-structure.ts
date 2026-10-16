@@ -78,34 +78,21 @@ export function extractAttachments(bodyStructure: unknown): AttachmentMeta[] {
   return walkAttachments(bodyStructure, '');
 }
 
-/** Find the MIME part number for an attachment by filename. */
+/**
+ * Find the MIME part id for an attachment by filename.
+ *
+ * Delegates to the same walk `extractAttachments` uses rather than its own
+ * narrower one: a part listed there — a classic attachment, an inline cid
+ * image, or one named only via Content-Type's name= — must be the same part
+ * this can find, or a filename the listing showed becomes undownloadable by
+ * it. Duplicate filenames resolve to the first match in document order; use
+ * the part id from the listing to reach the others.
+ */
 export function findMimePartByFilename(
   bodyStructure: unknown,
   targetFilename: string,
-  partPath = '',
 ): string | undefined {
-  if (!bodyStructure || typeof bodyStructure !== 'object') return undefined;
-
-  const bs = bodyStructure as Record<string, unknown>;
-  const currentPart = bs.part as string | undefined;
-  const effectivePath = currentPart ?? partPath;
-
-  if (bs.disposition === 'attachment') {
-    const params = (bs.dispositionParameters ?? bs.parameters ?? {}) as Record<string, string>;
-    const filename = params.filename ?? params.name ?? 'unnamed';
-    if (filename === targetFilename) return effectivePath;
-  }
-
-  if (Array.isArray(bs.childNodes)) {
-    // eslint-disable-next-line no-plusplus
-    for (let i = 0; i < bs.childNodes.length; i++) {
-      const childPart = effectivePath ? `${effectivePath}.${i + 1}` : String(i + 1);
-      const found = findMimePartByFilename(bs.childNodes[i], targetFilename, childPart);
-      if (found) return found;
-    }
-  }
-
-  return undefined;
+  return extractAttachments(bodyStructure).find((a) => a.filename === targetFilename)?.partId;
 }
 
 /** A displayable (non-attachment) text part discovered in the MIME tree. */
