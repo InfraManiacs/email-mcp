@@ -1600,6 +1600,78 @@ describe('getMailboxStatus', () => {
   });
 });
 
+// getEmailStats runs SEARCH SINCE and then FETCHes envelope, flags and
+// bodyStructure for every UID in the window — a resource that only needs
+// three counters was paying for all of that. getMailboxSnapshot uses STATUS
+// for totals (no SELECT required) and a UID-only SEARCH for today's count.
+describe('getMailboxSnapshot', () => {
+  it('reads totals from STATUS and today from a UID-only SEARCH, never FETCHing', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({ messages: 42, unseen: 7 });
+    client.search.mockResolvedValue([101, 102, 103]);
+    const service = new ImapService(createMockConnectionManager(client));
+
+    const snapshot = await service.getMailboxSnapshot('test', 'INBOX');
+
+    expect(snapshot).toEqual({ total: 42, unread: 7, receivedToday: 3 });
+    expect(client.status).toHaveBeenCalledWith('INBOX', { messages: true, unseen: true });
+    expect(client.search).toHaveBeenCalledWith({ since: expect.any(Date) }, { uid: true });
+    expect(client.fetch).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it('counts only messages received since local midnight today', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({ messages: 1, unseen: 0 });
+    const service = new ImapService(createMockConnectionManager(client));
+
+    await service.getMailboxSnapshot('test', 'INBOX');
+
+    const [sinceArg] = client.search.mock.calls[0] as [{ since: Date }, unknown];
+    const since = sinceArg.since;
+    const now = new Date();
+    expect(since.getFullYear()).toBe(now.getFullYear());
+    expect(since.getMonth()).toBe(now.getMonth());
+    expect(since.getDate()).toBe(now.getDate());
+    expect(since.getHours()).toBe(0);
+    expect(since.getMinutes()).toBe(0);
+    expect(since.getSeconds()).toBe(0);
+    service.dispose();
+  });
+
+  it('treats missing STATUS counters as zero rather than undefined', async () => {
+    const client = createMockImapClient();
+    client.status.mockResolvedValue({});
+    const service = new ImapService(createMockConnectionManager(client));
+
+    const snapshot = await service.getMailboxSnapshot('test', 'INBOX');
+
+    expect(snapshot).toEqual({ total: 0, unread: 0, receivedToday: 0 });
+    service.dispose();
+  });
+
+  it('defaults to INBOX when no mailbox is given', async () => {
+    const client = createMockImapClient();
+    const service = new ImapService(createMockConnectionManager(client));
+
+    await service.getMailboxSnapshot('test');
+
+    expect(client.status).toHaveBeenCalledWith('INBOX', { messages: true, unseen: true });
+    service.dispose();
+  });
+
+  it('releases the mailbox lock even when the SEARCH fails', async () => {
+    const client = createMockImapClient();
+    client.search.mockRejectedValue(new Error('boom'));
+    const service = new ImapService(createMockConnectionManager(client));
+
+    await expect(service.getMailboxSnapshot('test', 'INBOX')).rejects.toThrow('boom');
+
+    expect(client._releaseFn).toHaveBeenCalled();
+    service.dispose();
+  });
+});
+
 describe('label writes invalidate the mirror', () => {
   let client: ReturnType<typeof createMockImapClient>;
   let service: ImapService;

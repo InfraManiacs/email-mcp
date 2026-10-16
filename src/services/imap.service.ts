@@ -24,6 +24,7 @@ import type {
   EmailStats,
   LabelInfo,
   Mailbox,
+  MailboxSnapshot,
   PaginatedResult,
   QuotaInfo,
   SenderStat,
@@ -1965,6 +1966,37 @@ export default class ImapService {
   // -------------------------------------------------------------------------
   // Email analytics
   // -------------------------------------------------------------------------
+
+  /**
+   * Cheap counters for a dashboard-style snapshot: one STATUS round trip for
+   * totals (no SELECT required) plus a UID-only SEARCH for today's count —
+   * never a FETCH. Contrast `getEmailStats`, which FETCHes envelope, flags
+   * and bodyStructure for every message in its window.
+   */
+  async getMailboxSnapshot(accountName: string, mailbox = 'INBOX'): Promise<MailboxSnapshot> {
+    const client = await this.connections.getImapClient(accountName);
+    const path = sanitizeMailboxName(mailbox);
+
+    const status = (await client.status(path, {
+      messages: true,
+      unseen: true,
+    })) as { messages?: number; unseen?: number };
+
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+
+    const lock = await ImapService.lockMailbox(client, path);
+    try {
+      const uids = await client.search({ since }, { uid: true });
+      return {
+        total: status.messages ?? 0,
+        unread: status.unseen ?? 0,
+        receivedToday: Array.isArray(uids) ? uids.length : 0,
+      };
+    } finally {
+      lock.release();
+    }
+  }
 
   async getEmailStats(
     accountName: string,

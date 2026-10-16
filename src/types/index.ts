@@ -417,6 +417,16 @@ export interface EmailStats {
   avgPerDay: number;
 }
 
+/**
+ * Cheap mailbox counters for a dashboard-style snapshot — one IMAP STATUS
+ * round trip plus a UID-only SEARCH, no envelope/flags/bodyStructure FETCH.
+ */
+export interface MailboxSnapshot {
+  total: number;
+  unread: number;
+  receivedToday: number;
+}
+
 export interface QuotaInfo {
   usedMb: number;
   totalMb: number;
