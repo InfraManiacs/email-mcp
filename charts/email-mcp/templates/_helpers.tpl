@@ -44,6 +44,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $hosts = append $hosts . }}
 {{- $hosts = append $hosts (printf "%s:%d" . $port) }}
 {{- end }}
+{{- range .Values.http.publicHosts }}{{ $hosts = append $hosts . }}{{ end }}
 {{- if .Values.ingress.enabled }}
 {{- range .Values.ingress.hosts }}{{ $hosts = append $hosts .host }}{{ end }}
 {{- end }}

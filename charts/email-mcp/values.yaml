@@ -25,6 +25,9 @@ http:
   # from ingress/ingressRoute hosts plus the in-cluster Service names; `*`
   # disables the check.
   allowedHosts: []
+  # Public hostnames served by a route defined outside this chart (e.g. a
+  # central Traefik config); added to the derived Host allowlist.
+  publicHosts: []
 
 auth:
   # Name of an existing Secret holding the bearer token. Recommended.
