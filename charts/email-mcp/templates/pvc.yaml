@@ -1,0 +1,24 @@
+{{- $fullname := include "email-mcp.fullname" . -}}
+{{- range $kind := list "state" "cache" }}
+{{- $p := index $.Values.persistence $kind }}
+{{- if and $p.enabled (not $p.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-{{ $kind }}
+  labels:
+    {{- include "email-mcp.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ $p.accessMode }}
+  {{- with $p.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $p.size }}
+{{- end }}
+{{- end }}

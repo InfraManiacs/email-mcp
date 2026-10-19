@@ -1,0 +1,174 @@
+# -- email-mcp Helm chart values
+#
+# The server runs `email-mcp http` (Streamable HTTP). Every account below is
+# visible to every client holding the bearer token — the server is
+# single-tenant. Run one release per trust boundary if agents need different
+# mailbox sets.
+
+image:
+  repository: ghcr.io/codefuturist/email-mcp
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Must stay 1: the scheduler queue and local mirror are per-process state.
+replicaCount: 1
+
+http:
+  port: 8080
+  path: /mcp
+  # Host-header allowlist (DNS-rebinding protection). Leave empty to derive it
+  # from ingress/ingressRoute hosts plus the in-cluster Service names; `*`
+  # disables the check.
+  allowedHosts: []
+
+auth:
+  # Name of an existing Secret holding the bearer token. Recommended.
+  existingSecret: ""
+  # Key inside that Secret.
+  tokenKey: EMAIL_MCP_HTTP_TOKEN
+  # Plaintext token; only used when existingSecret is empty (creates a Secret).
+  # One of the two is required — no random default, because GitOps renderers
+  # (Argo CD) would rotate it on every sync.
+  token: ""
+
+# Account credentials are passed as environment variables from this Secret
+# (envFrom), and each account references its variable as `env:<VAR>`.
+credentials:
+  existingSecret: ""
+
+# -- Mail accounts. `provider` fills in IMAP/SMTP hosts for well-known
+# providers (gmail, outlook, yahoo, icloud, fastmail); set `imap`/`smtp`
+# explicitly for anything else.
+#
+# Password auth (Gmail: use an App Password):
+#   - name: personal
+#     email: me@gmail.com
+#     provider: gmail
+#     passwordEnv: PERSONAL_PASSWORD        # key in credentials.existingSecret
+#
+# OAuth2 (experimental upstream):
+#   - name: work
+#     email: me@company.com
+#     provider: gmail
+#     oauth2:
+#       provider: google
+#       clientIdEnv: GOOGLE_CLIENT_ID
+#       clientSecretEnv: GOOGLE_CLIENT_SECRET
+#       refreshTokenEnv: WORK_REFRESH_TOKEN
+accounts: []
+
+# -- Raw TOML appended under [settings]-level tables. The defaults turn off
+# desktop-only features (clipboard verification codes, desktop alerts) that
+# make no sense in a container.
+settingsToml: |
+  [settings]
+  rate_limit = 10
+  read_only = false
+
+  [settings.verification]
+  enabled = false
+
+  [settings.watcher]
+  enabled = false
+
+  [settings.hooks]
+  on_new_email = "none"
+
+  [settings.hooks.alerts]
+  desktop = false
+  sound = false
+
+  [settings.cache]
+  enabled = true
+  mailboxes = ["INBOX"]
+
+# -- Escape hatch: a complete config.toml. When set, `accounts` and
+# `settingsToml` are ignored.
+configToml: ""
+
+# -- Extra environment variables for the container.
+env: []
+
+persistence:
+  # State (scheduled-send queue, dedupe files) and data. Small JSON files —
+  # safe on NFS. Losing it drops scheduled-but-unsent mail.
+  state:
+    enabled: true
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    existingClaim: ""
+  # Local SQLite mirror. Rebuildable from IMAP, so emptyDir by default — SQLite
+  # on NFS risks lock/corruption problems. Use a block-backed class if you
+  # want it persistent.
+  cache:
+    enabled: false
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    existingClaim: ""
+    emptyDirSizeLimit: 5Gi
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Standard Kubernetes Ingress.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  #  - host: mail-hub.example.com
+  tls: []
+  #  - secretName: example-tls
+  #    hosts: [mail-hub.example.com]
+
+# Traefik IngressRoute (traefik.io/v1alpha1).
+ingressRoute:
+  enabled: false
+  # Namespace to create the IngressRoute in (e.g. where a shared TLS secret
+  # lives). Defaults to the release namespace. A different namespace needs
+  # Traefik's allowCrossNamespace.
+  namespace: ""
+  entryPoints:
+    - websecure
+  hosts: []
+  tlsSecretName: ""
+  middlewares: []
+  #  - name: ip-allowlist
+  #    namespace: traefik
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    memory: 768Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

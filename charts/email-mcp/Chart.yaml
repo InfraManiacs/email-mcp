@@ -1,0 +1,14 @@
+apiVersion: v2
+name: email-mcp
+description: IMAP/SMTP email MCP server over Streamable HTTP — one MCP endpoint for many mailboxes
+type: application
+version: 0.1.0
+appVersion: "0.6.0"
+home: https://github.com/codefuturist/email-mcp
+sources:
+  - https://github.com/InfraManiacs/email-mcp
+keywords:
+  - mcp
+  - email
+  - imap
+  - smtp

@@ -1,0 +1,134 @@
+{{- $fullname := include "email-mcp.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "email-mcp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Never run two pods against the same scheduler queue / RWO volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "email-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include "email-mcp.configToml" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "email-mcp.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: email-mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - http
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ .Values.http.port | quote }}
+            - --path
+            - {{ .Values.http.path | quote }}
+          env:
+            - name: EMAIL_MCP_HTTP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "email-mcp.tokenSecretName" . }}
+                  key: {{ .Values.auth.tokenKey }}
+            - name: EMAIL_MCP_HTTP_ALLOWED_HOSTS
+              value: {{ include "email-mcp.allowedHosts" . | quote }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.credentials.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.http.port }}
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /home/node/.config/email-mcp
+              readOnly: true
+            - name: state
+              mountPath: /home/node/.local/state/email-mcp
+              subPath: state
+            - name: state
+              mountPath: /home/node/.local/share/email-mcp
+              subPath: share
+            - name: cache
+              mountPath: /home/node/.cache/email-mcp
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ $fullname }}-config
+            defaultMode: 0440
+        - name: state
+          {{- if .Values.persistence.state.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.state.existingClaim | default (printf "%s-state" $fullname) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: cache
+          {{- if .Values.persistence.cache.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.cache.existingClaim | default (printf "%s-cache" $fullname) }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.cache.emptyDirSizeLimit }}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

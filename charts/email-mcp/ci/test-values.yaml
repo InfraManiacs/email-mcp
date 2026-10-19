@@ -1,0 +1,27 @@
+auth:
+  token: test-token
+credentials:
+  existingSecret: email-mcp-credentials
+accounts:
+  - name: personal
+    email: me@gmail.com
+    provider: gmail
+    passwordEnv: PERSONAL_PASSWORD
+  - name: work
+    email: me@example.com
+    provider: gmail
+    oauth2:
+      provider: google
+      clientIdEnv: GOOGLE_CLIENT_ID
+      clientSecretEnv: GOOGLE_CLIENT_SECRET
+      refreshTokenEnv: WORK_REFRESH_TOKEN
+  - name: custom
+    email: me@example.org
+    passwordEnv: CUSTOM_PASSWORD
+    imap: {host: mail.example.org, port: 993}
+    smtp: {host: mail.example.org, port: 587, tls: false, starttls: true}
+ingressRoute:
+  enabled: true
+  namespace: traefik
+  hosts: [mail-hub.example.com]
+  tlsSecretName: example-tls

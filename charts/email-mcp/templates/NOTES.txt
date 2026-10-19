@@ -1,0 +1,23 @@
+email-mcp is serving MCP over Streamable HTTP.
+
+In-cluster endpoint:
+  http://{{ include "email-mcp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}{{ .Values.http.path }}
+{{- if .Values.ingressRoute.enabled }}
+{{- range .Values.ingressRoute.hosts }}
+Public endpoint:
+  https://{{ . }}{{ $.Values.http.path }}
+{{- end }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+Public endpoint:
+  https://{{ .host }}{{ $.Values.http.path }}
+{{- end }}
+{{- end }}
+
+Clients must send:  Authorization: Bearer <token>
+Read the token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "email-mcp.tokenSecretName" . }} -o jsonpath='{.data.{{ .Values.auth.tokenKey }}}' | base64 -d
+
+Configured accounts: {{ len .Values.accounts }}{{ if .Values.configToml }} (from configToml){{ end }}
+Every token holder can read and send from every configured account.
