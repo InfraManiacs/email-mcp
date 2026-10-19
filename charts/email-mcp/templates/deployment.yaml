@@ -113,6 +113,11 @@ spec:
               mountPath: /home/node/.cache/email-mcp
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.googleWorkspace.existingSecret }}
+            - name: google-sa
+              mountPath: /etc/email-mcp/google-sa
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           secret:
@@ -135,6 +140,12 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- with .Values.googleWorkspace.existingSecret }}
+        - name: google-sa
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0440
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

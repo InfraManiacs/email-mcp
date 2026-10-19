@@ -46,6 +46,15 @@ export const OAuth2ConfigSchema = z.object({
   scopes: z.array(z.string()).optional(),
 });
 
+/**
+ * Google Workspace service account with domain-wide delegation: the server
+ * mints short-lived tokens as the account's address, no per-user consent.
+ * `key_file` is the path to the service account JSON key.
+ */
+export const GoogleServiceAccountConfigSchema = z.object({
+  key_file: z.string().min(1, 'google_service_account.key_file is required'),
+});
+
 export const AccountConfigSchema = z
   .object({
     name: z.string().min(1, 'Account name is required'),
@@ -54,6 +63,7 @@ export const AccountConfigSchema = z
     username: z.string().optional(),
     password: z.string().optional(),
     oauth2: OAuth2ConfigSchema.optional(),
+    google_service_account: GoogleServiceAccountConfigSchema.optional(),
     imap: ImapConfigSchema,
     smtp: SmtpConfigSchema,
     /**
@@ -67,8 +77,8 @@ export const AccountConfigSchema = z
     /** Per-account override of the Sent-copy default (see appendToSent). */
     save_to_sent: z.boolean().optional(),
   })
-  .refine((data) => data.password ?? data.oauth2, {
-    message: 'Either password or oauth2 config is required',
+  .refine((data) => data.password ?? data.oauth2 ?? data.google_service_account, {
+    message: 'Either password, oauth2 or google_service_account config is required',
   });
 
 export const WatcherConfigSchema = z.object({

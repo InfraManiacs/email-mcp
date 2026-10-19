@@ -99,6 +99,32 @@ verify_ssl = {{ .verify_ssl }}
 {{- else }}
 {{- $presets := include "email-mcp.providerPresets" . | fromYaml }}
 {{- .Values.settingsToml }}
+{{- $saKey := printf "/etc/email-mcp/google-sa/%s" .Values.googleWorkspace.keyKey }}
+{{- range $i, $a := .Values.googleWorkspace.accounts }}
+{{- if not $.Values.googleWorkspace.existingSecret }}
+{{- fail "googleWorkspace.accounts needs googleWorkspace.existingSecret" }}
+{{- end }}
+
+[[accounts]]
+name = {{ required (printf "googleWorkspace.accounts[%d].name is required" $i) $a.name | quote }}
+email = {{ required (printf "googleWorkspace.accounts[%d].email is required" $i) $a.email | quote }}
+{{- with $a.fullName }}
+full_name = {{ . | quote }}
+{{- end }}
+
+[accounts.google_service_account]
+key_file = {{ $saKey | quote }}
+
+[accounts.imap]
+host = "imap.gmail.com"
+port = 993
+tls = true
+
+[accounts.smtp]
+host = "smtp.gmail.com"
+port = 465
+tls = true
+{{- end }}
 {{- range $i, $a := .Values.accounts }}
 {{- $name := required (printf "accounts[%d].name is required" $i) $a.name }}
 {{- $preset := dict }}

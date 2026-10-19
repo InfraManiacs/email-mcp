@@ -1,0 +1,7 @@
+auth:
+  existingSecret: email-mcp-token
+googleWorkspace:
+  existingSecret: email-mcp-google-sa
+  accounts:
+    - name: simstech
+      email: me@example.com

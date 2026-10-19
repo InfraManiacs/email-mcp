@@ -47,7 +47,12 @@ export interface SmtpConfig {
 // ---------------------------------------------------------------------------
 
 export interface OAuth2Config {
-  provider: 'google' | 'microsoft' | 'custom';
+  /**
+   * `google-service-account` is not a TOML provider value: it is produced by
+   * an account's `[accounts.google_service_account]` block, and tokens are
+   * minted with a signed JWT instead of a refresh token.
+   */
+  provider: 'google' | 'microsoft' | 'custom' | 'google-service-account';
   clientId: string;
   clientSecret: string;
   refreshToken: string;
@@ -57,6 +62,10 @@ export interface OAuth2Config {
   tokenUrl?: string;
   authUrl?: string;
   scopes?: string[];
+  /** google-service-account: path to the JSON key, loaded at startup. */
+  serviceAccountKeyFile?: string;
+  /** google-service-account: the loaded key and the user to impersonate. */
+  serviceAccount?: { clientEmail: string; privateKey: string; tokenUri: string; subject: string };
 }
 
 export interface AccountConfig {

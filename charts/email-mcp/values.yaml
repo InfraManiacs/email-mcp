@@ -41,6 +41,18 @@ auth:
 credentials:
   existingSecret: ""
 
+# -- Google Workspace mailboxes via a service account with domain-wide
+# delegation (no per-user consent, no app verification). Authorize the
+# service account's client ID for scope https://mail.google.com/ under
+# Admin console → Security → API controls → Domain-wide delegation.
+googleWorkspace:
+  # Secret holding the service account JSON key.
+  existingSecret: ""
+  keyKey: service-account.json
+  accounts: []
+  #  - name: simstech
+  #    email: you@yourdomain.com
+
 # -- Hub mode: admin UI at /admin (Google sign-in, allowlisted admins) where
 # Google accounts are connected through a hosted OAuth flow. Refresh tokens
 # are stored AES-256-GCM encrypted on the state volume and accounts are added
@@ -101,6 +113,10 @@ settingsToml: |
   [settings.cache]
   enabled = true
   mailboxes = ["INBOX"]
+  # Mirror only recent mail: a full mirror of a 100k+ message inbox is a long
+  # initial sync, repeated whenever the (emptyDir) cache is lost. Older mail
+  # is still served live from IMAP.
+  window_days = 30
 
 # -- Escape hatch: a complete config.toml. When set, `accounts` and
 # `settingsToml` are ignored.

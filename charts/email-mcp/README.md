@@ -45,7 +45,38 @@ Each account references its credential as `env:<VAR>`; the variables come
 from `credentials.existingSecret` via `envFrom`. Adding an account means
 adding a key to that Secret and an entry to `accounts`.
 
-### Gmail / Google Workspace: hub mode
+### Google Workspace: service account (recommended)
+
+For Workspace domains you administer, use a service account with
+domain-wide delegation: no consent screen, no Google app verification, no
+per-user login.
+
+1. Google Cloud → IAM & Admin → Service Accounts → create one (no roles) and
+   download a JSON key. Note its **Unique ID**.
+2. Each domain's Admin console → Security → API controls → Domain-wide
+   delegation → Add new: the Unique ID, scope `https://mail.google.com/`.
+3. Make sure IMAP is enabled (Apps → Google Workspace → Gmail → End User Access).
+4. Store the key and list the addresses:
+
+```bash
+kubectl -n email-mcp create secret generic email-mcp-google-sa \
+  --from-file=service-account.json=./key.json
+```
+
+```yaml
+image:
+  repository: ghcr.io/inframaniacs/email-mcp   # service-account auth is fork-only
+googleWorkspace:
+  existingSecret: email-mcp-google-sa
+  accounts:
+    - name: main
+      email: you@yourdomain.com
+```
+
+The key can impersonate **any** user in every domain that authorized it;
+only the listed addresses are exposed to agents, but guard the Secret.
+
+### Gmail / Google Workspace: hub mode (OAuth)
 
 Workspace accounts no longer accept password logins, so Google accounts are
 connected through the hub's hosted OAuth flow instead of `accounts`:

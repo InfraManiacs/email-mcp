@@ -5,6 +5,8 @@
  * Uses native fetch (Node 22+) — no external HTTP dependencies.
  */
 
+import { createSign } from 'node:crypto';
+
 import type { OAuth2Config } from '../types/index.js';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,9 @@ export default class OAuthService {
   static async refreshAccessToken(
     oauth2: OAuth2Config,
   ): Promise<{ accessToken: string; expiresIn: number }> {
+    if (oauth2.provider === 'google-service-account') {
+      return OAuthService.mintServiceAccountToken(oauth2);
+    }
     const endpoints = OAuthService.getProviderEndpoints(oauth2);
 
     const body = new URLSearchParams({
@@ -129,6 +134,49 @@ export default class OAuthService {
       accessToken: data.access_token,
       expiresIn: data.expires_in,
     };
+  }
+
+  /**
+   * Domain-wide delegation: sign a JWT as the service account with the
+   * mailbox address as `sub`, and trade it for an access token. There is no
+   * refresh token — a new assertion is signed each time.
+   */
+  static async mintServiceAccountToken(
+    oauth2: OAuth2Config,
+  ): Promise<{ accessToken: string; expiresIn: number }> {
+    const sa = oauth2.serviceAccount;
+    if (!sa) throw new Error('Google service account key was not loaded');
+    const now = Math.floor(Date.now() / 1000);
+    const encode = (value: object): string =>
+      Buffer.from(JSON.stringify(value)).toString('base64url');
+    const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({
+      iss: sa.clientEmail,
+      sub: sa.subject,
+      scope: (oauth2.scopes ?? ['https://mail.google.com/']).join(' '),
+      aud: sa.tokenUri,
+      iat: now,
+      exp: now + 3600,
+    })}`;
+    const signature = createSign('RSA-SHA256').update(unsigned).sign(sa.privateKey, 'base64url');
+
+    const response = await fetch(sa.tokenUri, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: `${unsigned}.${signature}`,
+      }).toString(),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      // unauthorized_client here almost always means the client ID / scope is
+      // not authorized under Domain-wide delegation in the Admin console.
+      throw new Error(
+        `Service account token request for ${sa.subject} failed (${response.status}): ${text}`,
+      );
+    }
+    const data = (await response.json()) as { access_token: string; expires_in: number };
+    return { accessToken: data.access_token, expiresIn: data.expires_in };
   }
 
   /**

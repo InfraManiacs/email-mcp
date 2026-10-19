@@ -281,7 +281,17 @@ export function normalizeAccount(raw: RawAccountConfig): AccountConfig {
     fullName: raw.full_name,
     username: raw.username ?? raw.email,
     password: raw.password,
-    oauth2: raw.oauth2 ? normalizeOAuth2(raw.oauth2) : undefined,
+    oauth2: raw.oauth2
+      ? normalizeOAuth2(raw.oauth2)
+      : raw.google_service_account
+        ? {
+            provider: 'google-service-account',
+            clientId: '',
+            clientSecret: '',
+            refreshToken: '',
+            serviceAccountKeyFile: raw.google_service_account.key_file,
+          }
+        : undefined,
     maxAttachmentMb: raw.max_attachment_mb,
     sentMailbox: raw.sent_mailbox,
     saveToSent: raw.save_to_sent,
@@ -438,6 +448,30 @@ export async function loadRawConfig(configPath?: string): Promise<RawAppConfig> 
  * for existing configs. Kept out of normalizeAccount (which stays pure/sync)
  * and applied as one awaited pass.
  */
+/** Read a Google service account JSON key; `subject` is the user to impersonate. */
+async function loadServiceAccountKey(
+  keyFile: string,
+  subject: string,
+): Promise<NonNullable<OAuth2Config['serviceAccount']>> {
+  let key: { type?: string; client_email?: string; private_key?: string; token_uri?: string };
+  try {
+    key = JSON.parse(await fs.readFile(keyFile, 'utf-8')) as typeof key;
+  } catch (err) {
+    throw new Error(
+      `Could not read Google service account key "${keyFile}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (key.type !== 'service_account' || !key.client_email || !key.private_key) {
+    throw new Error(`"${keyFile}" is not a Google service account JSON key.`);
+  }
+  return {
+    clientEmail: key.client_email,
+    privateKey: key.private_key,
+    tokenUri: key.token_uri ?? 'https://oauth2.googleapis.com/token',
+    subject,
+  };
+}
+
 async function resolveAccountSecrets(accounts: AccountConfig[]): Promise<AccountConfig[]> {
   return Promise.all(
     accounts.map(async (account) => {
@@ -445,7 +479,15 @@ async function resolveAccountSecrets(accounts: AccountConfig[]): Promise<Account
       if (account.password !== undefined) {
         resolved.password = await resolveSecret(account.password);
       }
-      if (account.oauth2) {
+      if (account.oauth2?.provider === 'google-service-account') {
+        resolved.oauth2 = {
+          ...account.oauth2,
+          serviceAccount: await loadServiceAccountKey(
+            account.oauth2.serviceAccountKeyFile ?? '',
+            account.username,
+          ),
+        };
+      } else if (account.oauth2) {
         resolved.oauth2 = {
           ...account.oauth2,
           clientSecret: await resolveSecret(account.oauth2.clientSecret),
