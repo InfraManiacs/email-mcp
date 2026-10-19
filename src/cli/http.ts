@@ -27,6 +27,7 @@ import {
 import { buildServer, buildServices, startBackgroundServices } from '../app.js';
 import { isHubEnabled, loadHubConfig } from '../hub/config.js';
 import Hub from '../hub/hub.js';
+import AuthLimiter from '../safety/auth-limiter.js';
 import type { ServerConfig } from '../types/index.js';
 
 export interface HttpOptions {
@@ -39,6 +40,9 @@ export interface HttpOptions {
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost', '[::1]']);
+
+/** Shortest bearer token accepted when listening beyond loopback. */
+const MIN_NETWORK_TOKEN_LENGTH = 32;
 
 function isLoopback(host: string): boolean {
   return LOOPBACK.has(host);
@@ -182,6 +186,23 @@ export default async function runHttp(argv: string[]): Promise<void> {
     }
   }
 
+  if (!isLoopback(opts.host) && opts.token && opts.token.length < MIN_NETWORK_TOKEN_LENGTH) {
+    throw new Error(
+      `Refusing to bind ${opts.host} with a ${opts.token.length}-character token: use at least ` +
+        `${MIN_NETWORK_TOKEN_LENGTH} random characters (e.g. \`openssl rand -base64 48\`).`,
+    );
+  }
+
+  // Failed-auth lockout, keyed by the client address — or by a proxy header
+  // such as CF-Connecting-IP when the socket address is always the proxy's.
+  const authLimiter = new AuthLimiter();
+  const clientIpHeader = process.env.EMAIL_MCP_HTTP_CLIENT_IP_HEADER?.trim().toLowerCase();
+  const clientKey = (req: IncomingMessage): string => {
+    const forwarded = clientIpHeader ? req.headers[clientIpHeader] : undefined;
+    const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    return value?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  };
+
   const server = buildServer(services);
 
   // This connection exists only so `server.server` can carry background-
@@ -240,13 +261,40 @@ export default async function runHttp(argv: string[]): Promise<void> {
       // DNS-rebinding guard answers with 403 itself when it returns false.
       if (validateHost && !validateHost(req, res)) return;
 
-      if (opts.token && !tokenMatches(req.headers.authorization, opts.token)) {
-        res.writeHead(401, {
-          'content-type': 'application/json',
-          'www-authenticate': 'Bearer',
-        });
-        res.end(JSON.stringify({ error: 'unauthorized' }));
-        return;
+      if (opts.token) {
+        const client = clientKey(req);
+        // Locked-out clients are refused before the token is even compared.
+        const lockedFor = authLimiter.lockedFor(client);
+        if (lockedFor > 0) {
+          res.writeHead(429, {
+            'content-type': 'application/json',
+            'retry-after': String(lockedFor),
+          });
+          res.end(JSON.stringify({ error: 'too_many_failed_attempts' }));
+          return;
+        }
+        if (!tokenMatches(req.headers.authorization, opts.token)) {
+          const outcome = authLimiter.recordFailure(client);
+          if (outcome.kind === 'locked' && outcome.newlyLocked) {
+            process.stderr.write(
+              `[email-mcp] auth: locked out ${client} for ${outcome.retryAfterSec}s after repeated invalid tokens\n`,
+            );
+          }
+          if (outcome.delayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, outcome.delayMs));
+          }
+          res.writeHead(outcome.kind === 'locked' ? 429 : 401, {
+            'content-type': 'application/json',
+            'www-authenticate': 'Bearer',
+            ...(outcome.kind === 'locked' ? { 'retry-after': String(outcome.retryAfterSec) } : {}),
+          });
+          res.end(
+            JSON.stringify({
+              error: outcome.kind === 'locked' ? 'too_many_failed_attempts' : 'unauthorized',
+            }),
+          );
+          return;
+        }
       }
 
       const reqServer = buildServer(services);
