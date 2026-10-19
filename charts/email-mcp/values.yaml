@@ -41,6 +41,21 @@ auth:
 credentials:
   existingSecret: ""
 
+# -- Hub mode: admin UI at /admin (Google sign-in, allowlisted admins) where
+# Google accounts are connected through a hosted OAuth flow. Refresh tokens
+# are stored AES-256-GCM encrypted on the state volume and accounts are added
+# live. Needs persistence.state and an image built from the fork.
+hub:
+  enabled: false
+  # External URL; defaults to https://<first ingressRoute/ingress host>.
+  publicUrl: ""
+  # Google accounts allowed into /admin.
+  adminEmails: []
+  # Secret with EMAIL_MCP_HUB_GOOGLE_CLIENT_ID, EMAIL_MCP_HUB_GOOGLE_CLIENT_SECRET
+  # and EMAIL_MCP_HUB_SECRET_KEY (>= 32 chars; encrypts stored tokens — losing
+  # or changing it means reconnecting every hub account).
+  existingSecret: ""
+
 # -- Mail accounts. `provider` fills in IMAP/SMTP hosts for well-known
 # providers (gmail, outlook, yahoo, icloud, fastmail); set `imap`/`smtp`
 # explicitly for anything else.

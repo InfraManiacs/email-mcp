@@ -25,6 +25,8 @@ import {
 } from '@modelcontextprotocol/node';
 
 import { buildServer, buildServices, startBackgroundServices } from '../app.js';
+import { isHubEnabled, loadHubConfig } from '../hub/config.js';
+import Hub from '../hub/hub.js';
 import type { ServerConfig } from '../types/index.js';
 
 export interface HttpOptions {
@@ -168,6 +170,18 @@ export default async function runHttp(argv: string[]): Promise<void> {
     );
   }
 
+  // Hub mode: admin UI + hosted OAuth, accounts connected at runtime.
+  let hub: Hub | undefined;
+  if (isHubEnabled()) {
+    const hubConfig = loadHubConfig();
+    hub = new Hub(hubConfig, services);
+    await hub.init();
+    const publicHost = new URL(hubConfig.publicUrl).host;
+    if (opts.allowedHosts.length > 0 && !opts.allowedHosts.includes(publicHost)) {
+      opts.allowedHosts.push(publicHost);
+    }
+  }
+
   const server = buildServer(services);
 
   // This connection exists only so `server.server` can carry background-
@@ -193,6 +207,9 @@ export default async function runHttp(argv: string[]): Promise<void> {
           '127.0.0.1',
           '[::1]',
           ...(isLoopback(opts.host) || opts.host === '0.0.0.0' ? [] : [opts.host]),
+          ...(hub && process.env.EMAIL_MCP_HUB_PUBLIC_URL
+            ? [new URL(process.env.EMAIL_MCP_HUB_PUBLIC_URL).host]
+            : []),
         ];
   const validateHost = wildcard ? null : hostHeaderValidation(hostAllowlist);
 
@@ -205,6 +222,13 @@ export default async function runHttp(argv: string[]): Promise<void> {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok' }));
         return;
+      }
+
+      // Hub routes (admin UI, OAuth callback) authenticate with their own
+      // session, not the MCP bearer token — but still sit behind the Host check.
+      if (hub && url.pathname !== opts.path) {
+        if (validateHost && !validateHost(req, res)) return;
+        if (await hub.handle(req, res, url)) return;
       }
 
       if (url.pathname !== opts.path) {

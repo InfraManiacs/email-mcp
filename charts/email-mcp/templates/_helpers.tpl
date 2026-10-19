@@ -156,3 +156,22 @@ refresh_token = {{ printf "env:%s" (required "oauth2.refreshTokenEnv is required
 {{- end }}
 {{- join " || " $parts }}
 {{- end }}
+
+{{- define "email-mcp.hubPublicUrl" -}}
+{{- if .Values.hub.publicUrl }}
+{{- .Values.hub.publicUrl | trimSuffix "/" }}
+{{- else if and .Values.ingressRoute.enabled .Values.ingressRoute.hosts }}
+{{- printf "https://%s" (first .Values.ingressRoute.hosts) }}
+{{- else if and .Values.ingress.enabled .Values.ingress.hosts }}
+{{- printf "https://%s" (first .Values.ingress.hosts).host }}
+{{- else }}
+{{- fail "hub.enabled needs hub.publicUrl or an ingress/ingressRoute host" }}
+{{- end }}
+{{- end }}
+
+{{/* Paths routed publicly: the MCP endpoint, plus the hub UI and callback. */}}
+{{- define "email-mcp.publicPaths" -}}
+{{- $paths := list .Values.http.path }}
+{{- if .Values.hub.enabled }}{{ $paths = concat $paths (list "/admin" "/oauth/callback") }}{{ end }}
+{{- join "," $paths }}
+{{- end }}

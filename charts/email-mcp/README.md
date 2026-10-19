@@ -45,13 +45,45 @@ Each account references its credential as `env:<VAR>`; the variables come
 from `credentials.existingSecret` via `envFrom`. Adding an account means
 adding a key to that Secret and an entry to `accounts`.
 
-### Gmail
+### Gmail / Google Workspace: hub mode
 
-Use an **App Password** (Google Account → Security → 2-Step Verification →
-App passwords). It is the most reliable option. OAuth2 is marked experimental
-upstream and the server has no consent flow, so you would have to mint the
-refresh token yourself (`oauth2.clientIdEnv` / `clientSecretEnv` /
-`refreshTokenEnv`).
+Workspace accounts no longer accept password logins, so Google accounts are
+connected through the hub's hosted OAuth flow instead of `accounts`:
+
+1. Google Cloud console → new project → enable the **Gmail API**.
+2. OAuth consent screen: **External**, publishing status **In production**
+   (Testing-mode refresh tokens expire after 7 days). Scopes: `openid`,
+   `email`, `https://mail.google.com/`. Unverified is fine for < 100 users;
+   you will click through an "unverified app" warning.
+3. Credentials → **OAuth client ID → Web application**, authorized redirect
+   URI `https://<host>/oauth/callback`.
+4. In each Workspace admin console: Security → API controls → Manage
+   third-party app access → add the client ID → **Trusted**.
+5. Create the hub Secret and enable hub mode:
+
+```bash
+kubectl -n email-mcp create secret generic email-mcp-hub \
+  --from-literal=EMAIL_MCP_HUB_GOOGLE_CLIENT_ID=… \
+  --from-literal=EMAIL_MCP_HUB_GOOGLE_CLIENT_SECRET=… \
+  --from-literal=EMAIL_MCP_HUB_SECRET_KEY="$(openssl rand -base64 48)"
+```
+
+```yaml
+image:
+  repository: ghcr.io/inframaniacs/email-mcp   # hub mode is fork-only
+hub:
+  enabled: true
+  adminEmails: [you@example.com]
+  existingSecret: email-mcp-hub
+```
+
+Then open `https://<host>/admin`, sign in, and **Connect with Google** once
+per mailbox. Tokens are stored encrypted (AES-256-GCM, key derived from
+`EMAIL_MCP_HUB_SECRET_KEY`) on the state volume; accounts appear to agents
+immediately, without a restart. Removing an account revokes its token.
+
+Back up `EMAIL_MCP_HUB_SECRET_KEY`: without it the stored tokens cannot be
+decrypted and every account must be reconnected.
 
 ## Exposure
 
@@ -59,7 +91,7 @@ refresh token yourself (`oauth2.clientIdEnv` / `clientSecretEnv` /
 - `ingressRoute.*` — Traefik IngressRoute; `ingressRoute.namespace` lets it
   live next to a shared TLS secret (requires Traefik `allowCrossNamespace`).
 
-Only `http.path` (default `/mcp`) is routed; `/healthz` stays cluster-internal.
+Only `http.path` (default `/mcp`) — plus `/admin` and `/oauth/callback` in hub mode — is routed; `/healthz` stays cluster-internal.
 The Host-header allowlist is derived from the Service DNS names and the
 ingress hosts unless `http.allowedHosts` is set.
 

@@ -52,13 +52,28 @@ spec:
                   key: {{ .Values.auth.tokenKey }}
             - name: EMAIL_MCP_HTTP_ALLOWED_HOSTS
               value: {{ include "email-mcp.allowedHosts" . | quote }}
+            {{- if .Values.hub.enabled }}
+            {{- if not .Values.persistence.state.enabled }}
+            {{- fail "hub.enabled requires persistence.state.enabled (connected accounts are stored there)" }}
+            {{- end }}
+            - name: EMAIL_MCP_HUB_PUBLIC_URL
+              value: {{ include "email-mcp.hubPublicUrl" . | quote }}
+            - name: EMAIL_MCP_HUB_ADMIN_EMAILS
+              value: {{ required "hub.adminEmails is required" (join "," .Values.hub.adminEmails) | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.credentials.existingSecret }}
+          {{- if or .Values.credentials.existingSecret .Values.hub.enabled }}
           envFrom:
+            {{- with .Values.credentials.existingSecret }}
             - secretRef:
                 name: {{ . }}
+            {{- end }}
+            {{- if .Values.hub.enabled }}
+            - secretRef:
+                name: {{ required "hub.existingSecret is required" .Values.hub.existingSecret }}
+            {{- end }}
           {{- end }}
           ports:
             - name: http

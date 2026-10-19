@@ -1,0 +1,14 @@
+image:
+  repository: ghcr.io/inframaniacs/email-mcp
+  tag: feat-oauth-hub
+auth:
+  existingSecret: email-mcp-token
+hub:
+  enabled: true
+  adminEmails: [admin@example.com]
+  existingSecret: email-mcp-hub
+ingressRoute:
+  enabled: true
+  namespace: traefik
+  hosts: [mail-hub.example.com]
+  tlsSecretName: example-tls

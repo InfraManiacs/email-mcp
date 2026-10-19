@@ -79,6 +79,35 @@ export default class ConnectionManager implements IConnectionManager {
     return [...this.accounts.keys()];
   }
 
+  /**
+   * Register an account at runtime (the hub's OAuth connect flow). Replacing
+   * an existing name drops its open connections so the next caller
+   * authenticates with the new credentials.
+   */
+  async addAccount(account: AccountConfig): Promise<void> {
+    if (this.accounts.has(account.name)) {
+      await this.dropConnections(account.name);
+    }
+    this.accounts.set(account.name, account);
+  }
+
+  /** Unregister an account and close its connections. */
+  async removeAccount(name: string): Promise<void> {
+    await this.dropConnections(name);
+    this.accounts.delete(name);
+  }
+
+  private async dropConnections(name: string): Promise<void> {
+    const client = this.imapClients.get(name);
+    this.imapClients.delete(name);
+    if (client) {
+      await client.logout().catch(() => client.close());
+    }
+    const transport = this.smtpTransports.get(name);
+    this.smtpTransports.delete(name);
+    transport?.close();
+  }
+
   // -------------------------------------------------------------------------
   // IMAP
   // -------------------------------------------------------------------------

@@ -433,5 +433,13 @@ export const AppConfigFileSchema = z.object({
   accounts: z.array(AccountConfigSchema).min(1, 'At least one account is required'),
 });
 
+/**
+ * Hub mode (EMAIL_MCP_HUB_PUBLIC_URL) may start with no file-configured
+ * accounts: they are connected at runtime through the admin UI.
+ */
+export const HubAppConfigFileSchema = AppConfigFileSchema.extend({
+  accounts: z.array(AccountConfigSchema).default(() => []),
+});
+
 export type RawAccountConfig = z.infer<typeof AccountConfigSchema>;
 export type RawAppConfig = z.infer<typeof AppConfigFileSchema>;

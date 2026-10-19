@@ -14,7 +14,7 @@ import {
 } from '../safety/attachment-download.js';
 import type { AccountConfig, AppConfig, HookRule, OAuth2Config } from '../types/index.js';
 import type { RawAccountConfig, RawAppConfig } from './schema.js';
-import { AppConfigFileSchema } from './schema.js';
+import { AppConfigFileSchema, HubAppConfigFileSchema } from './schema.js';
 import { resolveSecret } from './secret-resolver.js';
 import { CONFIG_FILE, xdg } from './xdg.js';
 
@@ -242,7 +242,10 @@ async function loadFromFile(filePath: string = CONFIG_FILE): Promise<RawAppConfi
  * fatal error.
  */
 function validateRawConfig(raw: unknown, source: string): RawAppConfig {
-  const result = AppConfigFileSchema.safeParse(raw);
+  const schema = process.env.EMAIL_MCP_HUB_PUBLIC_URL
+    ? HubAppConfigFileSchema
+    : AppConfigFileSchema;
+  const result = schema.safeParse(raw);
   if (result.success) return result.data;
 
   const lines = result.error.issues.map((issue) => {
@@ -271,7 +274,7 @@ function normalizeOAuth2(raw: NonNullable<RawAccountConfig['oauth2']>): OAuth2Co
   };
 }
 
-function normalizeAccount(raw: RawAccountConfig): AccountConfig {
+export function normalizeAccount(raw: RawAccountConfig): AccountConfig {
   return {
     name: raw.name,
     email: raw.email,

@@ -23,13 +23,15 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
-          - path: {{ $.Values.http.path }}
+          {{- range splitList "," (include "email-mcp.publicPaths" $) }}
+          - path: {{ . }}
             pathType: Prefix
             backend:
               service:
                 name: {{ $fullname }}
                 port:
                   name: http
+          {{- end }}
     {{- end }}
 {{- end }}
 {{- if .Values.ingressRoute.enabled }}
@@ -46,7 +48,11 @@ spec:
     {{- toYaml .Values.ingressRoute.entryPoints | nindent 4 }}
   routes:
     - kind: Rule
-      match: {{ printf "(%s) && PathPrefix(`%s`)" (include "email-mcp.hostMatch" .) .Values.http.path | quote }}
+      {{- $pathRules := list }}
+      {{- range splitList "," (include "email-mcp.publicPaths" .) }}
+      {{- $pathRules = append $pathRules (printf "PathPrefix(`%s`)" .) }}
+      {{- end }}
+      match: {{ printf "(%s) && (%s)" (include "email-mcp.hostMatch" .) (join " || " $pathRules) | quote }}
       {{- with .Values.ingressRoute.middlewares }}
       middlewares:
         {{- toYaml . | nindent 8 }}
