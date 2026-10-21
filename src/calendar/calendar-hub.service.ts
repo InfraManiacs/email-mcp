@@ -95,7 +95,7 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 export default class CalendarHubService {
   private readonly sources = new Map<string, SourceEntry>();
 
-  private cache: { at: number; calendars: HubCalendar[]; errors: CalendarError[] } | undefined;
+  private cache: { at: number; calendars: HubCalendar[] } | undefined;
 
   constructor(
     sources: CalendarSourceConfig[],
@@ -117,7 +117,9 @@ export default class CalendarHubService {
   async listCalendars(
     refresh = false,
   ): Promise<{ calendars: HubCalendar[]; errors: CalendarError[] }> {
-    if (!refresh && this.cache && Date.now() - this.cache.at < LIST_TTL_MS) return this.cache;
+    if (!refresh && this.cache && Date.now() - this.cache.at < LIST_TTL_MS) {
+      return { calendars: this.cache.calendars, errors: [] };
+    }
 
     const calendars: HubCalendar[] = [];
     const errors: CalendarError[] = [];
@@ -151,8 +153,9 @@ export default class CalendarHubService {
 
     const defaultCal = this.pickDefault(calendars);
     if (defaultCal) defaultCal.default = true;
-    this.cache = { at: Date.now(), calendars, errors };
-    return this.cache;
+    // A failing source is retried on the next call rather than cached.
+    this.cache = errors.length === 0 ? { at: Date.now(), calendars } : undefined;
+    return { calendars, errors };
   }
 
   private toHubCalendar(source: CalendarSourceConfig, entry: GoogleCalendarEntry): HubCalendar {
