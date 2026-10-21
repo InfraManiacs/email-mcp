@@ -5,3 +5,7 @@ googleWorkspace:
   accounts:
     - name: simstech
       email: me@example.com
+      calendar: true
+      calendarInclude: [primary, Agents]
+calendar:
+  default: simstech/Agents

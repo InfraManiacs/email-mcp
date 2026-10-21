@@ -64,6 +64,8 @@ function captureRegisteredTools(): CapturedTool[] {
     smtpService: fakeService(),
     templateService: fakeService(),
     calendarService: fakeService(),
+    // Truthy `enabled`, so the shared calendar tools are checked too.
+    calendarHub: fakeService(),
     localCalendarService: fakeService(),
     remindersService: fakeService(),
     schedulerService: fakeService(),

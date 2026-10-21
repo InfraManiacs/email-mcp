@@ -173,6 +173,28 @@ refresh_token = {{ printf "env:%s" (required "oauth2.refreshTokenEnv is required
 [accounts.smtp]
 {{ include "email-mcp.endpointToml" $smtp }}
 {{- end }}
+{{- range $i, $a := .Values.googleWorkspace.accounts }}
+{{- if $a.calendar }}
+
+[[calendars]]
+name = {{ $a.name | quote }}
+email = {{ $a.email | quote }}
+{{- with $a.calendarInclude }}
+include = {{ toJson . }}
+{{- end }}
+{{- if $a.calendarReadOnly }}
+read_only = true
+{{- end }}
+
+[calendars.google_service_account]
+key_file = {{ $saKey | quote }}
+{{- end }}
+{{- end }}
+{{- with .Values.calendar.default }}
+
+[calendar]
+default = {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 

@@ -12,7 +12,13 @@ import {
   DEFAULT_ATTACHMENT_DOWNLOAD_MAX_BYTES,
   parseExtensionAllowlist,
 } from '../safety/attachment-download.js';
-import type { AccountConfig, AppConfig, HookRule, OAuth2Config } from '../types/index.js';
+import type {
+  AccountConfig,
+  AppConfig,
+  CalendarSourceConfig,
+  HookRule,
+  OAuth2Config,
+} from '../types/index.js';
 import type { RawAccountConfig, RawAppConfig } from './schema.js';
 import { AppConfigFileSchema, HubAppConfigFileSchema } from './schema.js';
 import { resolveSecret } from './secret-resolver.js';
@@ -416,7 +422,36 @@ function normalizeConfig(raw: RawAppConfig): AppConfig {
       },
     },
     accounts: raw.accounts.map(normalizeAccount),
+    calendars: normalizeCalendarSources(raw.calendars ?? []),
+    calendar: {
+      default: raw.calendar?.default,
+      localTools: raw.calendar?.local_tools,
+    },
   };
+}
+
+function normalizeCalendarSources(
+  raw: NonNullable<RawAppConfig['calendars']>,
+): CalendarSourceConfig[] {
+  const seen = new Set<string>();
+  return raw.map((source) => {
+    if (seen.has(source.name)) throw new Error(`Duplicate calendar source name "${source.name}"`);
+    seen.add(source.name);
+    return {
+      name: source.name,
+      provider: source.provider,
+      email: source.email,
+      oauth2: {
+        provider: 'google-service-account',
+        clientId: '',
+        clientSecret: '',
+        refreshToken: '',
+        serviceAccountKeyFile: source.google_service_account.key_file,
+      },
+      include: source.include,
+      readOnly: source.read_only,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -499,13 +534,38 @@ async function resolveAccountSecrets(accounts: AccountConfig[]): Promise<Account
   );
 }
 
+async function resolveCalendarSecrets(
+  sources: CalendarSourceConfig[] | undefined,
+): Promise<CalendarSourceConfig[]> {
+  return Promise.all(
+    (sources ?? []).map(async (source) => ({
+      ...source,
+      oauth2: {
+        ...source.oauth2,
+        serviceAccount: await loadServiceAccountKey(
+          source.oauth2.serviceAccountKeyFile ?? '',
+          source.email,
+        ),
+      },
+    })),
+  );
+}
+
+async function resolveSecrets(config: AppConfig): Promise<AppConfig> {
+  return {
+    ...config,
+    accounts: await resolveAccountSecrets(config.accounts),
+    calendars: await resolveCalendarSecrets(config.calendars),
+  };
+}
+
 export async function loadConfig(configPath?: string): Promise<AppConfig> {
   // 1. Try environment variables first
   const envConfig = loadFromEnv();
   if (envConfig) {
     const validated = validateRawConfig(envConfig, 'MCP_EMAIL_* environment variables');
     const normalized = normalizeConfig(validated);
-    return { ...normalized, accounts: await resolveAccountSecrets(normalized.accounts) };
+    return resolveSecrets(normalized);
   }
 
   // 2. Fall back to TOML config file
@@ -513,7 +573,7 @@ export async function loadConfig(configPath?: string): Promise<AppConfig> {
   if (fileConfig) {
     const validated = validateRawConfig(fileConfig, configPath ?? CONFIG_FILE);
     const normalized = normalizeConfig(validated);
-    return { ...normalized, accounts: await resolveAccountSecrets(normalized.accounts) };
+    return resolveSecrets(normalized);
   }
 
   throw new Error(

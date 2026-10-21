@@ -55,6 +55,20 @@ googleWorkspace:
   accounts: []
   #  - name: simstech
   #    email: you@yourdomain.com
+  #    # Also expose this user's Google calendars through the shared calendar
+  #    # tools. The DWD entry must also list
+  #    # https://www.googleapis.com/auth/calendar, and the Calendar API must be
+  #    # enabled in the key's Cloud project.
+  #    calendar: true
+  #    calendarInclude: []      # calendar IDs/names; default: all of them
+  #    calendarReadOnly: false
+
+# -- Shared calendar settings (sources come from googleWorkspace.accounts
+# with calendar: true).
+calendar:
+  # Where new events go when a tool call names no calendar: "source/calendar"
+  # (calendar ID or name). Default: the first source's primary calendar.
+  default: ""
 
 # -- Hub mode: admin UI at /admin (Google sign-in, allowlisted admins) where
 # Google accounts are connected through a hosted OAuth flow. Refresh tokens

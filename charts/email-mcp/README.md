@@ -76,6 +76,34 @@ googleWorkspace:
 The key can impersonate **any** user in every domain that authorized it;
 only the listed addresses are exposed to agents, but guard the Secret.
 
+### Shared calendar (Google Calendar)
+
+Workspace accounts can also feed the shared calendar tools
+(`list_shared_calendars`, `list_calendar_events`, `find_free_time`,
+`create_calendar_event`, …), which merge every calendar on those users'
+calendar lists into one view, including calendars shared *to* them (share a
+personal Gmail calendar with the Workspace user to bring it in).
+
+1. Enable the **Google Calendar API** in the service account's Cloud project.
+2. Add `https://www.googleapis.com/auth/calendar` to the service account's
+   domain-wide delegation entry (comma-separated after `https://mail.google.com/`).
+3. Opt the account in:
+
+```yaml
+googleWorkspace:
+  accounts:
+    - name: work
+      email: you@yourdomain.com
+      calendar: true
+      # calendarInclude: [primary, Team]   # default: every calendar
+calendar:
+  default: work/Agents   # where new events go when none is named
+```
+
+Calendars are addressed as `source/calendarId` (`work/primary`), a unique
+calendar name, or a bare source name. With calendars configured, the
+macOS-only local calendar/reminders tools are not registered.
+
 ### Gmail / Google Workspace: hub mode (OAuth)
 
 Workspace accounts no longer accept password logins, so Google accounts are

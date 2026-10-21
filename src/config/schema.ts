@@ -81,6 +81,35 @@ export const AccountConfigSchema = z
     message: 'Either password, oauth2 or google_service_account config is required',
   });
 
+/**
+ * A calendar source for the shared calendar tools: a Google user reached
+ * through the service account (domain-wide delegation, calendar scope). Every
+ * calendar on that user's calendar list is exposed — including calendars other
+ * accounts (e.g. personal Gmail) have shared with them — unless `include`
+ * narrows it to specific calendar IDs or names.
+ */
+export const CalendarSourceSchema = z.object({
+  name: z
+    .string()
+    .min(1, 'Calendar source name is required')
+    .regex(/^[^/]+$/, 'Calendar source names cannot contain "/"'),
+  provider: z.literal('google').default('google'),
+  email: z.string().email('Invalid email address'),
+  google_service_account: GoogleServiceAccountConfigSchema,
+  include: z.array(z.string().min(1)).optional(),
+  read_only: z.boolean().default(false),
+});
+
+export const CalendarHubSettingsSchema = z.object({
+  /** Calendar new events go to when a tool call names none: "source/calendar". */
+  default: z.string().min(1).optional(),
+  /**
+   * Register the OS calendar/reminders tools (macOS Calendar.app). Defaults to
+   * on without [[calendars]] and off with them, so agents see one calendar.
+   */
+  local_tools: z.boolean().optional(),
+});
+
 export const WatcherConfigSchema = z.object({
   enabled: z.boolean().default(false),
   folders: z.array(z.string()).default(() => ['INBOX']),
@@ -441,6 +470,8 @@ export const AppConfigFileSchema = z.object({
       }) as z.infer<typeof SettingsSchema>,
   ),
   accounts: z.array(AccountConfigSchema).min(1, 'At least one account is required'),
+  calendars: z.array(CalendarSourceSchema).optional(),
+  calendar: CalendarHubSettingsSchema.optional(),
 });
 
 /**

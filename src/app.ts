@@ -12,6 +12,7 @@ import BlobStore from './cache/blob-store.js';
 import { collectOrphans, enforceBudget } from './cache/maintenance.js';
 import CacheStore from './cache/store.js';
 import SyncEngine from './cache/sync-engine.js';
+import CalendarHubService from './calendar/calendar-hub.service.js';
 import { loadConfig } from './config/loader.js';
 import { CACHE_BLOBS_DIR, CACHE_DB } from './config/xdg.js';
 import ConnectionManager from './connections/manager.js';
@@ -47,6 +48,8 @@ export interface AppServices {
   smtpService: SmtpService;
   templateService: TemplateService;
   calendarService: CalendarService;
+  /** Shared server-side calendars ([[calendars]]); `enabled` is false without any. */
+  calendarHub: CalendarHubService;
   localCalendarService: LocalCalendarService;
   remindersService: RemindersService;
   schedulerService: SchedulerService;
@@ -106,6 +109,7 @@ export async function buildServices(): Promise<AppServices> {
   });
   const templateService = new TemplateService();
   const calendarService = new CalendarService();
+  const calendarHub = new CalendarHubService(config.calendars ?? [], config.calendar?.default);
   const localCalendarService = new LocalCalendarService();
   const remindersService = new RemindersService();
   const schedulerService = new SchedulerService(smtpService, imapService, {
@@ -135,6 +139,7 @@ export async function buildServices(): Promise<AppServices> {
     smtpService,
     templateService,
     calendarService,
+    calendarHub,
     localCalendarService,
     remindersService,
     schedulerService,

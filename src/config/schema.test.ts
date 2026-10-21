@@ -277,3 +277,31 @@ describe('cache window default', () => {
     expect(parsed.cache.window_days).toBe(0);
   });
 });
+
+describe('calendars', () => {
+  it('parses calendar sources with defaults', () => {
+    const result = AppConfigFileSchema.parse({
+      accounts: [validAccount()],
+      calendars: [
+        { name: 'work', email: 'me@work.com', google_service_account: { key_file: '/k.json' } },
+      ],
+      calendar: { default: 'work/Agents' },
+    });
+    expect(result.calendars?.[0]).toMatchObject({ provider: 'google', read_only: false });
+    expect(result.calendar?.default).toBe('work/Agents');
+  });
+
+  it('rejects "/" in source names (it separates source and calendar)', () => {
+    const result = AppConfigFileSchema.safeParse({
+      accounts: [validAccount()],
+      calendars: [
+        { name: 'a/b', email: 'me@work.com', google_service_account: { key_file: '/k' } },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('is optional', () => {
+    expect(AppConfigFileSchema.parse({ accounts: [validAccount()] }).calendars).toBeUndefined();
+  });
+});

@@ -28,6 +28,10 @@ import registerMailboxesTools from './mailboxes.tool.js';
 import registerManageTools from './manage.tool.js';
 import registerSchedulerTools from './scheduler.tool.js';
 import registerSendTools from './send.tool.js';
+import {
+  registerSharedCalendarReadTools,
+  registerSharedCalendarWriteTools,
+} from './shared-calendar.tool.js';
 import { registerTemplateReadTools, registerTemplateWriteTools } from './templates.tool.js';
 import registerThreadTools from './thread.tool.js';
 import registerVerificationTools from './verification.tool.js';
@@ -42,6 +46,7 @@ export default function registerAllTools(server: McpServer, services: AppService
     smtpService,
     templateService,
     calendarService,
+    calendarHub,
     localCalendarService,
     remindersService,
     schedulerService,
@@ -68,8 +73,13 @@ export default function registerAllTools(server: McpServer, services: AppService
     calendarService,
     localCalendarService,
     remindersService,
-    { autoDownloadAttachments: config.settings.attachments.autoDownload },
+    {
+      autoDownloadAttachments: config.settings.attachments.autoDownload,
+      // OS calendar tools are noise next to the shared calendar (and useless in a container).
+      localTools: config.calendar?.localTools ?? !calendarHub.enabled,
+    },
   );
+  if (calendarHub.enabled) registerSharedCalendarReadTools(server, calendarHub);
   registerAnalyticsTools(server, imapService);
   registerHealthTools(server, connections, imapService, mailReadService, cacheStore, blobStore);
   registerLocateTools(server, mailReadService);
@@ -102,5 +112,8 @@ export default function registerAllTools(server: McpServer, services: AppService
     registerFolderTools(server, imapService);
     registerTemplateWriteTools(server, templateService, imapService, smtpService);
     registerSchedulerTools(server, schedulerService);
+    if (calendarHub.enabled) {
+      registerSharedCalendarWriteTools(server, calendarHub, imapService, calendarService);
+    }
   }
 }

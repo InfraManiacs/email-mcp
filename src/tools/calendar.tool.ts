@@ -40,7 +40,9 @@ export default function registerCalendarTools(
   calendarService: CalendarService,
   localCalendarService: LocalCalendarService,
   remindersService: RemindersService,
-  opts: { autoDownloadAttachments: boolean } = { autoDownloadAttachments: true },
+  opts: { autoDownloadAttachments: boolean; localTools?: boolean } = {
+    autoDownloadAttachments: true,
+  },
 ): void {
   // ---------------------------------------------------------------------------
   // extract_calendar
@@ -99,6 +101,9 @@ export default function registerCalendarTools(
       };
     },
   );
+
+  // Everything below drives the OS calendar / Reminders apps.
+  if (opts.localTools === false) return;
 
   // ---------------------------------------------------------------------------
   // add_to_calendar

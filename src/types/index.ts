@@ -241,6 +241,27 @@ export interface AppConfig {
     hooks: HooksConfig;
   };
   accounts: AccountConfig[];
+  /** Shared calendar sources ([[calendars]]); absent or empty disables those tools. */
+  calendars?: CalendarSourceConfig[];
+  calendar?: CalendarHubConfig;
+}
+
+export interface CalendarSourceConfig {
+  name: string;
+  provider: 'google';
+  email: string;
+  /** A `google-service-account` OAuth2 config impersonating `email`. */
+  oauth2: OAuth2Config;
+  /** Calendar IDs or names to expose; all of the user's calendars when unset. */
+  include?: string[];
+  readOnly: boolean;
+}
+
+export interface CalendarHubConfig {
+  /** "source/calendar" new events go to when none is named. */
+  default?: string;
+  /** Register the OS calendar/reminders tools; see CalendarHubSettingsSchema. */
+  localTools?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +471,8 @@ export interface CalendarEvent {
   status: 'TENTATIVE' | 'CONFIRMED' | 'CANCELLED';
   method?: string;
   recurrence?: string;
+  /** DATE-valued (all-day) event; start/end are local midnights. */
+  allDay?: boolean;
 }
 
 // ---------------------------------------------------------------------------

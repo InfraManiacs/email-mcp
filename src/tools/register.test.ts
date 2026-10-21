@@ -100,6 +100,7 @@ function createServices(readOnly: boolean): AppServices {
     smtpService: {} as never,
     templateService: {} as never,
     calendarService: {} as never,
+    calendarHub: { enabled: false } as never,
     localCalendarService: {} as never,
     remindersService: {} as never,
     schedulerService: {} as never,

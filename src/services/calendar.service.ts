@@ -48,6 +48,8 @@ export default class CalendarService {
         status: CalendarService.normalizeStatus(event.status as string | undefined),
         method: calendarMethod,
         recurrence: rrule?.toString(),
+        // node-ical marks DATE (not DATE-TIME) values; they parse to local midnight.
+        ...((start as { dateOnly?: boolean } | undefined)?.dateOnly ? { allDay: true } : {}),
       });
     });
 
