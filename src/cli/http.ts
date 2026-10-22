@@ -290,6 +290,16 @@ export default async function runHttp(argv: string[]): Promise<void> {
         }
         if (!tokenMatches(req, opts.token)) {
           const outcome = authLimiter.recordFailure(client);
+          if (outcome.kind === 'counted') {
+            // Header names only (never values) — enough to debug client setup,
+            // and at most maxFailures lines per client before the lockout.
+            const names = Object.keys(req.headers)
+              .filter((h) => !h.startsWith('cf-') && !h.startsWith('x-forwarded-'))
+              .join(',');
+            process.stderr.write(
+              `[email-mcp] auth: rejected ${client} ${req.method ?? ''} ua="${req.headers['user-agent'] ?? ''}" headers=${names}\n`,
+            );
+          }
           if (outcome.kind === 'locked' && outcome.newlyLocked) {
             process.stderr.write(
               `[email-mcp] auth: locked out ${client} for ${outcome.retryAfterSec}s after repeated invalid tokens\n`,
