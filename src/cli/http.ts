@@ -4,7 +4,8 @@
  * Serves the same server graph as stdio over HTTP using the SDK v2 node
  * adapter's `NodeStreamableHTTPServerTransport` in stateless mode. Security:
  *   • DNS-rebinding protection via `Host` header validation.
- *   • Bearer-token auth (env `EMAIL_MCP_HTTP_TOKEN` or `--token`).
+ *   • Bearer-token auth (env `EMAIL_MCP_HTTP_TOKEN` or `--token`), via
+ *     `Authorization: Bearer` or `X-API-Key`.
  *   • Refuses to bind a non-loopback interface without a token (use
  *     `--insecure` to override, e.g. when TLS + auth is terminated upstream).
  *
@@ -124,13 +125,27 @@ export function parseOptions(
   return opts;
 }
 
-/** Constant-time bearer-token check. */
-function tokenMatches(header: string | undefined, token: string): boolean {
-  const prefix = 'Bearer ';
-  if (!header?.startsWith(prefix)) return false;
-  const provided = Buffer.from(header.slice(prefix.length));
-  const expected = Buffer.from(token);
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
+/** Constant-time token comparison. */
+function secretEquals(provided: string, token: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(token);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * The token may arrive as `Authorization: Bearer <token>` or, for clients
+ * that reserve Authorization for their own sign-in (Claude Desktop custom
+ * connectors), as `X-API-Key: <token>`.
+ */
+export function tokenMatches(req: Pick<IncomingMessage, 'headers'>, token: string): boolean {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ') && secretEquals(auth.slice('Bearer '.length), token)) {
+    return true;
+  }
+  const apiKey = req.headers['x-api-key'];
+  if (typeof apiKey !== 'string') return false;
+  const value = apiKey.trim();
+  return secretEquals(value.startsWith('Bearer ') ? value.slice('Bearer '.length) : value, token);
 }
 
 function printHttpUsage(): void {
@@ -142,7 +157,7 @@ Options (precedence: flags > EMAIL_MCP_HTTP_* env > [settings.server] > defaults
   --host <addr>            Bind address (default: 127.0.0.1)
   --port <n>               Port (default: 8080)
   --path <path>            Endpoint path (default: /mcp)
-  --token <secret>         Require "Authorization: Bearer <secret>"
+  --token <secret>         Require "Authorization: Bearer <secret>" (or "X-API-Key: <secret>")
   --allowed-hosts <a,b>    Host-header allowlist (default: loopback names)
   --insecure               Allow non-loopback bind without a token
   -h, --help               Show this help
@@ -273,7 +288,7 @@ export default async function runHttp(argv: string[]): Promise<void> {
           res.end(JSON.stringify({ error: 'too_many_failed_attempts' }));
           return;
         }
-        if (!tokenMatches(req.headers.authorization, opts.token)) {
+        if (!tokenMatches(req, opts.token)) {
           const outcome = authLimiter.recordFailure(client);
           if (outcome.kind === 'locked' && outcome.newlyLocked) {
             process.stderr.write(

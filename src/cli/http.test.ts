@@ -2,7 +2,7 @@ import type { Server } from 'node:http';
 
 import type { AppServices } from '../app.js';
 import type { ServerConfig } from '../types/index.js';
-import { parseOptions } from './http.js';
+import { parseOptions, tokenMatches } from './http.js';
 
 // Captures every real `http.Server` runHttp creates, so a test that boots a
 // real listener can discover the ephemeral port it bound and close it
@@ -194,5 +194,28 @@ describe('runHttp request handling', () => {
 
     expect(first.status).toBe(406);
     expect(second.status).toBe(406);
+  });
+});
+
+describe('tokenMatches', () => {
+  const token = 'a'.repeat(40);
+  const req = (headers: Record<string, string>) => ({ headers });
+
+  it('accepts Authorization: Bearer', () => {
+    expect(tokenMatches(req({ authorization: `Bearer ${token}` }), token)).toBe(true);
+    expect(tokenMatches(req({ authorization: token }), token)).toBe(false);
+  });
+
+  it('accepts X-API-Key with or without the Bearer prefix', () => {
+    expect(tokenMatches(req({ 'x-api-key': token }), token)).toBe(true);
+    expect(tokenMatches(req({ 'x-api-key': ` Bearer ${token} ` }), token)).toBe(true);
+    expect(tokenMatches(req({ 'x-api-key': 'wrong' }), token)).toBe(false);
+  });
+
+  it('falls back to X-API-Key when Authorization carries something else', () => {
+    expect(
+      tokenMatches(req({ authorization: 'Bearer client-oauth', 'x-api-key': token }), token),
+    ).toBe(true);
+    expect(tokenMatches(req({}), token)).toBe(false);
   });
 });
